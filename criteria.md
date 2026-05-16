@@ -7,6 +7,7 @@
 - Accept if: fully remote (worldwide), OR relocation with visa sponsorship/support.
 - Accept without explicit sponsorship mention if: the job is in Germany or another EU country AND the posting does not say "locals only", "no sponsorship", "must be authorized to work", or similar blockers. EU employers commonly sponsor without advertising it.
 - Do NOT require both remote and relocation — either one is sufficient.
+- US remote roles: SKIP if the posting restricts applicants to US residents, US citizens, or requires existing US work authorization. Signals to look for: "must be authorized to work in the US", "US only", "must reside in the US", "no visa sponsorship", "W2 only". If none of these are present, treat the US remote role as acceptable.
 
 ## Seniority
 - Senior roles preferred. If seniority level is not mentioned, assume it is a senior-level role and treat it as a match.
