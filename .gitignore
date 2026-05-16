@@ -8,6 +8,8 @@
 !cv_tailoring_prompt.md
 !igor_pivnyk_cv_base_updated.tex
 !igor_pivnyk_cv_base_updated.pdf
+!pipeline.py
+!seen_jobs.json
 
 # Unignore GitHub Actions workflow directory
 !.github/
