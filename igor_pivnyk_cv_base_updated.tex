@@ -1,0 +1,209 @@
+%% Igor Pivnyk — Base CV
+%% Compile with: xelatex cv_igor.tex
+
+\documentclass[10.5pt, a4paper]{article}
+
+% ---- Core packages ----
+\usepackage{fontspec}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{setspace}
+
+% ---- Page geometry ----
+\geometry{
+  a4paper,
+  top=1.3cm,
+  bottom=1.3cm,
+  left=1.8cm,
+  right=1.8cm
+}
+
+% ---- Font ----
+\setmainfont{Carlito}
+
+% ---- Colors ----
+\definecolor{navy}{HTML}{1B3A6B}
+\definecolor{midgray}{HTML}{5C5C5C}
+\definecolor{lightnavy}{HTML}{3A5F99}
+
+% ---- Hyperlinks ----
+\hypersetup{
+  colorlinks=true,
+  urlcolor=lightnavy,
+  hidelinks
+}
+
+% ---- No page numbers ----
+\pagestyle{empty}
+
+% ---- Section titles ----
+\titleformat{\section}
+  {\bfseries\large\color{navy}}
+  {}{0em}{}
+  [\vspace{1pt}{\color{navy}\hrule height 0.9pt}\vspace{2pt}]
+\titlespacing*{\section}{0pt}{10pt}{4pt}
+
+% ---- No paragraph indent / spacing ----
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+
+% ---- Job entry header ----
+% Usage: \jobheader{Company}{Role}{Location}{Dates}
+\newcommand{\jobheader}[4]{%
+  \vspace{5pt}%
+  \noindent
+  \begin{tabularx}{\textwidth}{@{}Xr@{}}
+    {\bfseries\color{black} #1} & {\small\color{midgray} #4} \\[-2pt]
+    {\small\itshape\color{midgray} #2 \textbullet\ #3} & \\
+  \end{tabularx}%
+  \vspace{0pt}%
+}
+
+% ---- Bullet list style ----
+\setlist[itemize]{
+  leftmargin=1.4em,
+  itemsep=1.5pt,
+  topsep=3pt,
+  parsep=0pt,
+  label={\small\textbullet}
+}
+
+% ---- Skills table row stretch ----
+\renewcommand{\arraystretch}{1.35}
+
+%% ============================================================
+\begin{document}
+%% ============================================================
+
+% =================== HEADER ===================
+\begin{center}
+  {\fontsize{28}{32}\selectfont\bfseries\color{navy} Igor Pivnyk}\\[5pt]
+  {\large\color{midgray} Senior iOS / macOS Developer}\\[7pt]
+  {\small\color{midgray}
+    consul87@gmail.com
+    \enspace\textbar\enspace
+    [redacted]
+    \enspace\textbar\enspace
+    Haifa, Israel
+    \enspace\textbar\enspace
+    \href{https://linkedin.com/in/igorpivnyk}{linkedin.com/in/igorpivnyk}
+    \enspace\textbar\enspace
+    \textbf{Open to Remote}
+  }
+\end{center}
+
+\vspace{2pt}
+{\color{navy}\hrule height 1.4pt}
+\vspace{6pt}
+
+% =================== SUMMARY ===================
+\section{Professional Summary}
+
+Senior iOS and macOS engineer with 9+ years of experience shipping production software across
+cybersecurity, medical devices, consumer apps, and developer tooling. Deep expertise in Swift,
+Objective-C runtime internals, Core Bluetooth, and C++ cross-platform layers. Consistent track
+record of owning features end-to-end — from technical design to delivery — and driving
+architectural improvements that increase stability. Experienced in cross-functional collaboration
+with distributed international teams. Integrates AI-assisted tools (Claude~Code, Copilot) into
+daily engineering, planning, and documentation workflows. Actively seeking fully remote roles.
+
+% =================== EXPERIENCE ===================
+\section{Experience}
+
+\jobheader{Check Point Software Technologies}{Senior iOS / macOS Developer}{Tel Aviv, Israel}{Oct 2023 – Present}
+{\small\color{midgray}\itshape
+  Harmony SASE — enterprise VPN and network security client for macOS and iOS \textbullet\ Team of 9
+}
+\begin{itemize}
+  \item Designed and delivered \textbf{WiFi Security Suppression} — intelligent VPN suppression when
+        on a trusted network; created the technical epic and owned implementation end-to-end
+  \item Led \textbf{architectural refactor} replacing CLI calls with direct API calls across the
+        codebase, improving app stability and long-term maintainability
+  \item \textbf{Restored dropped iOS platform support}: diagnosed customer-reported issues through
+        deep git archaeology, CI pipeline adjustments, and TestFlight distribution
+  \item Developed C++ shared libraries and Swift network code for VPN/security layer using
+        the NetworkExtension framework
+  \item Built and maintained CI/CD pipelines with GitHub Actions
+\end{itemize}
+
+\jobheader{Applitools}{Senior iOS Developer}{Ramat Gan, Israel}{Sep 2022 – Oct 2023}
+{\small\color{midgray}\itshape
+  AI-powered visual UI testing SDK — on-device library injected into customer apps + server-side iOS UI reconstruction engine
+}
+\begin{itemize}
+  \item Extended and fixed SDK support for UIKit and SwiftUI components, both on-device and in the
+        server-side UI reconstruction pipeline
+  \item Reverse-engineered customer apps using Objective-C runtime manipulation, method swizzling,
+        and binary disassembly (Hopper) to diagnose and resolve test-correctness issues caused by
+        non-standard UI implementations
+  \item Wrote automated tests ensuring correctness of a quality-critical developer SDK
+\end{itemize}
+
+\jobheader{Shutterfly Inc.}{Senior iOS Developer}{Haifa, Israel}{Oct 2020 – Sep 2022}
+{\small\color{midgray}\itshape
+  Consumer photo storage \& gifting app — 1M+ downloads, US/Canada market \textbullet\ iOS team of 5 \textbullet\ Collaborated with US headquarters
+}
+\begin{itemize}
+  \item Led \textbf{Selective Checkout} — enabling users to purchase specific cart items
+        independently; owned design, implementation, and cross-team coordination through delivery
+  \item Implemented complex \textbf{drag-and-drop photo placement} in the photo book editor:
+        gesture-driven interaction for placing thumbnails from a scroll bar onto book pages
+  \item Conducted code reviews and mentored junior developers
+  \item Cross-functional collaboration with US-based product, QA, web, and backend teams
+\end{itemize}
+
+\jobheader{CNOGA Medical}{iOS Developer}{Caesarea, Israel}{Aug 2016 – Oct 2020}
+{\small\color{midgray}\itshape
+  Non-invasive medical glucometer and instruments — iOS companion apps with Bluetooth connectivity
+}
+\begin{itemize}
+  \item Sole iOS engineer for 4 years — full ownership of all iPhone and iPad applications
+  \item \textbf{Built Core Bluetooth SDK from scratch}, replacing the legacy implementation with a
+        clean, maintainable architecture for device communication
+  \item \textbf{Significantly reduced application crash rate} through systematic stability analysis
+        and targeted fixes
+  \item Managed full App Store release cycle: certificates, provisioning, submission, and review
+  \item Collaborated closely with embedded and hardware engineering teams
+\end{itemize}
+
+% =================== SKILLS ===================
+\section{Technical Skills}
+
+\begin{tabularx}{\textwidth}{@{}>{\bfseries\color{navy}}lX@{}}
+Languages    & Swift \textbullet\ Objective-C \textbullet\ C++ \\
+iOS / macOS  & UIKit \textbullet\ SwiftUI \textbullet\ AppKit \textbullet\ Core Bluetooth
+               \textbullet\ CoreData \textbullet\ NetworkExtension \textbullet\ Combine
+               \textbullet\ Swift Concurrency \textbullet\ XCTest / XCUITest
+               \textbullet\ Keychain \textbullet\ APNs \textbullet\ RESTful APIs \\
+Architecture & MVC \textbullet\ MVVM \textbullet\ MVP \textbullet\ Clean Architecture
+               \textbullet\ TCA \textbullet\ Dependency Injection \\
+Tooling      & Xcode \textbullet\ Instruments \textbullet\ LLDB \textbullet\ CocoaPods
+               \textbullet\ SPM \textbullet\ GitHub Actions \\
+Low-Level    & Objective-C Runtime \textbullet\ Method Swizzling \textbullet\ Memory Profiling
+               \textbullet\ C++ Interop \textbullet\ Binary Analysis (Hopper) \\
+AI Tools     & Claude Code (daily) \textbullet\ GitHub Copilot \textbullet\ Windsurf
+               \textbullet\ Codex \\
+\end{tabularx}
+
+% =================== EDUCATION ===================
+\section{Education}
+
+\jobheader{East Ukrainian State University}{Bachelor of Science — Mechanical Engineering}{Luhansk, Ukraine}{2004 – 2009}
+\vspace{4pt}
+
+% =================== LANGUAGES ===================
+\section{Languages}
+
+\noindent
+\textbf{English} — Fluent\quad\textbar\quad
+\textbf{Hebrew} — Fluent\quad\textbar\quad
+\textbf{Ukrainian} — Native\quad\textbar\quad
+\textbf{Russian} — Native
+
+\end{document}

@@ -1,0 +1,13 @@
+# Ignore everything by default
+*
+
+# Unignore tracked files
+!.gitignore
+!portable_job_scraper.py
+!cv_tailoring_prompt.md
+!igor_pivnyk_cv_base_updated.tex
+!igor_pivnyk_cv_base_updated.pdf
+
+# Unignore GitHub Actions workflow directory
+!.github/
+!.github/**
