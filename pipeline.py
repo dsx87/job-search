@@ -349,16 +349,17 @@ def _format_notification(job: dict, evaluation: dict) -> str:
 # ── Job processing ───────────────────────────────────────────────────────────
 
 def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str, base_tex: str, job: dict) -> bool:
-    """Returns True if a notification was sent (job was a fit)."""
+    """
+    Returns True if a notification was sent (job was a fit).
+    Raises on errors that warrant a retry next run (evaluation failure, Telegram send failure).
+    Tailoring/compilation failures are soft — we fall back to no CV or raw .tex.
+    """
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"  Evaluating: {title} at {company}", flush=True)
 
-    try:
-        evaluation = evaluate_job(gemini, criteria, job)
-    except Exception as exc:
-        print(f"    Evaluation error: {exc}", file=sys.stderr)
-        return False
+    # Let evaluation errors propagate — caller will not mark the job as seen.
+    evaluation = evaluate_job(gemini, criteria, job)
 
     if not evaluation.get("fit"):
         print(f"    Skip — {evaluation.get('reason', '')}")
@@ -388,10 +389,8 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
     if compilation_failed:
         message += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
 
-    try:
-        _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
-    except Exception as exc:
-        print(f"    Telegram message error: {exc}", file=sys.stderr)
+    # Let Telegram message errors propagate — caller will not mark the job as seen.
+    _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
 
     slug = _company_slug(company)
     if pdf_bytes:
@@ -465,30 +464,41 @@ def main():
 
         cutoff = datetime.date.today() - datetime.timedelta(days=7)
 
+        # new_jobs: list of (normalized_url_key, job_dict)
+        # Keys are NOT added to seen yet — added only after successful processing.
         new_jobs = []
         for j in raw_jobs:
             key = normalize_url(j.url)
             if key in seen:
                 continue
-            seen.add(key)
             if first_run:
-                # On first run, only evaluate jobs from the last 7 days.
+                # On first run, silently mark jobs older than 7 days as seen without evaluating.
                 dp = j.date_posted
                 posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
                 if posted is not None and posted < cutoff:
-                    continue  # silently mark as seen, don't evaluate
+                    seen.add(key)
+                    continue
             d = job_to_dict(j)
             d["description"] = j.description
-            new_jobs.append(d)
+            new_jobs.append((key, d))
 
-        # Persist updated seen set before any LLM calls — a crash mid-run won't re-process jobs.
+        # Persist seen set now — captures first-run silenced jobs; new jobs are NOT yet included.
         save_seen_jobs(seen)
         print(f"Found {len(new_jobs)} new job(s).", flush=True)
 
         fits = 0
-        for job in new_jobs:
-            if process_job(gemini, criteria, tailoring_instructions, base_tex, job):
-                fits += 1
+        for key, job in new_jobs:
+            try:
+                if process_job(gemini, criteria, tailoring_instructions, base_tex, job):
+                    fits += 1
+                # Success (fit or not-fit): mark seen so it won't be reprocessed.
+                seen.add(key)
+                save_seen_jobs(seen)
+            except Exception as exc:
+                print(
+                    f"  Error processing '{job.get('title')}' — will retry next run: {exc}",
+                    file=sys.stderr,
+                )
             time.sleep(1)
 
         if fits == 0:
