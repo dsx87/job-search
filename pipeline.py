@@ -473,7 +473,8 @@ def main():
             seen.add(key)
             if first_run:
                 # On first run, only evaluate jobs from the last 7 days.
-                posted = j.date_posted.date() if j.date_posted else None
+                dp = j.date_posted
+                posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
                 if posted is not None and posted < cutoff:
                     continue  # silently mark as seen, don't evaluate
             d = job_to_dict(j)
