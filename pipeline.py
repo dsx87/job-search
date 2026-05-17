@@ -7,9 +7,11 @@ Required environment variables:
   TELEGRAM_BOT_TOKEN   — Telegram bot token
   TELEGRAM_CHAT_ID     — Target chat/user ID
 
-Run once with no seen_jobs.json to seed state (marks all current jobs seen, sends nothing).
+First run (no seen_jobs.json): jobs posted within 7 days are evaluated normally;
+older jobs are silently marked seen.
 """
 
+import datetime
 import json
 import os
 import re
@@ -64,9 +66,10 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/").lower()
 
 
-def load_seen_jobs() -> set:
+def load_seen_jobs():
+    """Returns a set of seen URL keys, or None if the state file doesn't exist (first run)."""
     if not os.path.exists(SEEN_JOBS_FILE):
-        return set()
+        return None
     with open(SEEN_JOBS_FILE) as f:
         return set(json.load(f))
 
@@ -457,16 +460,25 @@ def main():
             return
 
         seen_raw = load_seen_jobs()
+        first_run = seen_raw is None
         seen = seen_raw if seen_raw is not None else set()
+
+        cutoff = datetime.date.today() - datetime.timedelta(days=7)
 
         new_jobs = []
         for j in raw_jobs:
             key = normalize_url(j.url)
-            if key not in seen:
-                d = job_to_dict(j)
-                d["description"] = j.description
-                new_jobs.append(d)
-                seen.add(key)
+            if key in seen:
+                continue
+            seen.add(key)
+            if first_run:
+                # On first run, only evaluate jobs from the last 7 days.
+                posted = j.date_posted.date() if j.date_posted else None
+                if posted is not None and posted < cutoff:
+                    continue  # silently mark as seen, don't evaluate
+            d = job_to_dict(j)
+            d["description"] = j.description
+            new_jobs.append(d)
 
         # Persist updated seen set before any LLM calls — a crash mid-run won't re-process jobs.
         save_seen_jobs(seen)
