@@ -64,10 +64,9 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/").lower()
 
 
-def load_seen_jobs():
-    """Returns a set of seen URL keys, or None if the state file doesn't exist (seed mode)."""
+def load_seen_jobs() -> set:
     if not os.path.exists(SEEN_JOBS_FILE):
-        return None
+        return set()
     with open(SEEN_JOBS_FILE) as f:
         return set(json.load(f))
 
@@ -458,16 +457,7 @@ def main():
             return
 
         seen_raw = load_seen_jobs()
-        seed_mode = seen_raw is None
         seen = seen_raw if seen_raw is not None else set()
-
-        if seed_mode:
-            print(f"Seed mode: marking {len(raw_jobs)} existing job(s) as seen. No notifications sent.")
-            for j in raw_jobs:
-                seen.add(normalize_url(j.url))
-            save_seen_jobs(seen)
-            print("State saved. Future runs will notify about new jobs.")
-            return
 
         new_jobs = []
         for j in raw_jobs:
