@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -51,13 +52,21 @@ class GeminiClient:
 
         url = f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent?key={self.api_key}"
         data = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            result = json.loads(resp.read())
 
-        return result["candidates"][0]["content"]["parts"][0]["text"]
+        delays = [30, 60, 120]
+        for attempt, delay in enumerate(delays, 1):
+            req = urllib.request.Request(
+                url, data=data, headers={"Content-Type": "application/json"}
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    result = json.loads(resp.read())
+                return result["candidates"][0]["content"]["parts"][0]["text"]
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429 or attempt == len(delays):
+                    raise
+                print(f"    Gemini rate limit — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
+                time.sleep(delay)
 
 
 # ── State persistence ────────────────────────────────────────────────────────
