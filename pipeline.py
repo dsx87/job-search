@@ -13,7 +13,9 @@ Run once with no seen_jobs.json to seed state (marks all current jobs seen, send
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -28,7 +30,7 @@ CRITERIA_FILE = "criteria.md"
 CV_TAILORING_PROMPT_FILE = "cv_tailoring_prompt.md"
 BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ── Gemini client ────────────────────────────────────────────────────────────
@@ -169,6 +171,98 @@ def _strip_latex_fences(text: str) -> str:
     return m.group(1) if m else text
 
 
+# ── LaTeX compilation ────────────────────────────────────────────────────────
+
+def _extract_latex_errors(log: str) -> str:
+    """Pull error blocks (lines starting with '!') from an xelatex log."""
+    lines = log.splitlines()
+    blocks = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("!"):
+            block = lines[i : i + 10]
+            blocks.append("\n".join(block))
+            i += 10
+        else:
+            i += 1
+    if blocks:
+        return "\n\n".join(blocks[:5])
+    # Fallback: last 40 lines usually contain the relevant failure context.
+    return "\n".join(lines[-40:])
+
+
+def _compile_latex(tex_source: str) -> tuple:
+    """
+    Compile tex_source with xelatex.
+    Returns (success: bool, pdf_bytes: bytes|None, error_excerpt: str).
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tex_path = os.path.join(tmpdir, "cv.tex")
+            pdf_path = os.path.join(tmpdir, "cv.pdf")
+            log_path = os.path.join(tmpdir, "cv.log")
+
+            with open(tex_path, "w", encoding="utf-8") as f:
+                f.write(tex_source)
+
+            cmd = ["xelatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
+            # Run twice so cross-references resolve.
+            for _ in range(2):
+                subprocess.run(cmd, capture_output=True, timeout=120)
+
+            if os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as f:
+                    return True, f.read(), ""
+
+            error_excerpt = ""
+            if os.path.exists(log_path):
+                with open(log_path, encoding="utf-8", errors="replace") as f:
+                    error_excerpt = _extract_latex_errors(f.read())
+            return False, None, error_excerpt
+
+    except FileNotFoundError:
+        return False, None, "xelatex not found — cannot compile PDF"
+
+
+def _fix_latex(client: "GeminiClient", tex_source: str, error_excerpt: str) -> str:
+    """Ask Gemini to fix a broken LaTeX source given the compiler error."""
+    prompt = f"""The LaTeX source below failed to compile with xelatex. Fix the compilation errors.
+
+## Compiler errors
+
+{error_excerpt}
+
+## Broken LaTeX source
+
+{tex_source}
+
+Fix only what is broken. Do not change the content or layout. \
+Output the complete fixed .tex file — raw LaTeX only, no markdown fences, no explanation.
+"""
+    raw = client.generate(prompt, temperature=0.0)
+    return _strip_latex_fences(raw)
+
+
+def compile_with_fixes(client: "GeminiClient", tex_source: str, max_attempts: int = 3) -> tuple:
+    """
+    Try to compile tex_source, asking Gemini to fix errors between attempts.
+    Returns (success: bool, pdf_bytes: bytes|None, final_tex: str).
+    """
+    for attempt in range(1, max_attempts + 1):
+        success, pdf_bytes, error_excerpt = _compile_latex(tex_source)
+        if success:
+            return True, pdf_bytes, tex_source
+        print(f"    Compilation failed (attempt {attempt}/{max_attempts}): {error_excerpt[:120]}", flush=True)
+        if attempt < max_attempts:
+            print(f"    Asking Gemini to fix LaTeX errors...", flush=True)
+            try:
+                tex_source = _fix_latex(client, tex_source, error_excerpt)
+            except Exception as exc:
+                print(f"    Fix request failed: {exc}", file=sys.stderr)
+                break
+    return False, None, tex_source
+
+
 # ── Telegram ─────────────────────────────────────────────────────────────────
 
 def _tg_send_message(bot_token: str, chat_id: str, text: str) -> None:
@@ -275,21 +369,43 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
     except Exception as exc:
         print(f"    Tailoring error: {exc}", file=sys.stderr)
 
+    pdf_bytes = None
+    final_tex = tex_source
+    compilation_failed = False
+    if tex_source:
+        print(f"    Compiling PDF...", flush=True)
+        ok, pdf_bytes, final_tex = compile_with_fixes(gemini, tex_source)
+        if ok:
+            print(f"    PDF compiled successfully.", flush=True)
+        else:
+            compilation_failed = True
+            print(f"    PDF compilation failed after all attempts — will send .tex as fallback.", flush=True)
+
     message = _format_notification(job, evaluation)
+    if compilation_failed:
+        message += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
+
     try:
         _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
     except Exception as exc:
         print(f"    Telegram message error: {exc}", file=sys.stderr)
 
-    if tex_source:
-        filename = f"igor_pivnyk_cv_{_company_slug(company)}.tex"
+    slug = _company_slug(company)
+    if pdf_bytes:
         try:
             _tg_send_document(
-                TELEGRAM_BOT_TOKEN,
-                TELEGRAM_CHAT_ID,
-                filename,
-                tex_source.encode("utf-8"),
+                TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+                f"igor_pivnyk_cv_{slug}.pdf", pdf_bytes,
                 caption=f"Tailored CV — {title} at {company}",
+            )
+        except Exception as exc:
+            print(f"    Telegram PDF error: {exc}", file=sys.stderr)
+    elif final_tex:
+        try:
+            _tg_send_document(
+                TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+                f"igor_pivnyk_cv_{slug}.tex", final_tex.encode("utf-8"),
+                caption=f"Tailored CV (LaTeX source) — {title} at {company}",
             )
         except Exception as exc:
             print(f"    Telegram document error: {exc}", file=sys.stderr)
