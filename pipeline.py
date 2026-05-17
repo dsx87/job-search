@@ -250,10 +250,64 @@ def _format_notification(job: dict, evaluation: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Job processing ───────────────────────────────────────────────────────────
+
+def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str, base_tex: str, job: dict) -> None:
+    title = job.get("title", "?")
+    company = job.get("company", "?")
+    print(f"  Evaluating: {title} at {company}", flush=True)
+
+    try:
+        evaluation = evaluate_job(gemini, criteria, job)
+    except Exception as exc:
+        print(f"    Evaluation error: {exc}", file=sys.stderr)
+        return
+
+    if not evaluation.get("fit"):
+        print(f"    Skip — {evaluation.get('reason', '')}")
+        return
+
+    print(f"    Fit! Tailoring resume...", flush=True)
+
+    tex_source = None
+    try:
+        tex_source = tailor_resume(gemini, tailoring_instructions, base_tex, job)
+    except Exception as exc:
+        print(f"    Tailoring error: {exc}", file=sys.stderr)
+
+    message = _format_notification(job, evaluation)
+    try:
+        _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
+    except Exception as exc:
+        print(f"    Telegram message error: {exc}", file=sys.stderr)
+
+    if tex_source:
+        filename = f"igor_pivnyk_cv_{_company_slug(company)}.tex"
+        try:
+            _tg_send_document(
+                TELEGRAM_BOT_TOKEN,
+                TELEGRAM_CHAT_ID,
+                filename,
+                tex_source.encode("utf-8"),
+                caption=f"Tailored CV — {title} at {company}",
+            )
+        except Exception as exc:
+            print(f"    Telegram document error: {exc}", file=sys.stderr)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
     from portable_job_scraper import fetch_jobs, job_to_dict
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Force-process one job through the full pipeline to verify everything works. Does not modify seen_jobs.json.",
+    )
+    args = parser.parse_args()
 
     gemini = GeminiClient(GEMINI_API_KEY)
     criteria = load_criteria()
@@ -262,6 +316,18 @@ def main():
 
     print("Fetching jobs...", flush=True)
     raw_jobs = fetch_jobs()
+
+    if args.test:
+        if not raw_jobs:
+            print("No jobs found — nothing to test.")
+            return
+        j = raw_jobs[0]
+        d = job_to_dict(j)
+        d["description"] = j.description
+        print(f"Test mode: processing one job without touching seen_jobs.json.")
+        process_job(gemini, criteria, tailoring_instructions, base_tex, d)
+        print("Done.", flush=True)
+        return
 
     seen_raw = load_seen_jobs()
     seed_mode = seen_raw is None
@@ -289,47 +355,7 @@ def main():
     print(f"Found {len(new_jobs)} new job(s).", flush=True)
 
     for job in new_jobs:
-        title = job.get("title", "?")
-        company = job.get("company", "?")
-        print(f"  Evaluating: {title} at {company}", flush=True)
-
-        try:
-            evaluation = evaluate_job(gemini, criteria, job)
-        except Exception as exc:
-            print(f"    Evaluation error: {exc}", file=sys.stderr)
-            continue
-
-        if not evaluation.get("fit"):
-            print(f"    Skip — {evaluation.get('reason', '')}")
-            continue
-
-        print(f"    Fit! Tailoring resume...", flush=True)
-
-        tex_source = None
-        try:
-            tex_source = tailor_resume(gemini, tailoring_instructions, base_tex, job)
-        except Exception as exc:
-            print(f"    Tailoring error: {exc}", file=sys.stderr)
-
-        message = _format_notification(job, evaluation)
-        try:
-            _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
-        except Exception as exc:
-            print(f"    Telegram message error: {exc}", file=sys.stderr)
-
-        if tex_source:
-            filename = f"igor_pivnyk_cv_{_company_slug(company)}.tex"
-            try:
-                _tg_send_document(
-                    TELEGRAM_BOT_TOKEN,
-                    TELEGRAM_CHAT_ID,
-                    filename,
-                    tex_source.encode("utf-8"),
-                    caption=f"Tailored CV — {title} at {company}",
-                )
-            except Exception as exc:
-                print(f"    Telegram document error: {exc}", file=sys.stderr)
-
+        process_job(gemini, criteria, tailoring_instructions, base_tex, job)
         time.sleep(1)
 
     print("Done.", flush=True)
