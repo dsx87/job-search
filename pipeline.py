@@ -346,7 +346,8 @@ def _format_notification(job: dict, evaluation: dict) -> str:
 
 # ── Job processing ───────────────────────────────────────────────────────────
 
-def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str, base_tex: str, job: dict) -> None:
+def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str, base_tex: str, job: dict) -> bool:
+    """Returns True if a notification was sent (job was a fit)."""
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"  Evaluating: {title} at {company}", flush=True)
@@ -355,11 +356,11 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
         evaluation = evaluate_job(gemini, criteria, job)
     except Exception as exc:
         print(f"    Evaluation error: {exc}", file=sys.stderr)
-        return
+        return False
 
     if not evaluation.get("fit"):
         print(f"    Skip — {evaluation.get('reason', '')}")
-        return
+        return False
 
     print(f"    Fit! Tailoring resume...", flush=True)
 
@@ -410,8 +411,18 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
         except Exception as exc:
             print(f"    Telegram document error: {exc}", file=sys.stderr)
 
+    return True
+
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+
+def _send_error_notification(exc: Exception) -> None:
+    try:
+        text = f"⚠️ <b>Pipeline error</b>\n\n<code>{type(exc).__name__}: {exc}</code>"
+        _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
+    except Exception:
+        pass
+
 
 def main():
     import argparse
@@ -425,56 +436,75 @@ def main():
     )
     args = parser.parse_args()
 
-    gemini = GeminiClient(GEMINI_API_KEY)
-    criteria = load_criteria()
-    tailoring_instructions = load_tailoring_instructions()
-    base_tex = load_base_tex()
+    try:
+        gemini = GeminiClient(GEMINI_API_KEY)
+        criteria = load_criteria()
+        tailoring_instructions = load_tailoring_instructions()
+        base_tex = load_base_tex()
 
-    print("Fetching jobs...", flush=True)
-    raw_jobs = fetch_jobs()
+        print("Fetching jobs...", flush=True)
+        raw_jobs = fetch_jobs()
 
-    if args.test:
-        if not raw_jobs:
-            print("No jobs found — nothing to test.")
-            return
-        j = raw_jobs[0]
-        d = job_to_dict(j)
-        d["description"] = j.description
-        print(f"Test mode: processing one job without touching seen_jobs.json.")
-        process_job(gemini, criteria, tailoring_instructions, base_tex, d)
-        print("Done.", flush=True)
-        return
-
-    seen_raw = load_seen_jobs()
-    seed_mode = seen_raw is None
-    seen = seen_raw if seen_raw is not None else set()
-
-    if seed_mode:
-        print(f"Seed mode: marking {len(raw_jobs)} existing job(s) as seen. No notifications sent.")
-        for j in raw_jobs:
-            seen.add(normalize_url(j.url))
-        save_seen_jobs(seen)
-        print("State saved. Future runs will notify about new jobs.")
-        return
-
-    new_jobs = []
-    for j in raw_jobs:
-        key = normalize_url(j.url)
-        if key not in seen:
+        if args.test:
+            if not raw_jobs:
+                print("No jobs found — nothing to test.")
+                return
+            j = raw_jobs[0]
             d = job_to_dict(j)
             d["description"] = j.description
-            new_jobs.append(d)
-            seen.add(key)
+            print("Test mode: processing one job without touching seen_jobs.json.")
+            process_job(gemini, criteria, tailoring_instructions, base_tex, d)
+            print("Done.", flush=True)
+            return
 
-    # Persist updated seen set before any LLM calls — a crash mid-run won't re-process jobs.
-    save_seen_jobs(seen)
-    print(f"Found {len(new_jobs)} new job(s).", flush=True)
+        seen_raw = load_seen_jobs()
+        seed_mode = seen_raw is None
+        seen = seen_raw if seen_raw is not None else set()
 
-    for job in new_jobs:
-        process_job(gemini, criteria, tailoring_instructions, base_tex, job)
-        time.sleep(1)
+        if seed_mode:
+            print(f"Seed mode: marking {len(raw_jobs)} existing job(s) as seen. No notifications sent.")
+            for j in raw_jobs:
+                seen.add(normalize_url(j.url))
+            save_seen_jobs(seen)
+            print("State saved. Future runs will notify about new jobs.")
+            return
 
-    print("Done.", flush=True)
+        new_jobs = []
+        for j in raw_jobs:
+            key = normalize_url(j.url)
+            if key not in seen:
+                d = job_to_dict(j)
+                d["description"] = j.description
+                new_jobs.append(d)
+                seen.add(key)
+
+        # Persist updated seen set before any LLM calls — a crash mid-run won't re-process jobs.
+        save_seen_jobs(seen)
+        print(f"Found {len(new_jobs)} new job(s).", flush=True)
+
+        fits = 0
+        for job in new_jobs:
+            if process_job(gemini, criteria, tailoring_instructions, base_tex, job):
+                fits += 1
+            time.sleep(1)
+
+        if fits == 0:
+            noun = "new posting" if len(new_jobs) == 1 else "new postings"
+            msg = (
+                f"✅ Job search complete — {len(new_jobs)} {noun} checked, "
+                f"none matched your criteria."
+            )
+            try:
+                _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, msg)
+            except Exception as exc:
+                print(f"Telegram notification error: {exc}", file=sys.stderr)
+
+        print("Done.", flush=True)
+
+    except Exception as exc:
+        print(f"Fatal error: {exc}", file=sys.stderr)
+        _send_error_notification(exc)
+        raise
 
 
 if __name__ == "__main__":
