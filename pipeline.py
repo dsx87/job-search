@@ -33,7 +33,7 @@ CRITERIA_FILE = "criteria.md"
 CV_TAILORING_PROMPT_FILE = "cv_tailoring_prompt.md"
 BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ── Gemini client ────────────────────────────────────────────────────────────
@@ -179,7 +179,13 @@ no explanation before or after.
 def _strip_latex_fences(text: str) -> str:
     text = text.strip()
     m = re.match(r"^```(?:latex)?\n(.*)\n```$", text, re.DOTALL)
-    return m.group(1) if m else text
+    if m:
+        text = m.group(1)
+    # Extract from \documentclass to \end{document} to drop any surrounding prose
+    m = re.search(r'(\\documentclass.*?\\end\{document\})', text, re.DOTALL)
+    if m:
+        return m.group(1)
+    return text
 
 
 # ── LaTeX compilation ────────────────────────────────────────────────────────
