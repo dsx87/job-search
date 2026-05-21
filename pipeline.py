@@ -46,6 +46,7 @@ class GeminiClient:
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": temperature},
+            "thinkingConfig": {"thinkingBudget": 0},
         }
         if json_mode:
             payload["generationConfig"]["responseMimeType"] = "application/json"
