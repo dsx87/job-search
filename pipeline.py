@@ -45,8 +45,7 @@ class GeminiClient:
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": temperature},
-            "thinkingConfig": {"thinkingBudget": 0},
+            "generationConfig": {"temperature": temperature, "thinkingConfig": {"thinkingBudget": 0}},
         }
         if json_mode:
             payload["generationConfig"]["responseMimeType"] = "application/json"
