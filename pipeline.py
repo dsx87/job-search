@@ -61,7 +61,14 @@ class GeminiClient:
             try:
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     result = json.loads(resp.read())
-                return result["candidates"][0]["content"]["parts"][0]["text"]
+                candidate = result["candidates"][0]
+                finish_reason = candidate.get("finishReason", "UNKNOWN")
+                parts = candidate.get("content", {}).get("parts")
+                if not parts:
+                    raise RuntimeError(
+                        f"Gemini returned no content (finishReason={finish_reason})"
+                    )
+                return parts[0]["text"]
             except urllib.error.HTTPError as exc:
                 if exc.code != 429 or attempt == len(delays):
                     raise
