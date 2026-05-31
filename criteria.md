@@ -24,5 +24,11 @@
 ## Salary
 - No salary filter — notify regardless of stated compensation.
 
+## Israeli jobs
+- Igor is already based in Israel; no relocation or sponsorship is required for Israeli roles.
+- Accept fully remote Israeli roles.
+- Accept hybrid or on-site Israeli roles UNLESS the posting explicitly states a required number of in-office days (e.g. "3 days/week in office", "5 days onsite", "fully on-site", "100% in-person"). If the posting is silent on office attendance, or says only "hybrid" without specifying days, treat it as acceptable — Israeli startup postings routinely omit this detail.
+- Crypto/Web3 exclusion and all other filters still apply.
+
 ## Timezone
 - Igor is based in Israel (UTC+3). If the job requires strict US-only working hours, do NOT skip — include a note flagging the timezone mismatch so he can decide.

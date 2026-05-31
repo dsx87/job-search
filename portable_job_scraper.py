@@ -195,6 +195,45 @@ EU_CITIES = set(
     ]
 )
 
+IL_LOCATIONS = set(
+    [
+        "israel",
+        "tel aviv",
+        "tel-aviv",
+        "haifa",
+        "jerusalem",
+        "herzliya",
+        "raanana",
+        "ra'anana",
+        "petah tikva",
+        "petah-tikva",
+        "beer sheva",
+        "beer-sheva",
+        "netanya",
+        "rehovot",
+        "rishon lezion",
+        "rishon le-zion",
+        "holon",
+        "bnei brak",
+        "modi'in",
+        "modiin",
+        "kfar saba",
+        "rosh haayin",
+        "yehud",
+        "givat shmuel",
+        "airport city",
+        "lod",
+        "ramla",
+        "yokneam",
+        "caesarea",
+        "or yehuda",
+        "kiryat gat",
+        "ashkelon",
+        "ashdod",
+        "eilat",
+    ]
+)
+
 CA_LOCATIONS = set(
     [
         "canada",
@@ -571,7 +610,17 @@ def relocation_filter(job, relocation_regions=None):
     return has_relocation_evidence(text)
 
 
+def is_israel_job(job):
+    loc = job.location.lower()
+    for token in IL_LOCATIONS:
+        if contains_location_token(loc, token):
+            return True
+    return False
+
+
 def opportunity_filter(job, relocation_regions=None):
+    if is_israel_job(job):
+        return True  # LLM in criteria.md judges office-days requirement
     return remote_filter(job) or relocation_filter(job, relocation_regions)
 
 
@@ -1944,8 +1993,155 @@ class JobSpySource(BaseSource):
         return all_jobs
 
 
+LINKEDIN_ISRAEL_QUERIES = [
+    "iOS developer",
+    "iOS engineer",
+    "Swift developer",
+    "Swift engineer",
+    "SwiftUI developer",
+    "mobile developer iOS",
+]
+
+LINKEDIN_GLOBAL_QUERIES = [
+    "iOS developer",
+    "iOS engineer",
+    "Swift developer",
+    "Swift engineer",
+    "SwiftUI developer",
+    "SwiftUI engineer",
+    "macOS developer",
+    "macOS engineer",
+    "Objective-C developer",
+    "Objective-C engineer",
+    "Objective-C++ developer",
+    "Objective-C++ engineer",
+]
+
+LINKEDIN_GLOBAL_LOCATIONS = [
+    "Israel",
+    "Germany",
+    "Netherlands",
+    "Canada",
+    "United Kingdom",
+]
+
+
+class LinkedInGlobalSource(BaseSource):
+    name = "linkedin-global"
+    optional_dependency = "python-jobspy"
+
+    def fetch(self, verbose=False):
+        try:
+            from jobspy import scrape_jobs
+        except ImportError:
+            if verbose:
+                print("[linkedin-global] Skipped: python-jobspy not installed")
+            return []
+
+        all_jobs = []
+        total = len(LINKEDIN_GLOBAL_QUERIES) * len(LINKEDIN_GLOBAL_LOCATIONS)
+        step = 0
+        for query in LINKEDIN_GLOBAL_QUERIES:
+            for location in LINKEDIN_GLOBAL_LOCATIONS:
+                step += 1
+                if verbose:
+                    print("[linkedin-global] ({}/{}) {!r} in {}...".format(step, total, query, location), flush=True)
+                try:
+                    df = scrape_jobs(
+                        site_name=["linkedin"],
+                        search_term=query,
+                        location=location,
+                        results_wanted=20,
+                        hours_old=720,
+                    )
+                except Exception as exc:
+                    if verbose:
+                        print("[linkedin-global] Error for {!r} {!r}: {}".format(query, location, exc))
+                    continue
+
+                for _, row in df.iterrows():
+                    posted = None
+                    row_date = row.get("date_posted", None)
+                    if row_date is not None:
+                        try:
+                            posted = row_date.date() if hasattr(row_date, "date") else parse_iso_date(row_date)
+                        except Exception:
+                            posted = parse_iso_date(str(row_date)[:10])
+                    all_jobs.append(
+                        Job(
+                            title=str(row.get("title", "")),
+                            company=str(row.get("company", "")),
+                            location=str(row.get("location", "")),
+                            url=str(row.get("job_url", "")),
+                            source=self.name,
+                            date_posted=posted,
+                            description=str(row.get("description", "")),
+                            is_remote=bool(row.get("is_remote", False)),
+                        )
+                    )
+
+        if verbose:
+            print("[linkedin-global] Fetched {} raw jobs".format(len(all_jobs)))
+        return all_jobs
+
+
+class LinkedInIsraelSource(BaseSource):
+    name = "linkedin-israel"
+    optional_dependency = "python-jobspy"
+
+    def fetch(self, verbose=False):
+        try:
+            from jobspy import scrape_jobs
+        except ImportError:
+            if verbose:
+                print("[linkedin-israel] Skipped: python-jobspy not installed")
+            return []
+
+        all_jobs = []
+        for query in LINKEDIN_ISRAEL_QUERIES:
+            try:
+                df = scrape_jobs(
+                    site_name=["linkedin"],
+                    search_term=query,
+                    location="Israel",
+                    results_wanted=25,
+                    hours_old=720,
+                )
+            except Exception as exc:
+                if verbose:
+                    print("[linkedin-israel] Error for {!r}: {}".format(query, exc))
+                continue
+
+            for _, row in df.iterrows():
+                posted = None
+                row_date = row.get("date_posted", None)
+                if row_date is not None:
+                    try:
+                        posted = row_date.date() if hasattr(row_date, "date") else parse_iso_date(row_date)
+                    except Exception:
+                        posted = parse_iso_date(str(row_date)[:10])
+                all_jobs.append(
+                    Job(
+                        title=str(row.get("title", "")),
+                        company=str(row.get("company", "")),
+                        location=str(row.get("location", "")),
+                        url=str(row.get("job_url", "")),
+                        source=self.name,
+                        date_posted=posted,
+                        description=str(row.get("description", "")),
+                        is_remote=bool(row.get("is_remote", False)),
+                    )
+                )
+
+        if verbose:
+            print("[linkedin-israel] Fetched {} raw jobs".format(len(all_jobs)))
+        return all_jobs
+
+
 ALL_SOURCES = {
     "jobspy": JobSpySource,
+    "linkedin-global": LinkedInGlobalSource,
+    "linkedin-israel": LinkedInIsraelSource,
     "arc": ArcSource,
     "mobile.career": MobileCareerSource,
     "jobscroller": JobScrollerSource,
@@ -1967,6 +2163,8 @@ ALL_SOURCES = {
 
 SOURCE_DESCRIPTIONS = {
     "jobspy": "Optional JobSpy search. Skips automatically unless python-jobspy is installed.",
+    "linkedin-global": "LinkedIn iOS/Swift jobs globally (Remote + key relocation countries) via JobSpy. Skips unless python-jobspy is installed.",
+    "linkedin-israel": "LinkedIn iOS/Swift jobs in Israel via JobSpy. Skips unless python-jobspy is installed.",
     "arc": "Arc remote iOS/Swift pages.",
     "mobile.career": "Mobile.Career iOS jobs with direct company/ATS apply links.",
     "jobscroller": "JobScroller Swift/Objective-C company-career-page listings.",
@@ -2086,7 +2284,7 @@ def run_scraper(source_names=None, relocation_regions=None, max_age=30, as_json=
         print("No valid sources selected.", file=sys.stderr)
         return 2
 
-    if not as_json:
+    if not as_json and not verbose:
         print("Scraping {} sources: {}...".format(len(selected), ", ".join(name for name, _ in selected)))
 
     jobs = fetch_jobs(

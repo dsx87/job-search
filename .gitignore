@@ -10,6 +10,7 @@
 !igor_pivnyk_cv_base_updated.pdf
 !pipeline.py
 !seen_jobs.json
+!requirements.txt
 
 # Unignore GitHub Actions workflow directory
 !.github/

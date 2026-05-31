@@ -1,0 +1,2 @@
+# Optional: enables jobspy, linkedin-global, and linkedin-israel sources.
+python-jobspy
