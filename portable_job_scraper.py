@@ -2098,7 +2098,10 @@ class LinkedInIsraelSource(BaseSource):
             return []
 
         all_jobs = []
-        for query in LINKEDIN_ISRAEL_QUERIES:
+        total = len(LINKEDIN_ISRAEL_QUERIES)
+        for step, query in enumerate(LINKEDIN_ISRAEL_QUERIES, 1):
+            if verbose:
+                print("[linkedin-israel] ({}/{}) {!r} in Israel...".format(step, total, query), flush=True)
             try:
                 df = scrape_jobs(
                     site_name=["linkedin"],
@@ -2228,8 +2231,12 @@ def regions_for_display(regions):
 
 def fetch_source(source_name, source_cls, verbose):
     source = source_cls()
+    if verbose:
+        print("[{}] fetching...".format(source_name), flush=True)
     try:
         jobs = source.fetch(verbose=verbose)
+        if verbose:
+            print("[{}] done — {} job(s)".format(source_name, len(jobs)), flush=True)
         return source_name, jobs, None
     except Exception as exc:
         return source_name, [], exc

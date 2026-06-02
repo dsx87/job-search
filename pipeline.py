@@ -24,9 +24,9 @@ import urllib.request
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 SEEN_JOBS_FILE = "seen_jobs.json"
 CRITERIA_FILE = "criteria.md"
@@ -457,7 +457,30 @@ def main():
         action="store_true",
         help="Force-process one job through the full pipeline to verify everything works. Does not modify seen_jobs.json.",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="Fetch and print new jobs (not in seen_jobs.json) without AI evaluation or Telegram. Does not modify seen_jobs.json.",
+    )
     args = parser.parse_args()
+
+    if args.list:
+        raw_jobs = fetch_jobs(verbose=True)
+        seen_raw = load_seen_jobs()
+        seen = seen_raw if seen_raw is not None else set()
+        new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen]
+        print(f"{len(new_jobs)} new job(s):\n")
+        for j in new_jobs:
+            date_str = j.date_posted.strftime("%Y-%m-%d") if j.date_posted else "n/a"
+            print(f"  {j.title}")
+            print(f"  {j.company} | {j.location or 'n/a'} | {j.source} | {date_str}")
+            print(f"  {j.url}")
+            print()
+        return
+
+    if not all([GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+        print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
+        sys.exit(1)
 
     try:
         gemini = GeminiClient(GEMINI_API_KEY)
