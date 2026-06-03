@@ -466,7 +466,29 @@ def main():
         action="store_true",
         help="Fetch and print new jobs (not in seen_jobs.json) without AI evaluation or Telegram. Does not modify seen_jobs.json.",
     )
+    parser.add_argument(
+        "--seed",
+        action="store_true",
+        help="Mark all currently fetched jobs as seen without evaluating. Resets the baseline.",
+    )
     args = parser.parse_args()
+
+    if args.seed:
+        raw_jobs = fetch_jobs(verbose=True)
+        seen_raw = load_seen_jobs()
+        seen = seen_raw if seen_raw is not None else set()
+        added = 0
+        for j in raw_jobs:
+            key = normalize_url(j.url)
+            tc_key = title_company_key(j.title, j.company)
+            if key not in seen:
+                seen.add(key)
+                added += 1
+            if tc_key not in seen:
+                seen.add(tc_key)
+        save_seen_jobs(seen)
+        print(f"Seed complete — {len(raw_jobs)} job(s) marked seen ({added} new URL entries added).")
+        return
 
     if args.list:
         raw_jobs = fetch_jobs(verbose=True)
