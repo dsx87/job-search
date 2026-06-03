@@ -82,6 +82,10 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/").lower()
 
 
+def title_company_key(title: str, company: str) -> str:
+    return "{}|{}".format(title.lower().strip(), company.lower().strip())
+
+
 def load_seen_jobs():
     """Returns a set of seen URL keys, or None if the state file doesn't exist (first run)."""
     if not os.path.exists(SEEN_JOBS_FILE):
@@ -468,7 +472,7 @@ def main():
         raw_jobs = fetch_jobs(verbose=True)
         seen_raw = load_seen_jobs()
         seen = seen_raw if seen_raw is not None else set()
-        new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen]
+        new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen and title_company_key(j.title, j.company) not in seen]
         print(f"{len(new_jobs)} new job(s):\n")
         for j in new_jobs:
             date_str = j.date_posted.strftime("%Y-%m-%d") if j.date_posted else "n/a"
@@ -509,12 +513,13 @@ def main():
 
         cutoff = datetime.date.today() - datetime.timedelta(days=7)
 
-        # new_jobs: list of (normalized_url_key, job_dict)
+        # new_jobs: list of (url_key, tc_key, job_dict)
         # Keys are NOT added to seen yet — added only after successful processing.
         new_jobs = []
         for j in raw_jobs:
             key = normalize_url(j.url)
-            if key in seen:
+            tc_key = title_company_key(j.title, j.company)
+            if key in seen or tc_key in seen:
                 continue
             if first_run:
                 # On first run, silently mark jobs older than 7 days as seen without evaluating.
@@ -522,22 +527,24 @@ def main():
                 posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
                 if posted is not None and posted < cutoff:
                     seen.add(key)
+                    seen.add(tc_key)
                     continue
             d = job_to_dict(j)
             d["description"] = j.description
-            new_jobs.append((key, d))
+            new_jobs.append((key, tc_key, d))
 
         # Persist seen set now — captures first-run silenced jobs; new jobs are NOT yet included.
         save_seen_jobs(seen)
         print(f"Found {len(new_jobs)} new job(s).", flush=True)
 
         fits = 0
-        for key, job in new_jobs:
+        for key, tc_key, job in new_jobs:
             try:
                 if process_job(gemini, criteria, tailoring_instructions, base_tex, job):
                     fits += 1
                 # Success (fit or not-fit): mark seen so it won't be reprocessed.
                 seen.add(key)
+                seen.add(tc_key)
                 save_seen_jobs(seen)
             except Exception as exc:
                 print(
