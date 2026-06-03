@@ -1914,6 +1914,53 @@ class LandingJobsSource(BaseSource):
         return jobs
 
 
+class SecretTelAvivSource(BaseSource):
+    name = "secrettelaviv"
+    BASE_URL = "https://jobs.secrettelaviv.com"
+    SEARCH_URL = BASE_URL + "/list/find/"
+    QUERIES = ["ios", "swift", "macos", "mobile developer"]
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    def fetch(self, verbose=False):
+        jobs = []
+        for query in self.QUERIES:
+            try:
+                status, text = http_request(
+                    self.SEARCH_URL,
+                    params={"q": query},
+                    headers=self.HEADERS,
+                )
+                if status != 200:
+                    if verbose:
+                        print("[secrettelaviv] HTTP {} for query={!r}".format(status, query))
+                    continue
+                jobs.extend(
+                    parse_link_jobs(
+                        text,
+                        self.BASE_URL,
+                        ["/job/"],
+                        self.name,
+                        default_remote=False,
+                    )
+                )
+            except Exception as exc:
+                if verbose:
+                    print("[secrettelaviv] Error for query={!r}: {}".format(query, exc))
+                continue
+
+        jobs = dedup(jobs)
+        if verbose:
+            print("[secrettelaviv] Fetched {} raw jobs".format(len(jobs)))
+        return jobs
+
+
 SEARCH_QUERIES = [
     "iOS developer relocation",
     "macOS engineer relocation",
@@ -2161,6 +2208,7 @@ ALL_SOURCES = {
     "swissdevjobs": SwissDevJobsSource,
     "relocate.me": RelocateMeSource,
     "landing.jobs": LandingJobsSource,
+    "secrettelaviv": SecretTelAvivSource,
 }
 
 
@@ -2184,6 +2232,7 @@ SOURCE_DESCRIPTIONS = {
     "swissdevjobs": "SwissDevJobs RSS.",
     "relocate.me": "Relocate.me search pages, best effort with stdlib HTML parsing.",
     "landing.jobs": "Landing.jobs search pages, best effort with stdlib HTML parsing.",
+    "secrettelaviv": "Secret Tel Aviv job board, Israel-focused English-speaking listings.",
 }
 
 
