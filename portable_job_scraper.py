@@ -2065,22 +2065,16 @@ LINKEDIN_ISRAEL_QUERIES = [
 ]
 
 LINKEDIN_GLOBAL_QUERIES = [
-    "iOS developer",
-    "iOS engineer",
-    "macOS developer",
-    "macOS engineer",
-    "Objective-C developer",
-    "Objective-C engineer",
-    "Objective-C++ developer",
-    "Objective-C++ engineer",
+    "iOS",
+    "macOS",
 ]
 
+# (location, results_wanted) — EU is region-wide (all member states in one
+# search), so it gets a deeper pull than a single country like Canada.
+# Israel is intentionally excluded here: it's handled by LinkedInIsraelSource.
 LINKEDIN_GLOBAL_LOCATIONS = [
-    "Israel",
-    "Germany",
-    "Netherlands",
-    "Canada",
-    "United Kingdom",
+    ("European Union", 75),
+    ("Canada", 25),
 ]
 
 
@@ -2101,7 +2095,7 @@ class LinkedInGlobalSource(BaseSource):
         step = 0
         failures = 0
         for query in LINKEDIN_GLOBAL_QUERIES:
-            for location in LINKEDIN_GLOBAL_LOCATIONS:
+            for location, results_wanted in LINKEDIN_GLOBAL_LOCATIONS:
                 step += 1
                 if verbose:
                     print("[linkedin-global] ({}/{}) {!r} in {}...".format(step, total, query, location), flush=True)
@@ -2110,8 +2104,8 @@ class LinkedInGlobalSource(BaseSource):
                         site_name=["linkedin"],
                         search_term=query,
                         location=location,
-                        results_wanted=40,
-                        hours_old=720,
+                        results_wanted=results_wanted,
+                        hours_old=48,
                         linkedin_fetch_description=True,
                     )
                 except Exception as exc:
@@ -2170,8 +2164,8 @@ class LinkedInIsraelSource(BaseSource):
                     site_name=["linkedin"],
                     search_term=query,
                     location="Israel",
-                    results_wanted=50,
-                    hours_old=720,
+                    results_wanted=25,
+                    hours_old=48,
                     linkedin_fetch_description=True,
                 )
             except Exception as exc:
