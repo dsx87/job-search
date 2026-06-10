@@ -179,6 +179,7 @@ Product: Harmony SASE — enterprise VPN and network security client for macOS a
 
 Confirmed achievements:
 - Designed and delivered **WiFi Security Suppression** feature: VPN intelligently suppresses connection on trusted WiFi networks. Created the technical epic, owned implementation end-to-end
+- Built **unified cross-platform logging** across Windows, macOS, and Linux clients: standardized log filenames, verbosity levels, and log-rotation rules across platforms; implemented remote runtime reconfiguration of logging settings
 - Led **architectural refactor**: replaced CLI calls with direct API calls across the codebase — created the epic, executed migration, improved app stability and maintainability
 - **Restored dropped iOS platform support**: diagnosed customer-reported issues through deep git archaeology, CI pipeline changes, and TestFlight distribution — full end-to-end ownership
 
@@ -412,6 +413,9 @@ daily engineering, planning, and documentation workflows.
 \begin{itemize}
   \item Designed and delivered \textbf{WiFi Security Suppression} — intelligent VPN suppression when
         on a trusted network; created the technical epic and owned implementation end-to-end
+  \item Built \textbf{unified cross-platform logging} for Windows, macOS, and Linux clients —
+        standardized log filenames, verbosity levels, and rotation policies across all three
+        platforms, with remote runtime reconfiguration of logging settings
   \item Led \textbf{architectural refactor} replacing CLI calls with direct API calls across the
         codebase, improving app stability and long-term maintainability
   \item \textbf{Restored dropped iOS platform support}: diagnosed customer-reported issues through

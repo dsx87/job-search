@@ -82,8 +82,12 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/").lower()
 
 
-def title_company_key(title: str, company: str) -> str:
-    return "{}|{}".format(title.lower().strip(), company.lower().strip())
+def title_company_key(title: str, company: str, location: str = "") -> str:
+    key = "{}|{}".format(title.lower().strip(), company.lower().strip())
+    norm_location = " ".join(location.lower().split())
+    if norm_location:
+        key = "{}|{}".format(key, norm_location)
+    return key
 
 
 def load_seen_jobs():
@@ -480,7 +484,7 @@ def main():
         added = 0
         for j in raw_jobs:
             key = normalize_url(j.url)
-            tc_key = title_company_key(j.title, j.company)
+            tc_key = title_company_key(j.title, j.company, j.location)
             if key not in seen:
                 seen.add(key)
                 added += 1
@@ -494,7 +498,7 @@ def main():
         raw_jobs = fetch_jobs(verbose=True)
         seen_raw = load_seen_jobs()
         seen = seen_raw if seen_raw is not None else set()
-        new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen and title_company_key(j.title, j.company) not in seen]
+        new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen and title_company_key(j.title, j.company, j.location) not in seen]
         print(f"{len(new_jobs)} new job(s):\n")
         for j in new_jobs:
             date_str = j.date_posted.strftime("%Y-%m-%d") if j.date_posted else "n/a"
@@ -540,7 +544,7 @@ def main():
         new_jobs = []
         for j in raw_jobs:
             key = normalize_url(j.url)
-            tc_key = title_company_key(j.title, j.company)
+            tc_key = title_company_key(j.title, j.company, j.location)
             if key in seen or tc_key in seen:
                 continue
             if first_run:

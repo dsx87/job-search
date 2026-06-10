@@ -489,6 +489,22 @@ def unescape2(text):
     return result
 
 
+def _cell(row, key):
+    """Read a value from a jobspy DataFrame row, treating None/NaN as empty string."""
+    value = row.get(key)
+    if value is None or value != value:  # NaN != NaN
+        return ""
+    return str(value).strip()
+
+
+def _row_is_remote(row):
+    """Read is_remote from a jobspy DataFrame row, treating None/NaN as False."""
+    value = row.get("is_remote")
+    if value is None or value != value:  # NaN != NaN
+        return False
+    return bool(value)
+
+
 def match_keywords(text, keywords):
     matches = []
     for keyword in keywords:
@@ -660,6 +676,9 @@ def dedup(jobs):
     for job in jobs:
         key = job.url.rstrip("/").lower()
         alt_key = "{}|{}".format(job.title.lower().strip(), job.company.lower().strip())
+        location = collapse_ws(job.location).lower()
+        if location:
+            alt_key = "{}|{}".format(alt_key, location)
         if key in seen or alt_key in seen:
             continue
         seen.add(key)
@@ -2041,21 +2060,13 @@ class JobSpySource(BaseSource):
 
 
 LINKEDIN_ISRAEL_QUERIES = [
-    "iOS developer",
-    "iOS engineer",
-    "Swift developer",
-    "Swift engineer",
-    "SwiftUI developer",
-    "mobile developer iOS",
+    "iOS",
+    "macOS",
 ]
 
 LINKEDIN_GLOBAL_QUERIES = [
     "iOS developer",
     "iOS engineer",
-    "Swift developer",
-    "Swift engineer",
-    "SwiftUI developer",
-    "SwiftUI engineer",
     "macOS developer",
     "macOS engineer",
     "Objective-C developer",
@@ -2088,6 +2099,7 @@ class LinkedInGlobalSource(BaseSource):
         all_jobs = []
         total = len(LINKEDIN_GLOBAL_QUERIES) * len(LINKEDIN_GLOBAL_LOCATIONS)
         step = 0
+        failures = 0
         for query in LINKEDIN_GLOBAL_QUERIES:
             for location in LINKEDIN_GLOBAL_LOCATIONS:
                 step += 1
@@ -2098,12 +2110,13 @@ class LinkedInGlobalSource(BaseSource):
                         site_name=["linkedin"],
                         search_term=query,
                         location=location,
-                        results_wanted=20,
+                        results_wanted=40,
                         hours_old=720,
+                        linkedin_fetch_description=True,
                     )
                 except Exception as exc:
-                    if verbose:
-                        print("[linkedin-global] Error for {!r} {!r}: {}".format(query, location, exc))
+                    failures += 1
+                    print("[linkedin-global] Error for {!r} {!r}: {}".format(query, location, exc), file=sys.stderr)
                     continue
 
                 for _, row in df.iterrows():
@@ -2116,17 +2129,19 @@ class LinkedInGlobalSource(BaseSource):
                             posted = parse_iso_date(str(row_date)[:10])
                     all_jobs.append(
                         Job(
-                            title=str(row.get("title", "")),
-                            company=str(row.get("company", "")),
-                            location=str(row.get("location", "")),
-                            url=str(row.get("job_url", "")),
+                            title=_cell(row, "title"),
+                            company=_cell(row, "company"),
+                            location=_cell(row, "location"),
+                            url=_cell(row, "job_url"),
                             source=self.name,
                             date_posted=posted,
-                            description=str(row.get("description", "")),
-                            is_remote=bool(row.get("is_remote", False)),
+                            description=_cell(row, "description"),
+                            is_remote=_row_is_remote(row),
                         )
                     )
 
+        if failures:
+            print("[linkedin-global] Warning: {}/{} query/location combos failed".format(failures, total), file=sys.stderr)
         if verbose:
             print("[linkedin-global] Fetched {} raw jobs".format(len(all_jobs)))
         return all_jobs
@@ -2146,6 +2161,7 @@ class LinkedInIsraelSource(BaseSource):
 
         all_jobs = []
         total = len(LINKEDIN_ISRAEL_QUERIES)
+        failures = 0
         for step, query in enumerate(LINKEDIN_ISRAEL_QUERIES, 1):
             if verbose:
                 print("[linkedin-israel] ({}/{}) {!r} in Israel...".format(step, total, query), flush=True)
@@ -2154,12 +2170,13 @@ class LinkedInIsraelSource(BaseSource):
                     site_name=["linkedin"],
                     search_term=query,
                     location="Israel",
-                    results_wanted=25,
+                    results_wanted=50,
                     hours_old=720,
+                    linkedin_fetch_description=True,
                 )
             except Exception as exc:
-                if verbose:
-                    print("[linkedin-israel] Error for {!r}: {}".format(query, exc))
+                failures += 1
+                print("[linkedin-israel] Error for {!r}: {}".format(query, exc), file=sys.stderr)
                 continue
 
             for _, row in df.iterrows():
@@ -2172,17 +2189,19 @@ class LinkedInIsraelSource(BaseSource):
                         posted = parse_iso_date(str(row_date)[:10])
                 all_jobs.append(
                     Job(
-                        title=str(row.get("title", "")),
-                        company=str(row.get("company", "")),
-                        location=str(row.get("location", "")),
-                        url=str(row.get("job_url", "")),
+                        title=_cell(row, "title"),
+                        company=_cell(row, "company"),
+                        location=_cell(row, "location"),
+                        url=_cell(row, "job_url"),
                         source=self.name,
                         date_posted=posted,
-                        description=str(row.get("description", "")),
-                        is_remote=bool(row.get("is_remote", False)),
+                        description=_cell(row, "description"),
+                        is_remote=_row_is_remote(row),
                     )
                 )
 
+        if failures:
+            print("[linkedin-israel] Warning: {}/{} queries failed".format(failures, total), file=sys.stderr)
         if verbose:
             print("[linkedin-israel] Fetched {} raw jobs".format(len(all_jobs)))
         return all_jobs
