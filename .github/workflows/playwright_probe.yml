@@ -1,0 +1,27 @@
+name: Playwright Probe (one-off)
+
+# Manual-only feasibility check: does a real Chromium get past Cloudflare on the
+# runner for landing.jobs / secrettelaviv, or is it a hard datacenter-IP block?
+# Delete this workflow + playwright_probe.py once we have the answer.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Run probe
+        run: python3 -u playwright_probe.py

@@ -43,7 +43,7 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 QWEN_MODEL = "qwen-plus"
 QWEN_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 # Seconds to wait before the single Gemini retry on a transient error.
-GEMINI_RETRY_DELAY = 30
+GEMINI_RETRY_DELAY = 10
 
 # ── Gemini client ────────────────────────────────────────────────────────────
 
