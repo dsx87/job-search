@@ -1,0 +1,38 @@
+name: Reconstruct seen_jobs (one-off)
+
+# Recovery for run 27351267397: re-add the 24 processed jobs to seen_jobs.json
+# (its commit was lost to a rejected push). Re-scrapes, matches, and commits.
+# Delete this workflow + reconstruct_seen.py after it succeeds.
+on:
+  workflow_dispatch:
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: Reconstruct seen_jobs.json
+        run: python3 -u reconstruct_seen.py
+
+      - name: Commit updated seen_jobs.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_jobs.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: recover seen jobs from run 27351267397 [skip ci]"
+          git push
