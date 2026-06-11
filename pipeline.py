@@ -25,6 +25,7 @@ import urllib.request
 # ── Config ──────────────────────────────────────────────────────────────────
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -36,6 +37,13 @@ BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# Qwen fallback (Alibaba DashScope, OpenAI-compatible endpoint). Used when Gemini
+# keeps failing with a transient error (e.g. 503 overloaded) after one retry.
+QWEN_MODEL = "qwen-plus"
+QWEN_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+# Seconds to wait before the single Gemini retry on a transient error.
+GEMINI_RETRY_DELAY = 30
 
 # ── Gemini client ────────────────────────────────────────────────────────────
 
@@ -54,8 +62,9 @@ class GeminiClient:
         url = f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent?key={self.api_key}"
         data = json.dumps(payload).encode()
 
-        delays = [30, 60, 120]
-        for attempt, delay in enumerate(delays, 1):
+        # Try once, retry a single time on a transient error (e.g. 503 overloaded),
+        # then give up so the caller can fall back to Qwen.
+        for attempt in (1, 2):
             req = urllib.request.Request(
                 url, data=data, headers={"Content-Type": "application/json"}
             )
@@ -71,10 +80,70 @@ class GeminiClient:
                     )
                 return parts[0]["text"]
             except urllib.error.HTTPError as exc:
+                if exc.code not in RETRYABLE_STATUS or attempt == 2:
+                    raise
+                print(f"    Gemini transient error {exc.code} — retrying once in {GEMINI_RETRY_DELAY}s...", flush=True)
+                time.sleep(GEMINI_RETRY_DELAY)
+
+
+class QwenClient:
+    """Alibaba DashScope Qwen via the OpenAI-compatible chat/completions endpoint."""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+        payload = {
+            "model": QWEN_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        url = f"{QWEN_API_BASE}/chat/completions"
+        data = json.dumps(payload).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        delays = [30, 60, 120]
+        for attempt, delay in enumerate(delays, 1):
+            req = urllib.request.Request(url, data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    result = json.loads(resp.read())
+                choice = result["choices"][0]
+                content = choice.get("message", {}).get("content")
+                if not content:
+                    raise RuntimeError(
+                        f"Qwen returned no content (finishReason={choice.get('finish_reason')})"
+                    )
+                return content
+            except urllib.error.HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == len(delays):
                     raise
-                print(f"    Gemini transient error {exc.code} — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
+                print(f"    Qwen transient error {exc.code} — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
                 time.sleep(delay)
+
+
+class LLMClient:
+    """Gemini as primary model, with automatic fallback to Qwen on failure."""
+
+    def __init__(self, gemini_api_key: str, qwen_api_key: str = ""):
+        self.gemini = GeminiClient(gemini_api_key)
+        self.qwen = QwenClient(qwen_api_key) if qwen_api_key else None
+
+    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+        try:
+            return self.gemini.generate(prompt, temperature=temperature, json_mode=json_mode)
+        except Exception as exc:
+            if self.qwen is None:
+                raise
+            reason = f"{exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            print(f"    Gemini failed ({reason}) — falling back to Qwen ({QWEN_MODEL})...", flush=True)
+            return self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode)
 
 
 # ── State persistence ────────────────────────────────────────────────────────
@@ -514,13 +583,15 @@ def main():
         sys.exit(1)
 
     try:
-        gemini = GeminiClient(GEMINI_API_KEY)
+        gemini = LLMClient(GEMINI_API_KEY, QWEN_API_KEY)
+        if not QWEN_API_KEY:
+            print("Note: QWEN_API_KEY not set — no fallback model available.", flush=True)
         criteria = load_criteria()
         tailoring_instructions = load_tailoring_instructions()
         base_tex = load_base_tex()
 
         print("Fetching jobs...", flush=True)
-        raw_jobs = fetch_jobs()
+        raw_jobs = fetch_jobs(verbose=True)
 
         if args.test:
             if not raw_jobs:

@@ -2313,7 +2313,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
         return []
 
     if verbose:
-        print("Scraping {} sources: {}...".format(len(selected), ", ".join(name for name, _ in selected)))
+        print("Scraping {} sources: {}...".format(len(selected), ", ".join(name for name, _ in selected)), flush=True)
 
     raw_jobs = []
     max_workers = min(MAX_WORKERS, len(selected))
@@ -2331,7 +2331,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
             raw_jobs.extend(jobs)
 
     if verbose:
-        print("Raw jobs collected: {}".format(len(raw_jobs)))
+        print("Raw jobs collected: {}".format(len(raw_jobs)), flush=True)
 
     filtered = run_pipeline(
         raw_jobs,
@@ -2340,7 +2340,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
     )
 
     if verbose:
-        print("After filtering: {}".format(len(filtered)))
+        print("After filtering: {}".format(len(filtered)), flush=True)
 
     return filtered
 
