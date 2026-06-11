@@ -33,8 +33,9 @@ CRITERIA_FILE = "criteria.md"
 CV_TAILORING_PROMPT_FILE = "cv_tailoring_prompt.md"
 BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
 
-GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 # ── Gemini client ────────────────────────────────────────────────────────────
 
@@ -70,9 +71,9 @@ class GeminiClient:
                     )
                 return parts[0]["text"]
             except urllib.error.HTTPError as exc:
-                if exc.code != 429 or attempt == len(delays):
+                if exc.code not in RETRYABLE_STATUS or attempt == len(delays):
                     raise
-                print(f"    Gemini rate limit — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
+                print(f"    Gemini transient error {exc.code} — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
                 time.sleep(delay)
 
 
