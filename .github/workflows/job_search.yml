@@ -47,6 +47,44 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_jobs.json 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "chore: update seen jobs state [skip ci]"
-          git push
+          git add seen_jobs.json
+          if git diff --cached --quiet; then
+            echo "No seen_jobs.json changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update seen jobs state [skip ci]"
+
+          # Push with retry: if another push landed on main meanwhile, the push
+          # is rejected. Rather than a textual rebase (which can corrupt the JSON
+          # array), rebuild seen_jobs.json as the set-union of our keys and the
+          # remote's, recommit on top of the remote tip, and retry.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}); merging remote seen_jobs.json and retrying..."
+            git fetch origin main
+            python3 - <<'PY'
+          import json, subprocess
+          def keys(ref):
+              r = subprocess.run(["git", "show", f"{ref}:seen_jobs.json"],
+                                 capture_output=True, text=True)
+              if r.returncode != 0 or not r.stdout.strip():
+                  return set()
+              return set(json.loads(r.stdout))
+          merged = sorted(keys("HEAD") | keys("origin/main"))
+          with open("/tmp/seen_union.json", "w") as f:
+              json.dump(merged, f, indent=2)
+          PY
+            git reset --hard origin/main
+            cp /tmp/seen_union.json seen_jobs.json
+            git add seen_jobs.json
+            if git diff --cached --quiet; then
+              echo "Remote already has all our keys; nothing to push."
+              exit 0
+            fi
+            git commit -m "chore: update seen jobs state [skip ci]"
+          done
+          echo "Failed to push seen_jobs.json after retries." >&2
+          exit 1
