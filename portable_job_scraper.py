@@ -1894,85 +1894,61 @@ class RelocateMeSource(BaseSource):
         return jobs
 
 
-class LandingJobsSource(BaseSource):
-    name = "landing.jobs"
-    BASE_URL = "https://landing.jobs"
-    SEARCH_URL = BASE_URL + "/jobs"
-    QUERIES = [
-        "ios OR macos OR swiftui OR uikit",
-        "objective-c OR appkit OR apple platform",
-    ]
-
-    def fetch(self, verbose=False):
-        jobs = []
-        for query in self.QUERIES:
-            params = {"q": query, "hd": "true", "page": "1"}
-            try:
-                status, text = http_request(self.SEARCH_URL, params=params)
-                if status != 200:
-                    if verbose:
-                        print("[landing.jobs] HTTP {} for query={!r}".format(status, query))
-                    continue
-                jobs.extend(
-                    parse_link_jobs(
-                        text,
-                        self.BASE_URL,
-                        ["/jobs/", "/at/"],
-                        self.name,
-                        default_remote=False,
-                    )
-                )
-            except Exception as exc:
-                if verbose:
-                    print("[landing.jobs] Error for query={!r}: {}".format(query, exc))
-                continue
-
-        jobs = dedup(jobs)
-        if verbose:
-            print("[landing.jobs] Fetched {} raw jobs".format(len(jobs)))
-        return jobs
-
-
 class SecretTelAvivSource(BaseSource):
+    # Cloudflare-fronted: returns 403 to stdlib urllib from datacenter IPs, so we
+    # drive a real headless Chromium via Playwright (verified to get HTTP 200).
+    # Skips automatically if Playwright/Chromium isn't installed.
     name = "secrettelaviv"
+    optional_dependency = "playwright"
     BASE_URL = "https://jobs.secrettelaviv.com"
     SEARCH_URL = BASE_URL + "/list/find/"
     QUERIES = ["ios", "swift", "macos", "mobile developer"]
-    HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    USER_AGENT = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 
     def fetch(self, verbose=False):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if verbose:
+                print("[secrettelaviv] Skipped: Playwright not installed")
+            return []
+
         jobs = []
-        for query in self.QUERIES:
-            try:
-                status, text = http_request(
-                    self.SEARCH_URL,
-                    params={"q": query},
-                    headers=self.HEADERS,
-                )
-                if status != 200:
-                    if verbose:
-                        print("[secrettelaviv] HTTP {} for query={!r}".format(status, query))
-                    continue
-                jobs.extend(
-                    parse_link_jobs(
-                        text,
-                        self.BASE_URL,
-                        ["/job/"],
-                        self.name,
-                        default_remote=False,
-                    )
-                )
-            except Exception as exc:
-                if verbose:
-                    print("[secrettelaviv] Error for query={!r}: {}".format(query, exc))
-                continue
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(user_agent=self.USER_AGENT, locale="en-US")
+                try:
+                    for query in self.QUERIES:
+                        url = build_url(self.SEARCH_URL, params={"q": query})
+                        page = context.new_page()
+                        try:
+                            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                            page.wait_for_timeout(3000)  # let any CF check settle
+                            html = page.content()
+                            jobs.extend(
+                                parse_link_jobs(
+                                    html,
+                                    self.BASE_URL,
+                                    ["/job/"],
+                                    self.name,
+                                    default_remote=False,
+                                )
+                            )
+                        except Exception as exc:
+                            if verbose:
+                                print("[secrettelaviv] Error for query={!r}: {}".format(query, exc))
+                        finally:
+                            page.close()
+                finally:
+                    browser.close()
+        except Exception as exc:
+            if verbose:
+                print("[secrettelaviv] Playwright error: {}".format(exc))
+            return dedup(jobs)
 
         jobs = dedup(jobs)
         if verbose:
@@ -2220,7 +2196,6 @@ ALL_SOURCES = {
     "themuse": TheMuseSource,
     "swissdevjobs": SwissDevJobsSource,
     "relocate.me": RelocateMeSource,
-    "landing.jobs": LandingJobsSource,
     "secrettelaviv": SecretTelAvivSource,
 }
 
@@ -2244,8 +2219,7 @@ SOURCE_DESCRIPTIONS = {
     "themuse": "The Muse remote jobs API.",
     "swissdevjobs": "SwissDevJobs RSS.",
     "relocate.me": "Relocate.me search pages, best effort with stdlib HTML parsing.",
-    "landing.jobs": "Landing.jobs search pages, best effort with stdlib HTML parsing.",
-    "secrettelaviv": "Secret Tel Aviv job board, Israel-focused English-speaking listings.",
+    "secrettelaviv": "Secret Tel Aviv (Cloudflare-fronted): Israel-focused English listings via Playwright/Chromium. Skips unless Playwright is installed.",
 }
 
 

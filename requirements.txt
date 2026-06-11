@@ -1,2 +1,5 @@
 # Optional: enables jobspy, linkedin-global, and linkedin-israel sources.
 python-jobspy
+# Optional: enables the secrettelaviv source (Cloudflare-fronted, needs a real
+# browser). Requires `python -m playwright install chromium` after pip install.
+playwright
