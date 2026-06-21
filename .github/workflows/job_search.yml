@@ -15,6 +15,16 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # Dedup state lives on its own orphan branch so it never clutters main.
+      - name: Checkout dedup state branch
+        uses: actions/checkout@v4
+        with:
+          ref: state
+          path: .state
+
+      - name: Load seen_jobs.json from state branch
+        run: cp .state/seen_jobs.json seen_jobs.json
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,10 +54,12 @@ jobs:
           CV_PHONE: ${{ secrets.CV_PHONE }}
         run: python3 -u pipeline.py
 
-      - name: Commit updated seen_jobs.json
+      - name: Persist seen_jobs.json to state branch
+        working-directory: .state
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp ../seen_jobs.json seen_jobs.json
           git add seen_jobs.json
           if git diff --cached --quiet; then
             echo "No seen_jobs.json changes to commit."
@@ -55,17 +67,17 @@ jobs:
           fi
           git commit -m "chore: update seen jobs state [skip ci]"
 
-          # Push with retry: if another push landed on main meanwhile, the push
+          # Push with retry: if another run pushed to state meanwhile, the push
           # is rejected. Rather than a textual rebase (which can corrupt the JSON
           # array), rebuild seen_jobs.json as the set-union of our keys and the
           # remote's, recommit on top of the remote tip, and retry.
           for attempt in 1 2 3 4 5; do
-            if git push; then
+            if git push origin HEAD:state; then
               echo "Pushed on attempt ${attempt}."
               exit 0
             fi
-            echo "Push rejected (attempt ${attempt}); merging remote seen_jobs.json and retrying..."
-            git fetch origin main
+            echo "Push rejected (attempt ${attempt}); merging remote state and retrying..."
+            git fetch origin state
             python3 - <<'PY'
           import json, subprocess
           def keys(ref):
@@ -74,11 +86,11 @@ jobs:
               if r.returncode != 0 or not r.stdout.strip():
                   return set()
               return set(json.loads(r.stdout))
-          merged = sorted(keys("HEAD") | keys("origin/main"))
+          merged = sorted(keys("HEAD") | keys("origin/state"))
           with open("/tmp/seen_union.json", "w") as f:
               json.dump(merged, f, indent=2)
           PY
-            git reset --hard origin/main
+            git reset --hard origin/state
             cp /tmp/seen_union.json seen_jobs.json
             git add seen_jobs.json
             if git diff --cached --quiet; then

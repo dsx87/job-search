@@ -66,8 +66,11 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `render_base_cv.py` | Renders the base CV to PDF (used by CI) |
-| `seen_jobs.json` | Dedupe state, committed by the daily run |
 | `.github/workflows/` | Daily cron + manual CV-render workflows |
+
+> Dedup state (`seen_jobs.json`) is **not** on `main` — the daily run reads it
+> from and commits it back to an orphan **`state`** branch, so the bot's
+> bookkeeping never clutters the project history.
 
 ## Running it
 
