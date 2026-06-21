@@ -304,6 +304,13 @@ def _compile_latex(tex_source: str) -> tuple:
             pdf_path = os.path.join(tmpdir, "cv.pdf")
             log_path = os.path.join(tmpdir, "cv.log")
 
+            # Inject the real phone number (kept out of the repo and out of the
+            # LLM prompt) only at compile time. When CV_PHONE is unset the token
+            # collapses to nothing, leaving no dangling separator.
+            phone = os.environ.get("CV_PHONE", "").strip()
+            phone_tex = f"\\enspace\\textbar\\enspace {phone}" if phone else ""
+            tex_source = tex_source.replace("((PHONE))", phone_tex)
+
             with open(tex_path, "w", encoding="utf-8") as f:
                 f.write(tex_source)
 

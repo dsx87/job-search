@@ -164,7 +164,7 @@ After delivering the PDF, write a short report:
 - **Name:** Igor Pivnyk
 - **Location:** Haifa, Israel
 - **Email:** consul87@gmail.com
-- **Phone:** [redacted]
+- **Phone:** injected at build time — keep the `((PHONE))` placeholder in the header verbatim; never substitute a real number.
 - **LinkedIn:** linkedin.com/in/igorpivnyk
 - **Job target:** Remote full-time iOS / macOS developer role
 - **Work preference:** Full-time employment only (no freelance)
@@ -379,8 +379,8 @@ Use this as your starting point. Modify only what needs to change for the specif
   {\large\color{midgray} Senior iOS / macOS Developer}\\[7pt]
   {\small\color{midgray}
     consul87@gmail.com
-    \enspace\textbar\enspace
-    [redacted]
+    %% Phone is injected at compile time from the CV_PHONE secret; empty by default.
+    ((PHONE))%
     \enspace\textbar\enspace
     Haifa, Israel
     \enspace\textbar\enspace

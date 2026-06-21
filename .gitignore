@@ -3,7 +3,10 @@
 
 # Unignore tracked files
 !.gitignore
+!README.md
+!LICENSE
 !portable_job_scraper.py
+!render_base_cv.py
 !criteria.md
 !cv_tailoring_prompt.md
 !igor_pivnyk_cv_base_updated.tex
