@@ -431,6 +431,42 @@ def _company_slug(company: str) -> str:
     return slug or "unknown"
 
 
+def fetch_job_text_from_url(url: str) -> str:
+    """Best-effort fetch of a job posting's text from a URL.
+
+    Returns plain text (HTML stripped, whitespace collapsed), or "" on any
+    failure (HTTP error, timeout, empty body). The caller decides whether the
+    result is usable or whether the user must fall back to pasting the text;
+    many job boards block CI IPs or require JS, so an empty return is expected.
+    """
+    from portable_job_scraper import strip_html
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,he;q=0.8",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            body = resp.read().decode(charset, errors="replace")
+    except Exception as exc:
+        print(f"    URL fetch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ""
+
+    # Drop the contents of script/style/head/noscript blocks first — strip_html
+    # only removes tags, not the CSS/JS text between them, which would otherwise
+    # flood the LLM prompt with markup noise.
+    body = re.sub(r"(?is)<(script|style|head|noscript)\b.*?</\1>", " ", body)
+    text = strip_html(body)
+    return " ".join(text.split())
+
+
 def _format_notification(job: dict, evaluation: dict) -> str:
     title = job.get("title", "Unknown Title")
     company = job.get("company", "Unknown Company")
@@ -522,6 +558,101 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
     return True
 
 
+# ── On-demand single-job tailoring ───────────────────────────────────────────
+
+# Minimum length the job description must reach before we trust it enough to
+# tailor against. Below this we assume the URL fetch failed (blocked/JS page)
+# and ask the user to paste the text instead, rather than emit a weak CV.
+MIN_JOB_TEXT_LEN = 200
+
+
+def tailor_single_job(client: "LLMClient", job: dict) -> None:
+    """Tailor + compile + Telegram-deliver a CV for one manually supplied job.
+
+    Reuses the same tailoring/compilation/delivery path as the scheduled
+    pipeline (see process_job). Does NOT touch seen_jobs.json — this is an
+    on-demand action, not part of dedup state.
+    """
+    title = job.get("title", "iOS Developer")
+    company = job.get("company", "the role")
+
+    print(f"  Tailoring CV for: {title} at {company}", flush=True)
+    tex_source = tailor_resume(client, load_tailoring_instructions(), load_base_tex(), job)
+
+    print("  Compiling PDF...", flush=True)
+    ok, pdf_bytes, final_tex = compile_with_fixes(client, tex_source)
+
+    header = (
+        f"<b>{title}</b>\n"
+        f"<b>{company}</b>" + (f" — {job['location']}" if job.get("location") else "") + "\n"
+        + (f'<a href="{job["url"]}">View posting</a>\n' if job.get("url") else "")
+        + "\n📄 Tailored CV attached."
+    )
+    if not ok:
+        header += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
+    _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, header)
+
+    slug = _company_slug(company)
+    if pdf_bytes:
+        _tg_send_document(
+            TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+            f"igor_pivnyk_cv_{slug}.pdf", pdf_bytes,
+            caption=f"Tailored CV — {title} at {company}",
+        )
+        print("  PDF sent to Telegram.", flush=True)
+    else:
+        _tg_send_document(
+            TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+            f"igor_pivnyk_cv_{slug}.tex", final_tex.encode("utf-8"),
+            caption=f"Tailored CV (LaTeX source) — {title} at {company}",
+        )
+        print("  LaTeX source sent to Telegram (compilation failed).", flush=True)
+
+
+def run_tailor(args) -> None:
+    """Entry point for `pipeline.py --tailor`: build one job dict, then tailor it."""
+    if not all([GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+        print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
+        sys.exit(1)
+
+    description = (args.job_text or "").strip()
+    if not description and args.url:
+        print(f"  Fetching job text from {args.url}", flush=True)
+        description = fetch_job_text_from_url(args.url)
+
+    if len(description) < MIN_JOB_TEXT_LEN:
+        print(
+            "Error: could not obtain enough job-description text "
+            f"(got {len(description)} chars, need >= {MIN_JOB_TEXT_LEN}).\n"
+            "The URL was likely blocked or requires JavaScript. Re-run and pass "
+            "the description directly via --job-text (paste fallback).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    company = (args.company or "").strip()
+    if not company and args.url:
+        host = urllib.parse.urlparse(args.url).netloc
+        company = host.replace("www.", "").split(".")[0] if host else ""
+
+    job = {
+        "title": (args.title or "iOS Developer").strip(),
+        "company": company or "the role",
+        "location": (args.location or "").strip(),
+        "url": (args.url or "").strip(),
+        "description": description,
+    }
+
+    try:
+        client = LLMClient(GEMINI_API_KEY, QWEN_API_KEY)
+        tailor_single_job(client, job)
+        print("Done.", flush=True)
+    except Exception as exc:
+        print(f"Fatal error: {exc}", file=sys.stderr)
+        _send_error_notification(exc)
+        raise
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def _send_error_notification(exc: Exception) -> None:
@@ -552,7 +683,24 @@ def main():
         action="store_true",
         help="Mark all currently fetched jobs as seen without evaluating. Resets the baseline.",
     )
+    parser.add_argument(
+        "--tailor",
+        action="store_true",
+        help="Tailor a CV for ONE manually supplied job and send it to Telegram. "
+             "Provide --url (auto-fetched) and/or --job-text (paste fallback). "
+             "Does not touch seen_jobs.json.",
+    )
+    parser.add_argument("--url", default="", help="Job posting URL (used with --tailor).")
+    parser.add_argument("--job-text", dest="job_text", default="",
+                        help="Job description text, pasted directly (used with --tailor).")
+    parser.add_argument("--title", default="", help="Job title (used with --tailor).")
+    parser.add_argument("--company", default="", help="Company name (used with --tailor).")
+    parser.add_argument("--location", default="", help="Job location (used with --tailor).")
     args = parser.parse_args()
+
+    if args.tailor:
+        run_tailor(args)
+        return
 
     if args.seed:
         raw_jobs = fetch_jobs(verbose=True)

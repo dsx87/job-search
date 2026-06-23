@@ -66,7 +66,7 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `render_base_cv.py` | Renders the base CV to PDF (used by CI) |
-| `.github/workflows/` | Daily cron + manual CV-render workflows |
+| `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
 
 > Dedup state (`seen_jobs.json`) is **not** on `main` — the daily run reads it
 > from and commits it back to an orphan **`state`** branch, so the bot's
@@ -86,6 +86,22 @@ export CV_PHONE=...             # optional — phone injected into the CV at bui
 pip install -r requirements.txt
 python -m playwright install chromium   # for the Playwright-backed source
 python3 pipeline.py
+```
+
+### Tailor a CV on demand
+
+Besides the daily run, the **Tailor CV** workflow (Actions tab → *Run workflow*,
+or `.github/workflows/tailor_cv.yml`) tailors a résumé for one specific job and
+sends the PDF to Telegram. Give it a job **URL** (auto-fetched) and/or paste the
+**job text**; if the URL is blocked or JavaScript-rendered the run fails with a
+clear message and you re-run with the text pasted. Same engine as the pipeline —
+Gemini/Qwen tailoring, xelatex compile, `CV_PHONE` injected at build time.
+
+```bash
+# Locally (needs the same env vars as above + a TeX install for the PDF):
+python3 pipeline.py --tailor --url "https://…"            # auto-fetch
+python3 pipeline.py --tailor --job-text "$(pbpaste)" \
+  --title "Senior iOS Developer" --company "Acme"          # paste fallback
 ```
 
 ## Privacy

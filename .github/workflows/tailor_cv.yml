@@ -1,0 +1,72 @@
+name: Tailor CV
+
+# Manually tailor a CV for ONE specific job posting and deliver it to Telegram.
+# Reuses the same Gemini/Qwen tailoring + xelatex compile path as the daily
+# pipeline (no Anthropic API). The phone number is injected at compile time
+# from the CV_PHONE secret and never enters the repo.
+#
+# Provide a URL (the action tries to fetch it) and/or paste the job text. If the
+# URL is blocked or needs JavaScript, the fetch yields too little text and the
+# run fails with a clear message — re-run with the job text pasted instead.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Job posting URL (auto-fetched; leave blank if pasting text)"
+        required: false
+        default: ""
+      job_text:
+        description: "Job description text (paste fallback when the URL can't be fetched)"
+        required: false
+        default: ""
+      title:
+        description: "Job title (optional)"
+        required: false
+        default: ""
+      company:
+        description: "Company name (optional)"
+        required: false
+        default: ""
+      location:
+        description: "Job location (optional)"
+        required: false
+        default: ""
+
+jobs:
+  tailor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install LaTeX
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            texlive-xetex \
+            texlive-latex-extra \
+            fonts-crosextra-carlito
+
+      - name: Tailor CV and send to Telegram
+        env:
+          PYTHONUNBUFFERED: "1"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          CV_PHONE: ${{ secrets.CV_PHONE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 -u pipeline.py --tailor \
+            --url "${{ inputs.url }}" \
+            --job-text "${{ inputs.job_text }}" \
+            --title "${{ inputs.title }}" \
+            --company "${{ inputs.company }}" \
+            --location "${{ inputs.location }}"
