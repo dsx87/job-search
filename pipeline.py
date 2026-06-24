@@ -11,6 +11,7 @@ First run (no seen_jobs.json): jobs posted within 7 days are evaluated normally;
 older jobs are silently marked seen.
 """
 
+import concurrent.futures
 import datetime
 import json
 import os
@@ -18,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -42,8 +44,17 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # keeps failing with a transient error (e.g. 503 overloaded) after one retry.
 QWEN_MODEL = "qwen-plus"
 QWEN_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-# Seconds to wait before the single Gemini retry on a transient error.
-GEMINI_RETRY_DELAY = 10
+
+# Status codes that trip the Gemini circuit-breaker: once Gemini returns one of
+# these, we stop using Gemini for the rest of the run and switch to Qwen.
+# 429 = rate limit (your quota); 503 = backend overloaded (Google's side).
+GEMINI_CIRCUIT_BREAK_STATUS = {429, 503}
+
+# Concurrency for the staged pipeline. Evaluation is Gemini-bound (paid tier, high
+# limits) so it parallelizes freely; tailoring also compiles LaTeX, which is
+# CPU-bound on the few-core CI runner, so keep that pool smaller. Both easy to tune.
+EVAL_WORKERS = 8
+TAILOR_WORKERS = 4
 
 # ── Gemini client ────────────────────────────────────────────────────────────
 
@@ -62,28 +73,22 @@ class GeminiClient:
         url = f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent?key={self.api_key}"
         data = json.dumps(payload).encode()
 
-        # Try once, retry a single time on a transient error (e.g. 503 overloaded),
-        # then give up so the caller can fall back to Qwen.
-        for attempt in (1, 2):
-            req = urllib.request.Request(
-                url, data=data, headers={"Content-Type": "application/json"}
+        # Single attempt — no retry, no backoff sleep. Errors propagate to
+        # LLMClient, whose circuit-breaker decides whether to disable Gemini
+        # (on 429/503) and switch to Qwen.
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            result = json.loads(resp.read())
+        candidate = result["candidates"][0]
+        finish_reason = candidate.get("finishReason", "UNKNOWN")
+        parts = candidate.get("content", {}).get("parts")
+        if not parts:
+            raise RuntimeError(
+                f"Gemini returned no content (finishReason={finish_reason})"
             )
-            try:
-                with urllib.request.urlopen(req, timeout=90) as resp:
-                    result = json.loads(resp.read())
-                candidate = result["candidates"][0]
-                finish_reason = candidate.get("finishReason", "UNKNOWN")
-                parts = candidate.get("content", {}).get("parts")
-                if not parts:
-                    raise RuntimeError(
-                        f"Gemini returned no content (finishReason={finish_reason})"
-                    )
-                return parts[0]["text"]
-            except urllib.error.HTTPError as exc:
-                if exc.code not in RETRYABLE_STATUS or attempt == 2:
-                    raise
-                print(f"    Gemini transient error {exc.code} — retrying once in {GEMINI_RETRY_DELAY}s...", flush=True)
-                time.sleep(GEMINI_RETRY_DELAY)
+        return parts[0]["text"]
 
 
 class QwenClient:
@@ -129,21 +134,87 @@ class QwenClient:
 
 
 class LLMClient:
-    """Gemini as primary model, with automatic fallback to Qwen on failure."""
+    """Gemini as primary model, with a circuit-breaker fallback to Qwen.
+
+    On the first Gemini 429 (rate limit) or 503 (backend overloaded), Gemini is
+    disabled for the rest of the run and every subsequent request goes straight
+    to Qwen — we don't keep hammering a limited/overloaded endpoint. Other Gemini
+    errors (network, 500, etc.) fall back to Qwen per-request without disabling
+    Gemini. Thread-safe: the eval/tailor stages call this from worker threads.
+    """
 
     def __init__(self, gemini_api_key: str, qwen_api_key: str = ""):
         self.gemini = GeminiClient(gemini_api_key)
         self.qwen = QwenClient(qwen_api_key) if qwen_api_key else None
+        self._lock = threading.Lock()
+        self._gemini_disabled = False
+        self._gemini_disabled_reason = ""
+        self._gemini_calls = 0   # successful Gemini responses
+        self._qwen_calls = 0     # requests served by Qwen
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+        with self._lock:
+            disabled = self._gemini_disabled
+        if disabled:
+            return self._use_qwen(prompt, temperature, json_mode)
+
         try:
-            return self.gemini.generate(prompt, temperature=temperature, json_mode=json_mode)
-        except Exception as exc:
+            result = self.gemini.generate(prompt, temperature=temperature, json_mode=json_mode)
+            with self._lock:
+                self._gemini_calls += 1
+            return result
+        except urllib.error.HTTPError as exc:
+            if exc.code in GEMINI_CIRCUIT_BREAK_STATUS:
+                self._disable_gemini(exc.code)
+                return self._use_qwen(prompt, temperature, json_mode)
+            # Other HTTP errors: per-request fallback, Gemini stays enabled.
             if self.qwen is None:
                 raise
-            reason = f"{exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
-            print(f"    Gemini failed ({reason}) — falling back to Qwen ({QWEN_MODEL})...", flush=True)
-            return self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode)
+            print(f"    Gemini HTTP {exc.code} — falling back to Qwen for this request...", flush=True)
+            return self._use_qwen(prompt, temperature, json_mode)
+        except Exception as exc:
+            # Non-HTTP error (timeout, connection reset, malformed body): per-request fallback.
+            if self.qwen is None:
+                raise
+            print(f"    Gemini error ({type(exc).__name__}) — falling back to Qwen for this request...", flush=True)
+            return self._use_qwen(prompt, temperature, json_mode)
+
+    def _use_qwen(self, prompt: str, temperature: float, json_mode: bool) -> str:
+        if self.qwen is None:
+            raise RuntimeError(
+                f"Gemini unavailable ({self._gemini_disabled_reason or 'error'}) and no Qwen fallback configured."
+            )
+        with self._lock:
+            self._qwen_calls += 1
+        return self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode)
+
+    def _disable_gemini(self, code: int) -> None:
+        label = {
+            429: "429 RESOURCE_EXHAUSTED (rate limit — your quota)",
+            503: "503 UNAVAILABLE (backend overloaded — Google's side)",
+        }.get(code, str(code))
+        with self._lock:
+            # Only the first thread to trip the breaker logs it.
+            if self._gemini_disabled:
+                return
+            self._gemini_disabled = True
+            self._gemini_disabled_reason = label
+            served = self._gemini_calls
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        print(
+            f"    [LLM] {stamp} Gemini {label} after {served} successful call(s) this run "
+            f"— disabling Gemini, switching to Qwen ({QWEN_MODEL}) for the rest of the run.",
+            flush=True,
+        )
+
+    def usage_summary(self) -> str:
+        with self._lock:
+            gemini, qwen = self._gemini_calls, self._qwen_calls
+            reason = self._gemini_disabled_reason
+        line = f"[LLM] Usage this run — Gemini: {gemini}, Qwen: {qwen}."
+        if reason:
+            line += f" Gemini was disabled mid-run ({reason}) — consider adjusting limits."
+        return line
 
 
 # ── State persistence ────────────────────────────────────────────────────────
@@ -491,24 +562,18 @@ def _format_notification(job: dict, evaluation: dict) -> str:
 
 # ── Job processing ───────────────────────────────────────────────────────────
 
-def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str, base_tex: str, job: dict) -> bool:
+def prepare_fit(gemini: GeminiClient, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
     """
-    Returns True if a notification was sent (job was a fit).
-    Raises on errors that warrant a retry next run (evaluation failure, Telegram send failure).
-    Tailoring/compilation failures are soft — we fall back to no CV or raw .tex.
+    Tailor + compile the CV for a job already judged a fit, and assemble the
+    Telegram send-payload. Performs NO Telegram I/O — pure preparation, so it is
+    safe to run concurrently across jobs. Tailoring/compilation failures are soft:
+    we fall back to raw .tex or no document.
+
+    Returns a payload dict consumed by send_fit().
     """
     title = job.get("title", "?")
     company = job.get("company", "?")
-    print(f"  Evaluating: {title} at {company}", flush=True)
-
-    # Let evaluation errors propagate — caller will not mark the job as seen.
-    evaluation = evaluate_job(gemini, criteria, job)
-
-    if not evaluation.get("fit"):
-        print(f"    Skip — {evaluation.get('reason', '')}")
-        return False
-
-    print(f"    Fit! Tailoring resume...", flush=True)
+    print(f"    Fit! Tailoring resume: {title} at {company}", flush=True)
 
     tex_source = None
     try:
@@ -520,22 +585,43 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
     final_tex = tex_source
     compilation_failed = False
     if tex_source:
-        print(f"    Compiling PDF...", flush=True)
+        print(f"    Compiling PDF: {title} at {company}...", flush=True)
         ok, pdf_bytes, final_tex = compile_with_fixes(gemini, tex_source)
         if ok:
-            print(f"    PDF compiled successfully.", flush=True)
+            print(f"    PDF compiled successfully: {title} at {company}.", flush=True)
         else:
             compilation_failed = True
-            print(f"    PDF compilation failed after all attempts — will send .tex as fallback.", flush=True)
+            print(f"    PDF compilation failed after all attempts ({title} at {company}) — will send .tex as fallback.", flush=True)
 
     message = _format_notification(job, evaluation)
     if compilation_failed:
         message += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
 
+    return {
+        "title": title,
+        "company": company,
+        "message": message,
+        "pdf_bytes": pdf_bytes,
+        "final_tex": final_tex,
+    }
+
+
+def send_fit(payload: dict) -> None:
+    """
+    Send a prepared fit to Telegram: the notification message, then the tailored
+    CV document (PDF, or .tex fallback). Raises if the message send fails so the
+    caller can leave the job unseen for a retry next run; document-send failures
+    are soft (logged, not raised).
+    """
+    title = payload["title"]
+    company = payload["company"]
+
     # Let Telegram message errors propagate — caller will not mark the job as seen.
-    _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
+    _tg_send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, payload["message"])
 
     slug = _company_slug(company)
+    pdf_bytes = payload.get("pdf_bytes")
+    final_tex = payload.get("final_tex")
     if pdf_bytes:
         try:
             _tg_send_document(
@@ -554,6 +640,31 @@ def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str
             )
         except Exception as exc:
             print(f"    Telegram document error: {exc}", file=sys.stderr)
+
+
+def process_job(gemini: GeminiClient, criteria: str, tailoring_instructions: str, base_tex: str, job: dict) -> bool:
+    """
+    Evaluate → tailor → compile → send a single job end-to-end.
+    Returns True if a notification was sent (job was a fit).
+    Raises on errors that warrant a retry next run (evaluation failure, Telegram send failure).
+    Tailoring/compilation failures are soft — we fall back to no CV or raw .tex.
+
+    Thin wrapper over evaluate_job/prepare_fit/send_fit, kept for --test mode.
+    """
+    title = job.get("title", "?")
+    company = job.get("company", "?")
+    print(f"  Evaluating: {title} at {company}", flush=True)
+
+    # Let evaluation errors propagate — caller will not mark the job as seen.
+    evaluation = evaluate_job(gemini, criteria, job)
+
+    if not evaluation.get("fit"):
+        print(f"    Skip — {evaluation.get('reason', '')}")
+        return False
+
+    payload = prepare_fit(gemini, tailoring_instructions, base_tex, job, evaluation)
+    send_fit(payload)
+    return True
 
     return True
 
@@ -790,23 +901,84 @@ def main():
         save_seen_jobs(seen)
         print(f"Found {len(new_jobs)} new job(s).", flush=True)
 
-        fits = 0
-        for key, tc_key, job in new_jobs:
+        # ── Stage 2: Evaluate all new jobs concurrently ──────────────────────
+        # Gemini calls are independent and the client is stateless, so we fan out
+        # across a thread pool. seen-set mutation stays on this (main) thread as
+        # results arrive — no locks needed.
+        fits = []  # list of (key, tc_key, job, evaluation) for jobs judged a fit
+        if new_jobs:
+            print(f"Evaluating {len(new_jobs)} job(s) with {EVAL_WORKERS} workers...", flush=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=EVAL_WORKERS) as pool:
+                future_to_job = {
+                    pool.submit(evaluate_job, gemini, criteria, job): (key, tc_key, job)
+                    for key, tc_key, job in new_jobs
+                }
+                for future in concurrent.futures.as_completed(future_to_job):
+                    key, tc_key, job = future_to_job[future]
+                    try:
+                        evaluation = future.result()
+                    except Exception as exc:
+                        # Evaluation failed — leave unseen so it retries next run.
+                        print(
+                            f"  Error evaluating '{job.get('title')}' — will retry next run: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if evaluation.get("fit"):
+                        fits.append((key, tc_key, job, evaluation))
+                    else:
+                        # Not a fit: mark seen so it won't be reprocessed.
+                        print(f"    Skip '{job.get('title')}' — {evaluation.get('reason', '')}")
+                        seen.add(key)
+                        seen.add(tc_key)
+        # Persist the non-fits captured above in one write.
+        save_seen_jobs(seen)
+        print(f"{len(fits)} fit(s) to tailor.", flush=True)
+
+        # ── Stage 3: Tailor + compile the fits concurrently ──────────────────
+        # Tailoring is Gemini-bound and compilation is CPU-bound; a smaller pool
+        # keeps parallel xelatex runs from starving the runner. No Telegram I/O
+        # happens here, so order doesn't matter and failures stay soft.
+        prepared = []  # list of (key, tc_key, payload) ready to send
+        if fits:
+            print(f"Tailoring {len(fits)} CV(s) with {TAILOR_WORKERS} workers...", flush=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=TAILOR_WORKERS) as pool:
+                future_to_fit = {
+                    pool.submit(prepare_fit, gemini, tailoring_instructions, base_tex, job, evaluation): (key, tc_key, job)
+                    for key, tc_key, job, evaluation in fits
+                }
+                for future in concurrent.futures.as_completed(future_to_fit):
+                    key, tc_key, job = future_to_fit[future]
+                    try:
+                        payload = future.result()
+                    except Exception as exc:
+                        # prepare_fit swallows tailoring/compile errors internally,
+                        # so this is unexpected — leave unseen to retry next run.
+                        print(
+                            f"  Error preparing '{job.get('title')}' — will retry next run: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    prepared.append((key, tc_key, payload))
+
+        # ── Stage 4: Send to Telegram sequentially ───────────────────────────
+        # Sequential to preserve message order and stay polite to the Telegram API.
+        # A successful send marks the job seen; a failed send leaves it for retry.
+        sent = 0
+        for key, tc_key, payload in prepared:
             try:
-                if process_job(gemini, criteria, tailoring_instructions, base_tex, job):
-                    fits += 1
-                # Success (fit or not-fit): mark seen so it won't be reprocessed.
+                send_fit(payload)
+                sent += 1
                 seen.add(key)
                 seen.add(tc_key)
                 save_seen_jobs(seen)
             except Exception as exc:
                 print(
-                    f"  Error processing '{job.get('title')}' — will retry next run: {exc}",
+                    f"  Error sending '{payload.get('title')}' — will retry next run: {exc}",
                     file=sys.stderr,
                 )
-            time.sleep(1)
 
-        if fits == 0:
+        if sent == 0:
             noun = "new posting" if len(new_jobs) == 1 else "new postings"
             msg = (
                 f"✅ Job search complete — {len(new_jobs)} {noun} checked, "
@@ -817,6 +989,7 @@ def main():
             except Exception as exc:
                 print(f"Telegram notification error: {exc}", file=sys.stderr)
 
+        print(gemini.usage_summary(), flush=True)
         print("Done.", flush=True)
 
     except Exception as exc:
