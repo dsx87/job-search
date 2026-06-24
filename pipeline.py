@@ -50,11 +50,15 @@ QWEN_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 # 429 = rate limit (your quota); 503 = backend overloaded (Google's side).
 GEMINI_CIRCUIT_BREAK_STATUS = {429, 503}
 
-# Concurrency for the staged pipeline. Evaluation is Gemini-bound (paid tier, high
-# limits) so it parallelizes freely; tailoring also compiles LaTeX, which is
-# CPU-bound on the few-core CI runner, so keep that pool smaller. Both easy to tune.
-EVAL_WORKERS = 8
-TAILOR_WORKERS = 4
+# Concurrency for the staged pipeline. Both stages are dominated by LLM network
+# wait, not CPU: a tailor job makes several sequential model calls (generate +
+# corrective retry + LaTeX fixes) and only brief (~1-2s) xelatex bursts, so a
+# larger tailor pool mostly overlaps I/O rather than starving the runner's cores.
+# More workers cut total run time (fewer waves); they do NOT speed up any single
+# job — a job stuck in the Qwen fallback backoff (30/60/120s) is slow regardless.
+# Override per run via the EVAL_WORKERS / TAILOR_WORKERS env vars.
+EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", "12"))
+TAILOR_WORKERS = int(os.environ.get("TAILOR_WORKERS", "8"))
 
 # ── Gemini client ────────────────────────────────────────────────────────────
 
