@@ -7,7 +7,10 @@ on:
 
 jobs:
   search:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
+    # ubuntu-latest has no 15-min execution cap (unlike the ubuntu-slim runner);
+    # this generous timeout just guards against a hung run burning Actions minutes.
+    timeout-minutes: 30
     permissions:
       contents: write
 
