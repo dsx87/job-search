@@ -301,8 +301,65 @@ Decide whether this job fits Igor's criteria. Return a JSON object with exactly 
     return result
 
 
+# Fixed reverse-chronological order of the four real jobs (matched as substrings
+# of each \jobheader{...} company field). The model must never reorder these.
+EXPECTED_JOB_ORDER = ["Check Point", "Applitools", "Shutterfly", "CNOGA"]
+
+# Industries/domains Igor has never worked in, plus skills/frameworks the master
+# profile says to never claim. Any of these appearing in a tailored CV is a
+# fabrication (e.g. "consumer banking" injected because the employer is a bank).
+FORBIDDEN_TERM_PATTERNS = [
+    r"banking", r"\bbank\b", r"fintech", r"financial services",
+    r"insurance", r"e-?commerce", r"\bgaming\b", r"advertising",
+    r"StoreKit", r"WidgetKit", r"SwiftData", r"HealthKit", r"\bFDA\b", r"HIPAA",
+]
+
+
+def validate_tailored_cv(tex: str) -> list:
+    """Return a list of human-readable constraint violations (empty == clean).
+
+    Catches the two failure modes the prompt alone can't guarantee: jobs
+    reordered out of fixed reverse-chronological order, and fabricated
+    industries/domains or never-claim skills.
+    """
+    violations = []
+
+    # 1. Job order — extract \jobheader company fields in document order, keep
+    #    only the four work entries (the Education jobheader matches none), and
+    #    verify their relative order matches EXPECTED_JOB_ORDER.
+    headers = re.findall(r"\\jobheader\{([^}]*)\}", tex)
+    seen_order = []
+    for company in headers:
+        for key in EXPECTED_JOB_ORDER:
+            if key.lower() in company.lower():
+                seen_order.append(key)
+                break
+    missing = [k for k in EXPECTED_JOB_ORDER if k not in seen_order]
+    if missing:
+        violations.append(f"missing job(s) from timeline: {', '.join(missing)}")
+    elif seen_order != EXPECTED_JOB_ORDER:
+        violations.append(
+            f"jobs out of order: got {' → '.join(seen_order)}, "
+            f"expected {' → '.join(EXPECTED_JOB_ORDER)}"
+        )
+
+    # 2. Forbidden domains / never-claim skills.
+    for pattern in FORBIDDEN_TERM_PATTERNS:
+        m = re.search(pattern, tex, re.IGNORECASE)
+        if m:
+            violations.append(f"forbidden term present: '{m.group(0)}'")
+
+    return violations
+
+
 def tailor_resume(client: GeminiClient, tailoring_instructions: str, base_tex: str, job: dict) -> str:
-    """Returns tailored LaTeX source (code fences stripped)."""
+    """Returns tailored LaTeX source (code fences stripped).
+
+    Generates at temperature 0.0 for factual stability, then runs a
+    deterministic guard (validate_tailored_cv). On violations it regenerates
+    once with a corrective instruction; if the second pass still fails, it logs
+    the remaining violations and returns the best attempt.
+    """
     job_text = (
         f"Title: {job.get('title', '')}\n"
         f"Company: {job.get('company', '')}\n"
@@ -328,8 +385,32 @@ no explanation before or after.
 
 {job_text}
 """
-    raw = client.generate(prompt, temperature=0.2)
-    return _strip_latex_fences(raw)
+    tex = _strip_latex_fences(client.generate(prompt, temperature=0.0))
+    violations = validate_tailored_cv(tex)
+    if not violations:
+        return tex
+
+    print(f"    CV guard caught violations: {'; '.join(violations)} — regenerating once.", flush=True)
+    corrective = prompt + f"""
+
+## CORRECTION REQUIRED
+
+Your previous attempt violated these hard constraints:
+{chr(10).join(f"- {v}" for v in violations)}
+
+Regenerate the complete LaTeX file fixing exactly these issues. The four jobs must appear in this \
+fixed order: {' → '.join(EXPECTED_JOB_ORDER)}. Do not claim any industry/domain or skill Igor does \
+not have. Output raw LaTeX only.
+"""
+    tex2 = _strip_latex_fences(client.generate(corrective, temperature=0.0))
+    remaining = validate_tailored_cv(tex2)
+    if remaining:
+        print(
+            f"    CV guard: violations persist after retry: {'; '.join(remaining)} — "
+            f"delivering best attempt, REVIEW BEFORE SENDING.",
+            file=sys.stderr,
+        )
+    return tex2
 
 
 def _strip_latex_fences(text: str) -> str:

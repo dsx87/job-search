@@ -53,7 +53,12 @@ If fit is GOOD or PARTIAL, produce a tailored version of the LaTeX CV by followi
 ### Tailoring rules:
 
 **Professional Summary:**
-Rewrite the summary (3–5 sentences) to mirror the language of the job posting. If the job emphasizes security → lead with Check Point experience. If it emphasizes consumer apps → lead with Shutterfly. If it emphasizes SDK/tooling → lead with Applitools. Always keep it truthful — only claim what is in the master profile.
+Rewrite the summary (3–5 sentences) to **emphasize and reorder** the parts of Igor's real background that match the job. If the job emphasizes security → lead with Check Point experience. If it emphasizes consumer apps → lead with Shutterfly. If it emphasizes SDK/tooling → lead with Applitools.
+
+Strict bounds — the summary is a re-emphasis of facts, NOT a rewrite to match the employer:
+- The domains Igor has worked in are fixed: **cybersecurity, medical devices, consumer apps, and developer tooling**. You may reorder or emphasize these, but you may **NEVER** substitute, rename, or add a domain to match the employer's industry. For example, if the job is at a bank, you must NOT change "consumer apps" to "consumer banking" or claim any banking/fintech experience — Igor has none.
+- You may borrow the job posting's terminology **only** for technologies and skills Igor actually has (per the master profile). Never borrow industry/domain language he has no experience in.
+- Always keep it truthful — only claim what is in the master profile.
 
 **Experience bullets:**
 - Reorder bullets within each job to put the most relevant ones first
@@ -67,11 +72,19 @@ Rewrite the summary (3–5 sentences) to mirror the language of the job posting.
 - Remove or de-emphasize skills the job clearly doesn't care about, to reduce noise
 - NEVER add a skill that is marked "Do NOT claim" in the master profile
 
-**Job order:**
-Always keep jobs in reverse-chronological order (most recent first). Do not reorder jobs.
+**Job order (MANDATORY — do not deviate):**
+The four jobs MUST appear top-to-bottom in exactly this fixed reverse-chronological order:
+1. Check Point Software Technologies
+2. Applitools
+3. Shutterfly Inc.
+4. CNOGA Medical
+
+Never move a job because it seems more or less relevant to the posting. The "reorder" instructions in this prompt apply **ONLY** to bullets *within* a single job and to skill rows — they **NEVER** apply to the jobs themselves. Do not reorder, move, or omit any of the four jobs.
 
 **What you may NOT do:**
 - Invent any metric, percentage, or number not present in the master profile
+- Claim experience in any industry or domain not in the master profile — banking, fintech, financial services, insurance, e-commerce, gaming, advertising, etc. — **even if the target company is in that industry**. Igor's only domains are cybersecurity, medical devices, consumer apps, and developer tooling.
+- Reorder, move, or omit any of the four jobs — the order is fixed (Check Point → Applitools → Shutterfly → CNOGA)
 - Add any skill from the "Do NOT claim" list (StoreKit, WidgetKit, CoreLocation expertise, FDA compliance, Java/Python proficiency, etc.)
 - Claim fully remote work history — Igor has not held a fully remote role
 - Add "Senior" to the CNOGA job title
@@ -269,6 +282,7 @@ NOTE: "iOS Developer" title only — do NOT add "Senior" to this role.
 - C, Java, Python — basic level only. Do NOT list as proficiencies
 
 **DO NOT CLAIM UNDER ANY CIRCUMSTANCES:**
+- Experience in any industry/domain Igor hasn't worked in — banking, fintech, financial services, insurance, e-commerce, gaming, advertising, etc. Do not insert these to match the target employer. His only domains are cybersecurity, medical devices, consumer apps, and developer tooling.
 - StoreKit / In-App Purchase (hobby project only, not production)
 - WidgetKit (no hands-on)
 - App Extensions (conceptual only)
