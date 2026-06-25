@@ -63,7 +63,7 @@ Strict bounds — the summary is a re-emphasis of facts, NOT a rewrite to match 
 **Experience bullets:**
 - Reorder bullets within each job to put the most relevant ones first
 - You may rephrase bullets to use the job posting's terminology, as long as the meaning stays true
-- You may omit less-relevant bullets if space is tight — but never omit an entire job from the timeline
+- **The final PDF MUST be exactly one page.** If tailored content would exceed one page, omit the lowest-relevance bullets (never an entire job from the timeline) until it fits. Never allow a second page.
 - Do NOT add new bullets that aren't based on facts in the master profile
 
 **Skills section:**
@@ -97,6 +97,8 @@ Never move a job because it seems more or less relevant to the posting. The "reo
 ## STEP 4 — Produce the LaTeX file
 
 Write the complete, compilable LaTeX source for the tailored CV. Start from the base template below and apply your changes. Output the entire `.tex` file — do not summarize or truncate it.
+
+**One-page hard rule:** The compiled PDF MUST be exactly one page. The base template is tuned to fit one page; preserve its density settings (font size, margins, spacing) and do not loosen them. If your tailored content spills onto a second page, omit the lowest-relevance bullets (never an entire job) until it fits on a single page. Never deliver a two-page CV.
 
 ### LaTeX template notes (important for correct compilation):
 - Compile with: `xelatex`
@@ -191,7 +193,7 @@ After delivering the PDF, write a short report:
 Product: Harmony SASE — enterprise VPN and network security client for macOS and iOS
 
 Confirmed achievements:
-- Designed and delivered **WiFi Security Suppression** feature: VPN intelligently suppresses connection on trusted WiFi networks. Created the technical epic, owned implementation end-to-end
+- Designed and delivered **Trusted Network Detection** feature: VPN automatically suppresses connection on trusted networks. Created the technical epic, owned implementation end-to-end
 - Built **unified cross-platform logging** across Windows, macOS, and Linux clients: standardized log filenames, verbosity levels, and log-rotation rules across platforms; implemented remote runtime reconfiguration of logging settings
 - Led **architectural refactor**: replaced CLI calls with direct API calls across the codebase — created the epic, executed migration, improved app stability and maintainability
 - **Restored dropped iOS platform support**: diagnosed customer-reported issues through deep git archaeology, CI pipeline changes, and TestFlight distribution — full end-to-end ownership
@@ -324,8 +326,10 @@ Use this as your starting point. Modify only what needs to change for the specif
 ```latex
 %% Igor Pivnyk — CV
 %% Compile with: xelatex
+%% GUARD: This CV MUST fit on a single page. Keep density settings (font, margins,
+%% spacing) as tuned below; do not loosen them.
 
-\documentclass[10.5pt, a4paper]{article}
+\documentclass[9.5pt, a4paper]{article}
 
 \usepackage{fontspec}
 \usepackage{geometry}
@@ -340,8 +344,8 @@ Use this as your starting point. Modify only what needs to change for the specif
 
 \geometry{
   a4paper,
-  top=1.3cm,
-  bottom=1.3cm,
+  top=0.8cm,
+  bottom=0.6cm,
   left=1.8cm,
   right=1.8cm
 }
@@ -360,13 +364,14 @@ Use this as your starting point. Modify only what needs to change for the specif
   {\bfseries\large\color{navy}}
   {}{0em}{}
   [\vspace{1pt}{\color{navy}\hrule height 0.9pt}\vspace{2pt}]
-\titlespacing*{\section}{0pt}{10pt}{4pt}
+\titlespacing*{\section}{0pt}{2pt}{1pt}
 
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0pt}
+\setstretch{0.90}
 
 \newcommand{\jobheader}[4]{%
-  \vspace{5pt}%
+  \vspace{1pt}%
   \noindent
   \begin{tabularx}{\textwidth}{@{}Xr@{}}
     {\bfseries\color{black} #1} & {\small\color{midgray} #4} \\[-2pt]
@@ -377,20 +382,20 @@ Use this as your starting point. Modify only what needs to change for the specif
 
 \setlist[itemize]{
   leftmargin=1.4em,
-  itemsep=1.5pt,
-  topsep=3pt,
+  itemsep=0.5pt,
+  topsep=1pt,
   parsep=0pt,
   label={\small\textbullet}
 }
 
-\renewcommand{\arraystretch}{1.35}
+\renewcommand{\arraystretch}{1.0}
 
 \begin{document}
 
 % HEADER
 \begin{center}
-  {\fontsize{28}{32}\selectfont\bfseries\color{navy} Igor Pivnyk}\\[5pt]
-  {\large\color{midgray} Senior iOS / macOS Developer}\\[7pt]
+  {\fontsize{24}{28}\selectfont\bfseries\color{navy} Igor Pivnyk}\\[3pt]
+  {\large\color{midgray} Senior iOS / macOS Developer}\\[4pt]
   {\small\color{midgray}
     consul87@gmail.com
     %% Phone is injected at compile time from the CV_PHONE secret; empty by default.
@@ -402,20 +407,19 @@ Use this as your starting point. Modify only what needs to change for the specif
   }
 \end{center}
 
-\vspace{2pt}
+\vspace{1pt}
 {\color{navy}\hrule height 1.4pt}
-\vspace{6pt}
+\vspace{4pt}
 
 % SUMMARY — rewrite this section for each job posting
 \section{Professional Summary}
 
-Senior iOS and macOS engineer with 9+ years of experience shipping production software across
-cybersecurity, medical devices, consumer apps, and developer tooling. Deep expertise in Swift,
-Objective-C runtime internals, Core Bluetooth, and C++ cross-platform layers. Consistent track
-record of owning features end-to-end — from technical design to delivery — and driving
-architectural improvements that increase stability. Experienced in cross-functional collaboration
-with distributed international teams. Integrates AI-assisted tools (Claude~Code, Copilot) into
-daily engineering, planning, and documentation workflows.
+Senior iOS and macOS engineer with 9+ years shipping production software across cybersecurity,
+medical devices, consumer apps, and developer tooling. Deep expertise in Swift, Objective-C
+runtime internals, Core Bluetooth, and C++ cross-platform layers. Track record of owning features
+end-to-end — from technical design to delivery — and driving architectural improvements that
+increase stability. Experienced collaborating with distributed international teams, and integrates
+AI-assisted tools (Claude~Code, Copilot) into daily engineering and planning workflows.
 
 % EXPERIENCE
 \section{Experience}
@@ -425,11 +429,10 @@ daily engineering, planning, and documentation workflows.
   Harmony SASE — enterprise VPN and network security client for macOS and iOS \textbullet\ Team of 9
 }
 \begin{itemize}
-  \item Designed and delivered \textbf{WiFi Security Suppression} — intelligent VPN suppression when
-        on a trusted network; created the technical epic and owned implementation end-to-end
   \item Built \textbf{unified cross-platform logging} for Windows, macOS, and Linux clients —
-        standardized log filenames, verbosity levels, and rotation policies across all three
-        platforms, with remote runtime reconfiguration of logging settings
+        standardized filenames, verbosity, and rotation policies, with remote runtime reconfiguration
+  \item Designed and delivered \textbf{Trusted Network Detection} — VPN automatically suppresses on
+        trusted networks; created the technical epic and owned implementation end-to-end
   \item Led \textbf{architectural refactor} replacing CLI calls with direct API calls across the
         codebase, improving app stability and long-term maintainability
   \item \textbf{Restored dropped iOS platform support}: diagnosed customer-reported issues through
@@ -447,8 +450,7 @@ daily engineering, planning, and documentation workflows.
   \item Extended and fixed SDK support for UIKit and SwiftUI components, both on-device and in the
         server-side UI reconstruction pipeline
   \item Reverse-engineered customer apps using Objective-C runtime manipulation, method swizzling,
-        and binary disassembly (Hopper) to diagnose and resolve test-correctness issues caused by
-        non-standard UI implementations
+        and binary disassembly (Hopper) to resolve test-correctness issues from non-standard UI
   \item Wrote automated tests ensuring correctness of a quality-critical developer SDK
 \end{itemize}
 
@@ -462,7 +464,6 @@ daily engineering, planning, and documentation workflows.
   \item Implemented complex \textbf{drag-and-drop photo placement} in the photo book editor:
         gesture-driven interaction for placing thumbnails from a scroll bar onto book pages
   \item Conducted code reviews and mentored junior developers
-  \item Cross-functional collaboration with US-based product, QA, web, and backend teams
 \end{itemize}
 
 \jobheader{CNOGA Medical}{iOS Developer}{Caesarea, Israel}{Aug 2016 – Oct 2020}
@@ -476,7 +477,6 @@ daily engineering, planning, and documentation workflows.
   \item \textbf{Significantly reduced application crash rate} through systematic stability analysis
         and targeted fixes
   \item Managed full App Store release cycle: certificates, provisioning, submission, and review
-  \item Collaborated closely with embedded and hardware engineering teams
 \end{itemize}
 
 % SKILLS — reorder rows to put most job-relevant first
@@ -502,7 +502,7 @@ AI Tools     & Claude Code (daily) \textbullet\ GitHub Copilot \textbullet\ Wind
 \section{Education}
 
 \jobheader{East Ukrainian State University}{Bachelor of Science — Mechanical Engineering}{Luhansk, Ukraine}{2004 – 2009}
-\vspace{4pt}
+\vspace{1pt}
 
 % LANGUAGES
 \section{Languages}
