@@ -449,10 +449,29 @@ def _extract_latex_errors(log: str) -> str:
     return "\n".join(lines[-40:])
 
 
+def _pdf_pages_from_log(log_path: str) -> "int | None":
+    """Parse the page count from an xelatex log.
+
+    xelatex/pdftex emits a stable line like
+    ``Output written on cv.pdf (2 pages, 34567 bytes).`` — this is the only
+    dependency-free way to count pages, since XeLaTeX PDFs pack the page tree
+    into compressed object streams that a naive byte scan can't read. Returns
+    None when the line is absent (e.g. the compile produced no PDF).
+    """
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            log = f.read()
+    except OSError:
+        return None
+    m = re.search(r"Output written on [^\n(]*\((\d+)\s+pages?", log)
+    return int(m.group(1)) if m else None
+
+
 def _compile_latex(tex_source: str) -> tuple:
     """
     Compile tex_source with xelatex.
-    Returns (success: bool, pdf_bytes: bytes|None, error_excerpt: str).
+    Returns (success: bool, pdf_bytes: bytes|None, error_excerpt: str,
+             page_count: int|None).
     """
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -477,16 +496,16 @@ def _compile_latex(tex_source: str) -> tuple:
 
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
-                    return True, f.read(), ""
+                    return True, f.read(), "", _pdf_pages_from_log(log_path)
 
             error_excerpt = ""
             if os.path.exists(log_path):
                 with open(log_path, encoding="utf-8", errors="replace") as f:
                     error_excerpt = _extract_latex_errors(f.read())
-            return False, None, error_excerpt
+            return False, None, error_excerpt, None
 
     except FileNotFoundError:
-        return False, None, "xelatex not found — cannot compile PDF"
+        return False, None, "xelatex not found — cannot compile PDF", None
 
 
 def _fix_latex(client: "GeminiClient", tex_source: str, error_excerpt: str) -> str:
@@ -508,14 +527,91 @@ Output the complete fixed .tex file — raw LaTeX only, no markdown fences, no e
     return _strip_latex_fences(raw)
 
 
+# Progressive density steps, gentlest first. Each step holds ABSOLUTE target
+# values (applied to the original tailored .tex, never stacked) so the first
+# step that yields a single page is the least visually disruptive one. A
+# tailored CV that overflows by a line or two normally fits again within the
+# first couple of steps; the tighter steps are a guaranteed-convergence backstop.
+ONE_PAGE_SHRINK_LADDER = [
+    {"font": 9.5, "stretch": 0.88, "itemsep": 0.5, "topsep": 1, "sec_before": 2, "sec_after": 1, "top": 0.7, "bottom": 0.5, "arraystretch": 1.0},
+    {"font": 9.5, "stretch": 0.86, "itemsep": 0,   "topsep": 1, "sec_before": 1, "sec_after": 1, "top": 0.7, "bottom": 0.5, "arraystretch": 0.97},
+    {"font": 9.5, "stretch": 0.84, "itemsep": 0,   "topsep": 0.5, "sec_before": 1, "sec_after": 1, "top": 0.6, "bottom": 0.5, "arraystretch": 0.95},
+    {"font": 9,   "stretch": 0.86, "itemsep": 0,   "topsep": 1, "sec_before": 1, "sec_after": 1, "top": 0.6, "bottom": 0.5, "arraystretch": 0.95},
+    {"font": 9,   "stretch": 0.83, "itemsep": 0,   "topsep": 0.5, "sec_before": 1, "sec_after": 0, "top": 0.6, "bottom": 0.4, "arraystretch": 0.92},
+    {"font": 8.5, "stretch": 0.82, "itemsep": 0,   "topsep": 0,  "sec_before": 1, "sec_after": 0, "top": 0.5, "bottom": 0.4, "arraystretch": 0.9},
+]
+
+
+def _apply_density_overrides(tex_source: str, step: dict) -> str:
+    """Return tex_source re-tuned to `step`'s density, for the one-page guard.
+
+    Lowers the \\documentclass font and appends an override block as the last
+    thing before \\begin{document}. Because every knob (\\geometry, \\setstretch,
+    \\titlespacing, \\setlist, \\arraystretch) is re-issued AFTER the template's
+    own settings, the override wins — no need to know the template's values. All
+    referenced packages (geometry, setspace, titlesec, enumitem) are already
+    loaded by the base preamble the tailored CV is built from.
+    """
+    # Lower the main font size in the documentclass options (e.g. 9.5pt -> 9pt).
+    tex_source = re.sub(
+        r"(\\documentclass\[[^\]]*?)(\d+(?:\.\d+)?)pt",
+        lambda m: f"{m.group(1)}{step['font']:g}pt",
+        tex_source,
+        count=1,
+    )
+    override = (
+        "% --- one-page guard: auto-shrink density overrides (pipeline) ---\n"
+        f"\\geometry{{top={step['top']:g}cm,bottom={step['bottom']:g}cm}}\n"
+        f"\\setstretch{{{step['stretch']:g}}}\n"
+        f"\\titlespacing*{{\\section}}{{0pt}}{{{step['sec_before']:g}pt}}{{{step['sec_after']:g}pt}}\n"
+        f"\\setlist[itemize]{{itemsep={step['itemsep']:g}pt,topsep={step['topsep']:g}pt,parsep=0pt}}\n"
+        f"\\renewcommand{{\\arraystretch}}{{{step['arraystretch']:g}}}\n"
+    )
+    if "\\begin{document}" in tex_source:
+        return tex_source.replace("\\begin{document}", override + "\\begin{document}", 1)
+    return tex_source  # malformed; leave untouched so the caller keeps the original
+
+
+def _shrink_to_one_page(tex_source: str, pdf_bytes: bytes, page_count: int) -> tuple:
+    """Force a compiled-but-overflowing CV down to a single page.
+
+    Walks ONE_PAGE_SHRINK_LADDER (gentlest first), recompiling each candidate,
+    and returns the first that renders as exactly one page. If none reaches one
+    page, returns the fewest-page candidate seen (or the original). Returns
+    (pdf_bytes, final_tex, page_count).
+    """
+    print(f"    PDF is {page_count} pages — auto-shrinking density to fit one page...", flush=True)
+    best = (pdf_bytes, tex_source, page_count)
+    for i, step in enumerate(ONE_PAGE_SHRINK_LADDER, 1):
+        candidate = _apply_density_overrides(tex_source, step)
+        ok, cand_pdf, _err, pages = _compile_latex(candidate)
+        if not ok or pages is None:
+            continue
+        if pages < best[2]:
+            best = (cand_pdf, candidate, pages)
+        if pages == 1:
+            print(f"    Auto-shrink fit one page at step {i}/{len(ONE_PAGE_SHRINK_LADDER)}.", flush=True)
+            return cand_pdf, candidate, 1
+    print(
+        f"    Auto-shrink could not reach one page (best {best[2]} pages) — "
+        f"delivering tightest version, REVIEW BEFORE SENDING.",
+        file=sys.stderr,
+    )
+    return best
+
+
 def compile_with_fixes(client: "GeminiClient", tex_source: str, max_attempts: int = 3) -> tuple:
     """
     Try to compile tex_source, asking Gemini to fix errors between attempts.
+    On a successful compile that overflows past one page, deterministically
+    shrink the layout until it fits (see _shrink_to_one_page).
     Returns (success: bool, pdf_bytes: bytes|None, final_tex: str).
     """
     for attempt in range(1, max_attempts + 1):
-        success, pdf_bytes, error_excerpt = _compile_latex(tex_source)
+        success, pdf_bytes, error_excerpt, pages = _compile_latex(tex_source)
         if success:
+            if pages is not None and pages > 1:
+                pdf_bytes, tex_source, pages = _shrink_to_one_page(tex_source, pdf_bytes, pages)
             return True, pdf_bytes, tex_source
         print(f"    Compilation failed (attempt {attempt}/{max_attempts}): {error_excerpt[:120]}", flush=True)
         if attempt < max_attempts:

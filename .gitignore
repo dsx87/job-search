@@ -13,6 +13,7 @@
 !igor_pivnyk_cv_base_updated.pdf
 !pipeline.py
 !requirements.txt
+!test_one_page_guard.py
 # seen_jobs.json is NOT tracked on main — it lives on the orphan `state` branch.
 
 # Unignore GitHub Actions workflow directory

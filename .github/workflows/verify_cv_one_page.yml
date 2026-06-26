@@ -1,0 +1,38 @@
+name: Verify CV one-page guard
+
+# Proves the single-page guarantee end-to-end with a real xelatex compile:
+# the base CV is exactly one page, and the pipeline's auto-shrink recovers an
+# overflowing CV back to one page. Runs on changes to the guard's moving parts.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - pipeline.py
+      - render_base_cv.py
+      - igor_pivnyk_cv_base_updated.tex
+      - test_one_page_guard.py
+      - .github/workflows/verify_cv_one_page.yml
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install LaTeX
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            texlive-xetex \
+            texlive-latex-extra \
+            fonts-crosextra-carlito
+
+      - name: Run one-page guard self-test
+        run: python3 test_one_page_guard.py
