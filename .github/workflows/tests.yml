@@ -1,0 +1,35 @@
+name: Tests
+
+# Runs the offline characterization suite — the safety net that proves the
+# job_search package's behavior is unchanged. Fast, deterministic, and needs no
+# secrets, network, or LaTeX. Optional deps (jobspy/playwright) are intentionally
+# NOT installed: the suite verifies the package imports and the registry builds
+# without them.
+on:
+  push:
+    paths:
+      - job_search/**
+      - tests/**
+      - pyproject.toml
+      - .github/workflows/tests.yml
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run offline characterization suite
+        run: pytest
