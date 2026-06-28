@@ -5,17 +5,29 @@
 !.gitignore
 !README.md
 !LICENSE
-!portable_job_scraper.py
-!render_base_cv.py
 !criteria.md
 !cv_tailoring_prompt.md
 !igor_pivnyk_cv_base_updated.tex
 !igor_pivnyk_cv_base_updated.pdf
-!pipeline.py
 !requirements.txt
-!test_one_page_guard.py
 # seen_jobs.json is NOT tracked on main — it lives on the orphan `state` branch.
 
 # Unignore GitHub Actions workflow directory
 !.github/
 !.github/**
+
+# Unignore the job_search package, the offline characterization suite, and the
+# pytest config. Without these, a fresh clone / CI gets ModuleNotFoundError —
+# the package files would stay invisible under the `*` default-ignore.
+!job_search/
+!job_search/**
+!tests/
+!tests/**
+!pyproject.toml
+
+# ...but never track Python bytecode or local scratch state, even though the
+# allowlist above otherwise un-ignores everything under the package.
+__pycache__/
+*.pyc
+job_state.json
+.pytest_cache/

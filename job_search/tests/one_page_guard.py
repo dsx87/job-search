@@ -3,20 +3,22 @@
 
 Verifies the two halves of the one-page guarantee:
   1. The hand-tuned base CV compiles to exactly one page.
-  2. pipeline._shrink_to_one_page deterministically pulls an overflowing CV
+  2. latex.onepage._shrink_to_one_page deterministically pulls an overflowing CV
      back to exactly one page.
 
 The overflow in (2) is manufactured by *loosening* the base's density (bigger
 font, looser spacing) without changing any content — so the same content is
 known to fit at tight density, and the shrink ladder is guaranteed to be able
 to recover it. Exits non-zero on any failure so CI fails loudly.
+
+Run with: python -m job_search.tests.one_page_guard
 """
 import re
 import sys
 
-import pipeline
-
-BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
+from ..config import BASE_TEX_FILE
+from ..latex.compile import _compile_latex
+from ..latex.onepage import _shrink_to_one_page
 
 
 def _blow_up(tex: str) -> str:
@@ -41,7 +43,7 @@ def main() -> int:
         tex = f.read()
 
     # 1. Base CV must be exactly one page.
-    ok, _pdf, err, pages = pipeline._compile_latex(tex)
+    ok, _pdf, err, pages = _compile_latex(tex)
     if not ok:
         print(f"FAIL: base CV did not compile: {err[:200]}", file=sys.stderr)
         return 1
@@ -52,7 +54,7 @@ def main() -> int:
 
     # 2a. The blown-up CV must actually overflow (otherwise the test is vacuous).
     blown = _blow_up(tex)
-    ok, pdf, err, pages = pipeline._compile_latex(blown)
+    ok, pdf, err, pages = _compile_latex(blown)
     if not ok:
         print(f"FAIL: blown-up CV did not compile: {err[:200]}", file=sys.stderr)
         return 1
@@ -62,7 +64,7 @@ def main() -> int:
     print(f"PASS: blown-up CV overflows to {pages} pages.")
 
     # 2b. Auto-shrink must bring it back to exactly one page.
-    _pdf2, _final_tex, final_pages = pipeline._shrink_to_one_page(blown, pdf, pages)
+    _pdf2, _final_tex, final_pages = _shrink_to_one_page(blown, pdf, pages)
     if final_pages != 1:
         print(f"FAIL: auto-shrink ended at {final_pages} pages, expected 1.", file=sys.stderr)
         return 1

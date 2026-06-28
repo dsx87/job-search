@@ -64,7 +64,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python3 -u pipeline.py --tailor \
+          python3 -u -m job_search.pipeline --tailor \
             --url "${{ inputs.url }}" \
             --job-text "${{ inputs.job_text }}" \
             --title "${{ inputs.title }}" \
