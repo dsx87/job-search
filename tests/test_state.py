@@ -7,7 +7,9 @@ import json
 
 # --- modules under test (repoint on migration) ---
 from job_search.state import seen_jobs as seen_mod
+from job_search.state import seen_merge
 from job_search.state.seen_jobs import normalize_url, title_company_key, load_seen_jobs, save_seen_jobs
+from job_search.state.seen_merge import keys_from_ref, merge_refs, write_merged
 from job_search.models import Job, Region
 from job_search.state.job_store import JobStore, job_to_store_dict
 
@@ -69,3 +71,48 @@ def test_jobstore_persists(tmp_path):
     store.merge([Job(title="X", url="u1", region=Region.EU)])
     reopened = JobStore(path=path)
     assert "u1" in reopened.jobs
+
+
+# ── seen_merge: the workflow's set-union merge (extracted from inline YAML) ────
+
+class _FakeProc:
+    def __init__(self, returncode, stdout):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _fake_git_show(ref_to_json, monkeypatch):
+    """Patch subprocess.run so `git show <ref>:seen_jobs.json` returns canned JSON.
+    A ref absent from the mapping mimics a failed `git show` (returncode 1)."""
+    def fake_run(cmd, capture_output=True, text=True):
+        spec = cmd[2]  # "<ref>:seen_jobs.json"
+        ref = spec.split(":", 1)[0]
+        if ref in ref_to_json:
+            return _FakeProc(0, ref_to_json[ref])
+        return _FakeProc(1, "")
+    monkeypatch.setattr(seen_merge.subprocess, "run", fake_run)
+
+
+def test_keys_from_ref_missing_is_empty(monkeypatch):
+    _fake_git_show({}, monkeypatch)
+    assert keys_from_ref("origin/state") == set()
+
+
+def test_merge_refs_is_sorted_union(monkeypatch):
+    _fake_git_show({
+        "HEAD": json.dumps(["b", "a", "c"]),
+        "origin/state": json.dumps(["c", "d"]),
+    }, monkeypatch)
+    assert merge_refs(["HEAD", "origin/state"]) == ["a", "b", "c", "d"]
+
+
+def test_write_merged_format_matches_seen_jobs(tmp_path, monkeypatch):
+    _fake_git_show({
+        "HEAD": json.dumps(["b", "a"]),
+        "origin/state": json.dumps(["a", "c"]),
+    }, monkeypatch)
+    out = tmp_path / "seen_union.json"
+    merged = write_merged(str(out), ["HEAD", "origin/state"])
+    assert merged == ["a", "b", "c"]
+    # byte-for-byte the same format save_seen_jobs / the state branch expects
+    assert out.read_text() == json.dumps(["a", "b", "c"], indent=2)

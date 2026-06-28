@@ -81,18 +81,11 @@ jobs:
             fi
             echo "Push rejected (attempt ${attempt}); merging remote state and retrying..."
             git fetch origin state
-            python3 - <<'PY'
-          import json, subprocess
-          def keys(ref):
-              r = subprocess.run(["git", "show", f"{ref}:seen_jobs.json"],
-                                 capture_output=True, text=True)
-              if r.returncode != 0 or not r.stdout.strip():
-                  return set()
-              return set(json.loads(r.stdout))
-          merged = sorted(keys("HEAD") | keys("origin/state"))
-          with open("/tmp/seen_union.json", "w") as f:
-              json.dump(merged, f, indent=2)
-          PY
+            # Set-union merge lives in the package (job_search.state.seen_merge), not
+            # inline here. cwd is .state (so the refs resolve there); PYTHONPATH points
+            # at the main checkout, which is where the job_search package lives.
+            PYTHONPATH="$GITHUB_WORKSPACE" python3 -m job_search.state.seen_merge \
+              /tmp/seen_union.json HEAD origin/state
             git reset --hard origin/state
             cp /tmp/seen_union.json seen_jobs.json
             git add seen_jobs.json
