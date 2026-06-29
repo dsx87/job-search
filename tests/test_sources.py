@@ -231,15 +231,22 @@ def test_relocateme_dedups_across_queries(monkeypatch):
     assert jobs[0].url == "https://relocate.me/job/1"
 
 
-@pytest.mark.parametrize("module_name,cls_name", [
-    ("jobspy_sources", "JobSpySource"),
-    ("jobspy_sources", "LinkedInGlobalSource"),
-    ("jobspy_sources", "LinkedInIsraelSource"),
-    ("playwright_sources", "SecretTelAvivSource"),
+@pytest.mark.parametrize("module_name,cls_name,dep_modules", [
+    ("jobspy_sources", "JobSpySource", ["jobspy"]),
+    ("jobspy_sources", "LinkedInGlobalSource", ["jobspy"]),
+    ("jobspy_sources", "LinkedInIsraelSource", ["jobspy"]),
+    ("playwright_sources", "SecretTelAvivSource", ["playwright", "playwright.sync_api"]),
 ])
-def test_optional_sources_skip_when_dependency_missing(module_name, cls_name):
-    # jobspy / playwright are intentionally not installed; fetch must return [].
+def test_optional_sources_skip_when_dependency_missing(monkeypatch, module_name, cls_name, dep_modules):
+    # Force the optional dependency to look uninstalled (a None entry in
+    # sys.modules makes `import dep` raise ImportError) so fetch() takes the
+    # skip path regardless of whether the package is actually installed — the
+    # documented `pip install -r requirements.txt` setup installs both.
     import importlib
+    import sys
+
+    for dep in dep_modules:
+        monkeypatch.setitem(sys.modules, dep, None)
 
     mod = importlib.import_module(f"job_search.sources.{module_name}")
     cls = getattr(mod, cls_name)

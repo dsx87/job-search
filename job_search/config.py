@@ -30,9 +30,12 @@ QWEN_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 # Status codes that trip the Gemini circuit-breaker (429 rate limit, 503 overloaded).
 GEMINI_CIRCUIT_BREAK_STATUS = {429, 503}
 
-# Concurrency for the staged pipeline (override per run via env vars).
-EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", "12"))
-TAILOR_WORKERS = int(os.environ.get("TAILOR_WORKERS", "8"))
+# Default concurrency for the staged pipeline. Per-run overrides come from the
+# EVAL_WORKERS / TAILOR_WORKERS env vars, but they are read in
+# PipelineConfig.from_env() — not at import time — so a malformed value can't
+# crash the scraper CLI, which imports this module only for HTTP_TIMEOUT_SECONDS.
+EVAL_WORKERS = 12
+TAILOR_WORKERS = 8
 
 # Minimum job-description length before we trust it enough to tailor against.
 MIN_JOB_TEXT_LEN = 200
@@ -72,8 +75,8 @@ class PipelineConfig:
             qwen_api_key=os.environ.get("QWEN_API_KEY", ""),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
-            eval_workers=int(os.environ.get("EVAL_WORKERS", "12")),
-            tailor_workers=int(os.environ.get("TAILOR_WORKERS", "8")),
+            eval_workers=int(os.environ.get("EVAL_WORKERS", str(EVAL_WORKERS))),
+            tailor_workers=int(os.environ.get("TAILOR_WORKERS", str(TAILOR_WORKERS))),
         )
 
 
