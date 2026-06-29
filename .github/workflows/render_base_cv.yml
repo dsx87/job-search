@@ -30,7 +30,7 @@ jobs:
             fonts-crosextra-carlito
 
       - name: Render masked base CV PDF
-        run: python3 render_base_cv.py
+        run: python3 -m job_search.latex.render_base
 
       - name: Commit regenerated PDF
         run: |

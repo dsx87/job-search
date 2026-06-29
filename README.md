@@ -60,12 +60,14 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 
 | Path | Purpose |
 |------|---------|
-| `portable_job_scraper.py` | ~20 pluggable job-board sources behind one interface |
-| `pipeline.py` | Orchestrates fetch → dedupe → filter → tailor → notify |
+| `job_search/` | The application package (sources, filters, LLM, LaTeX, pipeline, CLIs) |
+| `job_search/sources/` | ~20 pluggable job-board sources behind a `@register` registry |
+| `job_search/pipeline/` | Orchestrates fetch → dedupe → filter → tailor → notify |
+| `job_search/latex/render_base.py` | Renders the base CV to PDF (used by CI) |
+| `tests/` | Offline characterization suite (`pytest`) |
 | `criteria.md` | Human-readable job-fit rules the LLM filters against |
 | `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
-| `render_base_cv.py` | Renders the base CV to PDF (used by CI) |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
 
 > Dedup state (`seen_jobs.json`) is **not** on `main` — the daily run reads it
@@ -85,7 +87,8 @@ export CV_PHONE=...             # optional — phone injected into the CV at bui
 
 pip install -r requirements.txt
 python -m playwright install chromium   # for the Playwright-backed source
-python3 pipeline.py
+python3 -m job_search.pipeline          # the daily pipeline
+python3 -m job_search                    # the scraper CLI (interactive menu)
 ```
 
 ### Tailor a CV on demand
@@ -99,9 +102,9 @@ Gemini/Qwen tailoring, xelatex compile, `CV_PHONE` injected at build time.
 
 ```bash
 # Locally (needs the same env vars as above + a TeX install for the PDF):
-python3 pipeline.py --tailor --url "https://…"            # auto-fetch
-python3 pipeline.py --tailor --job-text "$(pbpaste)" \
-  --title "Senior iOS Developer" --company "Acme"          # paste fallback
+python3 -m job_search.pipeline --tailor --url "https://…"            # auto-fetch
+python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
+  --title "Senior iOS Developer" --company "Acme"                     # paste fallback
 ```
 
 ## Privacy

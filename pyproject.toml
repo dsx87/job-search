@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+# Run the offline characterization suite from the repo root so both the flat
+# modules (during migration) and the job_search package are importable.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "requires_xelatex: integration check that needs a real xelatex toolchain (skipped when absent)",
+]

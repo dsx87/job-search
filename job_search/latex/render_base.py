@@ -1,32 +1,20 @@
-#!/usr/bin/env python3
 """Render the base CV (igor_pivnyk_cv_base_updated.tex) to PDF with xelatex.
 
 The ((PHONE)) placeholder is substituted from the CV_PHONE environment variable
-at compile time, mirroring pipeline._compile_latex. When CV_PHONE is unset the
-placeholder collapses to nothing, producing the masked sample committed to the
-public repo. Set CV_PHONE locally to render a full copy for yourself.
+at compile time, mirroring latex.compile._compile_latex. When CV_PHONE is unset
+the placeholder collapses to nothing, producing the masked sample committed to
+the public repo. Set CV_PHONE locally to render a full copy for yourself.
+
+Run with: python -m job_search.latex.render_base
 """
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
-BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
-OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
-
-
-def _pages_from_log(log_path: str):
-    """Parse the page count from an xelatex log line like
-    'Output written on cv.pdf (1 page, 12345 bytes).' Returns int or None."""
-    try:
-        with open(log_path, encoding="utf-8", errors="replace") as f:
-            log = f.read()
-    except OSError:
-        return None
-    m = re.search(r"Output written on [^\n(]*\((\d+)\s+pages?", log)
-    return int(m.group(1)) if m else None
+from ..config import BASE_TEX_FILE, OUT_PDF_FILE
+from .compile import pdf_pages_from_log
 
 
 def main() -> int:
@@ -56,7 +44,7 @@ def main() -> int:
         # regression so CI/the committer notices instead of shipping a 2-page
         # sample. (The tailored pipeline auto-shrinks; the hand-tuned base does
         # not — a spill here means the .tex needs a real fix.)
-        pages = _pages_from_log(log_path)
+        pages = pdf_pages_from_log(log_path)
         if pages is not None and pages != 1:
             print(
                 f"ERROR: base CV rendered {pages} pages — it must be exactly 1. "
