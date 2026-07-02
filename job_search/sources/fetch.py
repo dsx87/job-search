@@ -1,9 +1,12 @@
 """Source dispatch + result rendering: fetch_jobs, run_scraper, display helpers."""
-import concurrent.futures
 import json
+import os
+import queue
 import sys
+import threading
+import time
 
-from ..config import MAX_WORKERS
+from ..config import MAX_WORKERS, SCRAPE_BUDGET_SECONDS
 from ..filters import run_pipeline
 from ..filters.rules import DEFAULT_RELOCATION_REGIONS
 from ..models import REGION_LABELS, REGION_MAP, Region, job_to_dict
@@ -66,8 +69,31 @@ def fetch_source(source_name, source_cls, verbose):
         return source_name, [], exc
 
 
-def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=False):
-    """Fetch and filter jobs, returning the list of Job objects."""
+def _budget_seconds_from_env(default):
+    """Per-run override via SCRAPE_BUDGET_SECONDS; falls back to `default` when
+    unset, non-numeric, or non-positive (a malformed value must never disable
+    the guard)."""
+    raw = os.environ.get("SCRAPE_BUDGET_SECONDS")
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=False, budget_seconds=None):
+    """Fetch and filter jobs, returning the list of Job objects.
+
+    Sources run concurrently under a wall-clock budget: any source still running
+    when the budget elapses is abandoned (left on a daemon thread the interpreter
+    reaps at exit) and the run proceeds with whatever the others returned. This
+    stops one throttled source — historically LinkedIn via jobspy — from holding
+    the whole pipeline hostage until the CI job timeout cancels it.
+    """
+    if budget_seconds is None:
+        budget_seconds = _budget_seconds_from_env(SCRAPE_BUDGET_SECONDS)
     selected_names = source_names or list(ALL_SOURCES.keys())
     selected = [(name, ALL_SOURCES[name]) for name in selected_names if name in ALL_SOURCES]
 
@@ -77,20 +103,49 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
     if verbose:
         print("Scraping {} sources: {}...".format(len(selected), ", ".join(name for name, _ in selected)), flush=True)
 
+    # One daemon thread per source, concurrency capped at MAX_WORKERS via a
+    # semaphore. Daemon threads are essential: a slow source we abandon must not
+    # block interpreter exit (a plain ThreadPoolExecutor joins its non-daemon
+    # workers at exit, which would re-introduce the very hang we're preventing).
+    results = queue.Queue()
+    limiter = threading.Semaphore(min(MAX_WORKERS, len(selected)))
+
+    def worker(name, source_cls):
+        with limiter:
+            results.put(fetch_source(name, source_cls, verbose))
+
+    for name, source_cls in selected:
+        threading.Thread(
+            target=worker, args=(name, source_cls),
+            name="fetch-{}".format(name), daemon=True,
+        ).start()
+
     raw_jobs = []
-    max_workers = min(MAX_WORKERS, len(selected))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(fetch_source, name, source_cls, verbose)
-            for name, source_cls in selected
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            source_name, jobs, error = future.result()
-            if error is not None:
-                if verbose:
-                    print("[{}] Failed: {}".format(source_name, error), file=sys.stderr)
-                continue
-            raw_jobs.extend(jobs)
+    completed = set()
+    deadline = time.monotonic() + budget_seconds
+    while len(completed) < len(selected):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            source_name, jobs, error = results.get(timeout=remaining)
+        except queue.Empty:
+            break
+        completed.add(source_name)
+        if error is not None:
+            if verbose:
+                print("[{}] Failed: {}".format(source_name, error), file=sys.stderr)
+            continue
+        raw_jobs.extend(jobs)
+
+    abandoned = [name for name, _ in selected if name not in completed]
+    if abandoned:
+        # Always surface (not just under verbose): a truncated fetch is
+        # operationally significant, and naming the culprit aids diagnosis.
+        print("[fetch] Scrape budget of {:g}s exceeded; abandoned slow source(s): {}. "
+              "Proceeding with {}/{} source(s).".format(
+                  budget_seconds, ", ".join(abandoned), len(completed), len(selected)),
+              file=sys.stderr, flush=True)
 
     if verbose:
         print("Raw jobs collected: {}".format(len(raw_jobs)), flush=True)

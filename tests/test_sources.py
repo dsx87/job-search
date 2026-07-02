@@ -289,3 +289,42 @@ def test_fetch_jobs_runs_pipeline(monkeypatch):
 def test_fetch_jobs_empty_for_unknown_source(monkeypatch):
     monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"fake": object})
     assert fetch_mod.fetch_jobs(source_names=["nonexistent"]) == []
+
+
+def test_fetch_jobs_abandons_source_exceeding_budget(monkeypatch, capsys):
+    """A source slower than the fetch budget is abandoned; the run proceeds with
+    whatever the other sources returned, instead of hanging on the slow one."""
+    import time
+
+    today = dt.date.today()
+
+    def _ios_job(company, url):
+        return Job(title="iOS Engineer", company=company, location="Berlin, Germany",
+                   url=url, description="Swift UIKit fully remote", is_remote=True,
+                   date_posted=today)
+
+    class Fast(base.BaseSource):
+        name = "fast"
+
+        def fetch(self, verbose=False):
+            return [_ios_job("FastCo", "https://x/fast")]
+
+    class Slow(base.BaseSource):
+        name = "slow"
+
+        def fetch(self, verbose=False):
+            time.sleep(10)  # far longer than the tiny budget below
+            return [_ios_job("SlowCo", "https://x/slow")]
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"fast": Fast, "slow": Slow})
+
+    start = time.monotonic()
+    jobs = fetch_mod.fetch_jobs(source_names=["fast", "slow"], budget_seconds=0.5, verbose=True)
+    elapsed = time.monotonic() - start
+
+    # Returned promptly — did not wait for the slow source's 10s sleep.
+    assert elapsed < 5
+    # Kept the fast source's job; abandoned the slow one.
+    assert [j.company for j in jobs] == ["FastCo"]
+    # The truncation is surfaced (names the abandoned source) rather than silent.
+    assert "slow" in capsys.readouterr().err

@@ -11,6 +11,16 @@ from dataclasses import dataclass
 HTTP_TIMEOUT_SECONDS = 30
 MAX_WORKERS = 8
 
+# Wall-clock budget (seconds) for the whole fetch stage. Any source still
+# running when this elapses is abandoned so a single throttled source
+# (historically LinkedIn via jobspy, whose per-description requests get
+# rate-limited) can't hang the run past the CI job timeout. Comfortably longer
+# than a healthy full fetch (~2-3 min) yet well under the 30-min CI cap, leaving
+# room for the evaluate/tailor/deliver stages. Overridable per-run via the
+# SCRAPE_BUDGET_SECONDS env var (read at call time in fetch_jobs, not here, so a
+# malformed value can't crash the scraper CLI at import).
+SCRAPE_BUDGET_SECONDS = 600
+
 # ── File names (loaded relative to the working directory, as on CI) ────────────
 SEEN_JOBS_FILE = "seen_jobs.json"
 CRITERIA_FILE = "criteria.md"
