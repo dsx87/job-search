@@ -133,25 +133,65 @@ If you skip this, the first run treats every scraped job as new (hours of work).
 
 ---
 
+## Telegram control bot
+
+Because the home network has **no dedicated IP**, there's no webhook or port
+forward. The bot instead **long-polls** Telegram's `getUpdates` — all traffic is
+outbound HTTPS, so it works behind NAT with nothing to open on your router. The
+setup script installs it as `job-search-bot.service` (`Type=simple`,
+`Restart=always`), enabled alongside the timer once your secrets are in.
+
+From the **authorized chat only** (`TELEGRAM_CHAT_ID` — messages from any other
+account are ignored silently):
+
+| Command | What it does |
+|---|---|
+| `/run` | Kick off a full pipeline run now. You get a "Started" ack, then a completion message with the duration (or the error). |
+| `/status` | Report whether a run is in progress or idle, the last run's trigger / exit code / timestamps, and the bot's uptime. |
+| `/tailor <url>` | Tailor a CV against a job posting URL (auto-fetched) and send the PDF. |
+| `/tailor <pasted description>` | Same, but from a pasted job description (the paste fallback for login-walled or JS-only URLs). |
+
+The bot **self-registers** this command menu with Telegram via `setMyCommands`
+on startup, so autocomplete works with no @BotFather step.
+
+**Everything runs through one wrapper.** Both the daily timer and the bot execute
+`scripts/run_pipeline.sh`, guarded by a single `flock` — the single 700 MHz core
+never runs two pipelines at once. A second trigger while a run is active is
+*refused, not queued*: `/run` during an active run replies "already in progress,"
+and if the timer and a `/run` collide the wrapper simply exits 75 (visible in the
+journal, harmless). The wrapper records each run in `.last_run.json` (what
+`/status` reads) and tees full output to `logs/run-*.log` (newest 7 kept).
+
+A **10-minute staleness guard** means a `/run` you queued during an outage won't
+suddenly fire when the Pi reboots hours later — old messages are acknowledged but
+not executed. (The Pi B has no RTC, so right after a power cut the clock is wrong
+until NTP syncs; `After=network-online.target` mitigates this.)
+
 ## Operating it
 
 ```bash
-# Run the daily job right now (out of schedule)
+# Run the daily job right now (out of schedule) — goes through the wrapper
 sudo systemctl start job-search.service
 
 # Watch a run's logs live
 journalctl -u job-search.service -f
 
-# When did / will it run?
+# Watch the control bot (command handling, poll errors)
+journalctl -u job-search-bot.service -f
+
+# When did / will the daily run fire?
 systemctl list-timers job-search.timer
 
-# Pause the daily run
+# Pause the daily run / stop the bot
 sudo systemctl disable --now job-search.timer
+sudo systemctl disable --now job-search-bot.service
 ```
 
-The service runs the pipeline from the repo root as your user, with `.env` loaded
-via `EnvironmentFile`, `Nice=10` (stay responsive), and a 2 h `TimeoutStartSec`
-safety cap.
+The daily service and the bot both run from the repo root as your user, with
+`.env` loaded via `EnvironmentFile` and `Nice=10` (stay responsive); the daily
+run keeps its 2 h `TimeoutStartSec` safety cap. The run record lives in
+`.last_run.json` (trigger, start/finish, exit code) with the full transcript in
+`logs/run-*.log`.
 
 ---
 

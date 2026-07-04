@@ -180,8 +180,17 @@ if [ "$TRY_JOBSPY" = "1" ]; then
   fi
 fi
 
-# ---- 8. systemd service + timer -------------------------------------------
-step "Installing systemd service + timer"
+# ---- 7b. Run wrapper + logs directory --------------------------------------
+# Every run (the timer, the bot's /run and /tailor) goes through this one
+# flock'd wrapper so the single core never runs two pipelines at once.
+step "Preparing the run wrapper and logs directory"
+chmod +x "$REPO/scripts/run_pipeline.sh"
+mkdir -p "$REPO/logs"
+chown "$REAL_USER" "$REPO/logs" 2>/dev/null || true
+ok "run_pipeline.sh is executable; logs/ ready."
+
+# ---- 8. systemd service + timer + control bot ------------------------------
+step "Installing systemd services (daily run + control bot) + timer"
 $SUDO tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF
 [Unit]
 Description=AI Job Hunter daily run
@@ -193,9 +202,31 @@ Type=oneshot
 User=${REAL_USER}
 WorkingDirectory=${REPO}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${PY_BIN} -m job_search.pipeline
+ExecStart=${REPO}/scripts/run_pipeline.sh timer
 Nice=10
 TimeoutStartSec=7200
+EOF
+
+# Telegram control bot: long-polls getUpdates (all outbound HTTPS — works behind
+# NAT with no port forwarding) and triggers runs through the same wrapper.
+$SUDO tee "/etc/systemd/system/${SERVICE_NAME}-bot.service" >/dev/null <<EOF
+[Unit]
+Description=AI Job Hunter Telegram control bot (/run, /status, /tailor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+User=${REAL_USER}
+WorkingDirectory=${REPO}
+EnvironmentFile=${ENV_FILE}
+ExecStart=${PY_BIN} -m job_search.bot
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
 $SUDO tee "/etc/systemd/system/${SERVICE_NAME}.timer" >/dev/null <<EOF
@@ -211,7 +242,7 @@ WantedBy=timers.target
 EOF
 
 $SUDO systemctl daemon-reload
-ok "Installed ${SERVICE_NAME}.service and ${SERVICE_NAME}.timer."
+ok "Installed ${SERVICE_NAME}.service, ${SERVICE_NAME}-bot.service, and ${SERVICE_NAME}.timer."
 
 # ---- Done: next steps ------------------------------------------------------
 echo
@@ -226,17 +257,22 @@ if grep -q 'REPLACE_ME' "$ENV_FILE"; then
   echo    "          --title 'Senior iOS Developer' --company 'Acme'"
   echo -e "  ${c_yellow}3.${c_off} Enable the daily timer (fires at ${RUN_TIME} ${TIMEZONE}):"
   echo    "        $SUDO systemctl enable --now ${SERVICE_NAME}.timer"
-  warn "Timer NOT enabled yet — do it after step 1, or the first run fails on missing keys."
+  echo -e "  ${c_yellow}4.${c_off} Enable the Telegram control bot (also after step 1):"
+  echo    "        $SUDO systemctl enable --now ${SERVICE_NAME}-bot.service"
+  warn "Timer & bot NOT enabled yet — do it after step 1, or they fail on the placeholder token."
 else
-  step "Enabling the daily timer (fires at ${RUN_TIME} ${TIMEZONE})"
+  step "Enabling the daily timer (fires at ${RUN_TIME} ${TIMEZONE}) + control bot"
   $SUDO systemctl enable --now "${SERVICE_NAME}.timer"
-  ok "Timer enabled."
+  $SUDO systemctl enable --now "${SERVICE_NAME}-bot.service"
+  ok "Timer and control bot enabled."
   echo    "  Next scheduled run:   systemctl list-timers ${SERVICE_NAME}.timer"
 fi
 echo
 echo "Operate it:"
 echo "  Run now:   $SUDO systemctl start ${SERVICE_NAME}.service"
 echo "  Logs:      journalctl -u ${SERVICE_NAME}.service -f"
+echo "  Bot logs:  journalctl -u ${SERVICE_NAME}-bot.service -f"
 echo "  Disable:   $SUDO systemctl disable --now ${SERVICE_NAME}.timer"
+echo "  Control:   from the authorized Telegram chat — /run, /status, /tailor"
 echo
 ok "Setup complete."

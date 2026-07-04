@@ -31,6 +31,7 @@
 !docs/deploy-rpi.md
 !scripts/
 !scripts/setup-rpi.sh
+!scripts/run_pipeline.sh
 
 # ...but never track Python bytecode or local scratch state, even though the
 # allowlist above otherwise un-ignores everything under the package.
