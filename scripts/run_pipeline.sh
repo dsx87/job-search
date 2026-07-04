@@ -9,8 +9,10 @@
 # Usage:
 #   scripts/run_pipeline.sh <trigger> [pipeline flags...]
 #     <trigger>  one of: timer | run | tailor | manual — a label recorded in
-#                .last_run.json (it is NOT forwarded to the pipeline)
-#     [flags]    forwarded verbatim to `python -m job_search.pipeline`
+#                .last_run.json (it is NOT forwarded to the pipeline). timer/run
+#                take the full daily flow; other triggers the tailor/ad-hoc path.
+#     [flags]    forwarded verbatim to the chosen entry point (run.sh /
+#                pi_run.py / `python -m job_search.pipeline`; see the case below)
 #
 # Exit codes:
 #   0    the pipeline ran and exited 0
@@ -39,6 +41,12 @@ if [ -x "$REPO/.venv/bin/python" ]; then
 else
   PY="python3"
 fi
+
+# Load .env if present. systemd already injects it via EnvironmentFile, but this
+# makes a manual `scripts/run_pipeline.sh …` from a bare shell self-sufficient
+# and mirrors run.sh. There is no .env on CI — env there comes from the runner's
+# secrets, and the `[ -f ]` guard simply skips this.
+set -a; [ -f "$REPO/.env" ] && . "$REPO/.env"; set +a
 
 LOCK="$REPO/.pipeline.lock"
 LAST_RUN="$REPO/.last_run.json"
@@ -73,10 +81,34 @@ LOG="$REPO/logs/run-${ts}.log"
 started="\"$(now_iso)\""
 write_last_run "$started" "null" "null"
 
+# Pick the real entry point for this host. A customized Pi ships run.sh (dedup
+# state sync around pi_run.py, which injects the native linkedin-guest source);
+# a bare repo (CI, a fresh Pi) has neither and runs the package directly.
+#   timer/run  -> the full daily flow: run.sh if present, else pi_run.py, else the package
+#   tailor/etc -> pi_run.py if present (same CLI, source-injected), else the package
+case "$trigger" in
+  timer|run)
+    if [ -x "$REPO/run.sh" ]; then
+      cmd=("$REPO/run.sh" "$@")
+    elif [ -f "$REPO/pi_run.py" ]; then
+      cmd=("$PY" -u "$REPO/pi_run.py" "$@")
+    else
+      cmd=("$PY" -u -m job_search.pipeline "$@")
+    fi
+    ;;
+  *)
+    if [ -f "$REPO/pi_run.py" ]; then
+      cmd=("$PY" -u "$REPO/pi_run.py" "$@")
+    else
+      cmd=("$PY" -u -m job_search.pipeline "$@")
+    fi
+    ;;
+esac
+
 # Tee combined stdout+stderr to the log while keeping stderr on our own stderr
 # (the bot captures stderr to relay the CLI's errors — e.g. the "insufficient
 # job text" message run_tailor prints without a Telegram notification).
-"$PY" -u -m job_search.pipeline "$@" > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
+"${cmd[@]}" > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
 rc=$?
 
 finished="\"$(now_iso)\""
