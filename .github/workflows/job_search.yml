@@ -2,7 +2,7 @@ name: Daily Job Search
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # 07:00 UTC = 10:00 Israel time
+    - cron: "0 11 * * *"  # 11:00 UTC = 14:00 Israel (summer); staggered ~4h after the Pi's 10:00 local run
   workflow_dispatch:        # allow manual trigger from the Actions tab
 
 jobs:
