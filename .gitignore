@@ -25,6 +25,14 @@
 !tests/**
 !pyproject.toml
 
+# Unignore the Raspberry Pi deployment doc and setup script (but nothing else
+# under docs/, e.g. docs/superpowers/, stays ignored).
+!docs/
+!docs/deploy-rpi.md
+!scripts/
+!scripts/setup-rpi.sh
+!scripts/run_pipeline.sh
+
 # ...but never track Python bytecode or local scratch state, even though the
 # allowlist above otherwise un-ignores everything under the package.
 __pycache__/
