@@ -47,6 +47,43 @@ def test_pipeline_config_from_env_reads_keys(monkeypatch):
     assert pc.qwen_model == "qwen-plus"
 
 
+def test_pipeline_config_selection_and_sync_defaults():
+    """Default config = today's behavior: no forced sources, no state sync."""
+    pc = PipelineConfig()
+    assert pc.sources_enable == ()
+    assert pc.sources_disable == ()
+    assert pc.state_sync is False
+    # from_env with nothing set is identical.
+    pc_env = PipelineConfig.from_env()
+    assert pc_env.sources_enable == ()
+    assert pc_env.sources_disable == ()
+    assert pc_env.state_sync is False
+
+
+def test_split_csv_normalizes():
+    assert config._split_csv(" A, b ,,") == ("a", "b")
+    assert config._split_csv("") == ()
+    assert config._split_csv("LinkedIn-Guest") == ("linkedin-guest",)
+
+
+def test_pipeline_config_from_env_parses_source_lists(monkeypatch):
+    monkeypatch.setenv("SOURCES_ENABLE", "linkedin-guest")
+    monkeypatch.setenv("SOURCES_DISABLE", "linkedin-global, linkedin-israel")
+    pc = PipelineConfig.from_env()
+    assert pc.sources_enable == ("linkedin-guest",)
+    assert pc.sources_disable == ("linkedin-global", "linkedin-israel")
+
+
+def test_pipeline_config_from_env_state_sync_flag(monkeypatch):
+    monkeypatch.setenv("STATE_SYNC", "1")
+    assert PipelineConfig.from_env().state_sync is True
+    for falsey in ("0", "true", ""):
+        monkeypatch.setenv("STATE_SYNC", falsey)
+        assert PipelineConfig.from_env().state_sync is False
+    monkeypatch.delenv("STATE_SYNC", raising=False)
+    assert PipelineConfig.from_env().state_sync is False
+
+
 def test_loaders_read_repo_files():
     assert "iOS" in config.load_criteria() or len(config.load_criteria()) > 0
     base = config.load_base_tex()
