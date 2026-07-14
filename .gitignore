@@ -32,6 +32,14 @@
 !scripts/
 !scripts/setup-rpi.sh
 !scripts/run_pipeline.sh
+!scripts/enable-jobspy.sh
+!scripts/setup-state-sync.sh
+
+# The vendored ARMv6 tls-client shared library (vendor/tls-client-armv6.so,
+# ~13 MB, cross-built for the Pi's arm1176jzf-s core) is intentionally NOT
+# tracked — it stays Pi-local so main carries no platform binary. Covered by the
+# top-level `*` ignore; scripts/enable-jobspy.sh expects it already present on
+# the Pi (where it was cross-built).
 
 # ...but never track Python bytecode or local scratch state, even though the
 # allowlist above otherwise un-ignores everything under the package.

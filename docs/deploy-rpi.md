@@ -21,13 +21,18 @@ packages**; only the optional sources do.
 | Feature | Original Pi B (ARMv6, ~512 MB) | Notes |
 |---|---|---|
 | 16 stdlib sources + LLM filter + tailor + PDF + Telegram | ✅ Works, no pip installs | All stdlib; LLM/Telegram are HTTPS |
-| 3 JobSpy sources (JobSpy, LinkedIn ×2) | ⚠️ Usually won't install | `python-jobspy` → `pydantic-core` (Rust) + `tls-client` have no ARMv6 wheel; LinkedIn rate-limits anyway |
-| 1 Chromium source (`secrettelaviv`) | ❌ Skip | Chromium has no ARMv6 build |
+| `linkedin-guest` (LinkedIn via the public guest API) | ✅ Works, stdlib | Default-off; the Pi's `.env` turns it on **in place of** the jobspy LinkedIn sources |
+| `jobspy` (Indeed + Google) | ⚙️ Opt-in via a bundled lib | `tls-client` has no ARMv6 wheel, so the repo ships a cross-built `vendor/tls-client-armv6.so`; `scripts/enable-jobspy.sh` wires it up |
+| `linkedin-global` / `linkedin-israel` (jobspy LinkedIn) | ➖ Superseded | `linkedin-guest` replaces them; the Pi's `.env` disables them |
+| `secrettelaviv` (Chromium) | ❌ Skip | Chromium has no ARMv6 build |
 
-The optional sources are **lazily imported**, so if their dependencies are absent
-the source registry simply drops them and everything else runs. On an original Pi
-B you realistically get **16 of ~20 sources** plus the entire filter/tailor/notify
-path. On a Pi 3/4/5 (ARMv7/ARMv8) the JobSpy sources install cleanly via piwheels
+The optional sources are **lazily imported**: absent their dependency, each
+registered source self-skips at fetch time and everything else runs. **20 sources
+are registered.** The setup script's `.env` enables `linkedin-guest` and disables
+the two jobspy LinkedIn sources, selecting **18** — of which **16 stdlib sources
+actually fetch** on a stock Pi (`jobspy` and `secrettelaviv` self-skip without
+their optional deps). Running `scripts/enable-jobspy.sh` adds Indeed/Google for a
+17th. On a Pi 3/4/5 (ARMv7/ARMv8) the jobspy sources install cleanly via piwheels
 and Chromium is available, so you can run all of it.
 
 The code uses no Python 3.10+ syntax, so whatever Python ships with Raspberry Pi
@@ -98,6 +103,8 @@ secrets and enabling the timer — finish those two steps below.
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
+   | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | comma lists forcing sources on/off; the Pi ships `linkedin-guest` on and the jobspy LinkedIn sources off |
+   | `STATE_SYNC` | sync | `1` to sync `seen_jobs.json` with the `state` branch (see below); default `0` |
 
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
    ```bash
@@ -130,6 +137,40 @@ git show origin/state:seen_jobs.json > seen_jobs.json
 ```
 
 If you skip this, the first run treats every scraped job as new (hours of work).
+
+---
+
+## Syncing the dedup state (share it with the Actions runner)
+
+Seeding is one-shot. To stop the Pi and the GitHub Actions runner from
+re-delivering each other's jobs, **sync** `seen_jobs.json` both ways with the
+orphan `state` branch: the daily run pulls it before fetching and pushes the
+updated file back after. The two run staggered (Pi 10:00, Actions 14:00 Israel),
+so whichever runs second inherits the first's dedup baseline.
+
+1. Run the one-time setup — creates a dedicated SSH deploy key, the `github-state`
+   host alias, and a `.state` checkout of the `state` branch:
+   ```bash
+   bash ~/job-search/scripts/setup-state-sync.sh
+   ```
+2. Add the printed public key as a **write** deploy key on
+   `github.com/dsx87/job-search` (Settings → Deploy keys → Add, tick *Allow write
+   access*).
+3. Turn it on:
+   ```bash
+   echo 'STATE_SYNC=1' >> ~/job-search/.env
+   ```
+
+The next run brackets the fetch with the sync — look for these in the journal:
+```
+[state] pulled 1234 keys from origin/state
+Scraping 18 sources: ...
+[state] pushed 1240 keys on attempt 1
+```
+Sync is best-effort: if GitHub is unreachable or the key isn't set up, the run
+proceeds on the local `seen_jobs.json`, and a push failure is logged but never
+fails the run (the state is left local and retried next time). A concurrent push
+from the other runner is resolved by union-merging both files, so no keys are lost.
 
 ---
 
@@ -221,18 +262,26 @@ and `.timer` — see the Quickstart output or the script source for their conten
 
 ---
 
-## Optional: reclaim the 3 JobSpy sources
+## Optional: reclaim the jobspy Indeed/Google source
 
-Only worth it for LinkedIn coverage, and it usually fails on ARMv6:
+LinkedIn is already covered by the stdlib `linkedin-guest` source, so the only
+extra reach jobspy buys on the Pi is **Indeed + Google**. jobspy can't install out
+of the box on ARMv6 — its Indeed scraper needs `tls-client`, whose Go shared
+library ships no 32-bit ARM build — so the repo bundles a cross-built one
+(`vendor/tls-client-armv6.so`, tuned for the Pi's arm1176jzf-s core). One script
+wires it up:
 
 ```bash
-cd ~/job-search && python3 -m venv .venv && . .venv/bin/activate
-pip install python-jobspy    # if pydantic-core / tls-client won't build, just stop
+bash ~/job-search/scripts/enable-jobspy.sh
 ```
 
-If it installs, point the service's `ExecStart` at `~/job-search/.venv/bin/python`
-(or re-run `TRY_JOBSPY=1 bash scripts/setup-rpi.sh`, which does this for you). If
-it doesn't, walk away — you keep all 16 other sources.
+It creates a `.venv`, installs `python-jobspy` from piwheels, and patches the
+installed `tls_client` package to load the bundled `.so`. `run_pipeline.sh` then
+picks up `.venv/bin/python` automatically — no unit edit needed. The full Indeed
+matrix is slow on one ARMv6 core and may hit `SCRAPE_BUDGET_SECONDS` and be
+abandoned; raise it in `.env` if you want it to finish. Turn it back off with
+`rm -rf ~/job-search/.venv` (the `jobspy` source then self-skips and everything
+else keeps running on system python3).
 
 ---
 

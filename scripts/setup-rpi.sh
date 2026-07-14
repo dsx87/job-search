@@ -127,6 +127,13 @@ CV_PHONE=
 EVAL_WORKERS=${EVAL_WORKERS}
 TAILOR_WORKERS=${TAILOR_WORKERS}
 SCRAPE_BUDGET_SECONDS=${SCRAPE_BUDGET_SECONDS}
+# --- Sources: run the stdlib LinkedIn guest source (works on ARMv6) instead of
+#     the jobspy-backed LinkedIn sources it supersedes. ---
+SOURCES_ENABLE=linkedin-guest
+SOURCES_DISABLE=linkedin-global,linkedin-israel
+# --- Dedup-state sync with the orphan 'state' branch. 0 = off; set to 1 AFTER
+#     running scripts/setup-state-sync.sh (creates the .state checkout + deploy key). ---
+STATE_SYNC=0
 EOF
   chown "$REAL_USER" "$ENV_FILE" 2>/dev/null || true
   chmod 600 "$ENV_FILE"
@@ -274,5 +281,9 @@ echo "  Logs:      journalctl -u ${SERVICE_NAME}.service -f"
 echo "  Bot logs:  journalctl -u ${SERVICE_NAME}-bot.service -f"
 echo "  Disable:   $SUDO systemctl disable --now ${SERVICE_NAME}.timer"
 echo "  Control:   from the authorized Telegram chat — /run, /status, /tailor"
+echo
+echo "Optional — share dedup state with the GitHub Actions runner (staggered runs"
+echo "inherit each other's seen jobs, so neither re-delivers a posting):"
+echo "  bash $REPO/scripts/setup-state-sync.sh   # then set STATE_SYNC=1 in .env"
 echo
 ok "Setup complete."
