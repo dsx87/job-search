@@ -14,6 +14,7 @@ from ..llm.eval import evaluate_job
 from ..models import job_to_dict
 from ..notify.telegram import TelegramClient
 from ..sources.fetch import fetch_jobs, select_sources
+from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
     load_seen_jobs,
     normalize_url,
@@ -58,6 +59,11 @@ def run_list(cfg) -> None:
 
 def run_daily(cfg, test: bool = False) -> None:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
+    if cfg.state_sync:
+        # Pull the shared dedup baseline FIRST: linkedin-guest peeks at
+        # seen_jobs.json during fetch to skip description requests for jobs the
+        # other runner already delivered. Best-effort; never raises.
+        pull_state()
     if not all([cfg.gemini_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
         print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
         sys.exit(1)
@@ -211,3 +217,9 @@ def run_daily(cfg, test: bool = False) -> None:
         print(f"Fatal error: {exc}", file=sys.stderr)
         _send_error_notification(exc, telegram)
         raise
+    finally:
+        if cfg.state_sync and not test:
+            # Push even on error: seen_jobs.json only ever holds already-delivered
+            # jobs (incremental save), so a partial run's state is safe to share.
+            # Dev/test runs never push, mirroring run.sh's --list/--test rule.
+            push_state()

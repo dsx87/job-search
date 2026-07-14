@@ -116,3 +116,17 @@ def test_write_merged_format_matches_seen_jobs(tmp_path, monkeypatch):
     assert merged == ["a", "b", "c"]
     # byte-for-byte the same format save_seen_jobs / the state branch expects
     assert out.read_text() == json.dumps(["a", "b", "c"], indent=2)
+
+
+def test_keys_from_ref_repo_dir_inserts_dash_C(monkeypatch):
+    """With repo_dir set, git runs under `-C <dir>`; unset keeps `git show <spec>`."""
+    captured = {}
+
+    def fake_run(cmd, capture_output=True, text=True):
+        captured["cmd"] = cmd
+        return _FakeProc(0, json.dumps(["k1", "k2"]))
+
+    monkeypatch.setattr(seen_merge.subprocess, "run", fake_run)
+    keys = keys_from_ref("HEAD", repo_dir="/tmp/state")
+    assert keys == {"k1", "k2"}
+    assert captured["cmd"] == ["git", "-C", "/tmp/state", "show", "HEAD:seen_jobs.json"]
