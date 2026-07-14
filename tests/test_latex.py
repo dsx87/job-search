@@ -55,6 +55,16 @@ def test_validate_tailored_cv_forbidden_term():
     assert any("forbidden term present: 'banking'" == x for x in v)
 
 
+def test_validate_tailored_cv_forbidden_cpp_development():
+    v = validate_tailored_cv(_cv(extra="Developed C++ shared libraries at Check Point."))
+    assert any(x.startswith("forbidden term present:") and "C++" in x for x in v)
+
+
+def test_validate_tailored_cv_allows_cpp_interop():
+    # Swift/C++ interop is truthful and must not be flagged.
+    assert validate_tailored_cv(_cv(extra="Used Swift/C++ interop; C++ Interop.")) == []
+
+
 def testpdf_pages_from_log(tmp_path):
     log = tmp_path / "cv.log"
     log.write_text("blah\nOutput written on cv.pdf (2 pages, 34567 bytes).\nmore", encoding="utf-8")

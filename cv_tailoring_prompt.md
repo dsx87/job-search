@@ -202,7 +202,7 @@ Responsibilities:
 - UI design and implementation for macOS and iOS
 - Swift network code for VPN/security layer
 - NetworkExtension framework
-- C++ shared libraries
+- Swift/C++ interop — called into existing C++ components (did NOT author C++)
 - CI/CD with GitHub Actions
 
 ---
@@ -268,7 +268,6 @@ NOTE: "iOS Developer" title only — do NOT add "Senior" to this role.
 - Swift Concurrency — async/await, actors (Proficient)
 - Combine (Proficient)
 - GCD / NSOperation / Threads (Expert)
-- C++ (Proficient) — shared libraries, Check Point
 - Objective-C Runtime (Expert) — swizzling, runtime hacks
 - MVC, MVVM, MVP, Clean Architecture, TCA
 - Xcode, Instruments, LLDB, CocoaPods, SPM, GitHub Actions
@@ -281,6 +280,7 @@ NOTE: "iOS Developer" title only — do NOT add "Senior" to this role.
 - APNs / Push Notifications — basic, touched at CNOGA only
 - CoreLocation — limited, no extensive experience
 - Hopper disassembler — functional level, not expert. Only mention in "reverse engineering" context
+- C++ interop (Familiar) — called into existing C++ components from Swift at Check Point; **never wrote C++**. May mention "Swift/C++ interop" honestly, but do NOT list C++ as a programming language or claim any C++ development.
 - C, Java, Python — basic level only. Do NOT list as proficiencies
 
 **DO NOT CLAIM UNDER ANY CIRCUMSTANCES:**
@@ -416,7 +416,7 @@ Use this as your starting point. Modify only what needs to change for the specif
 
 Senior iOS and macOS engineer with 9+ years shipping production software across cybersecurity,
 medical devices, consumer apps, and developer tooling. Deep expertise in Swift, Objective-C
-runtime internals, Core Bluetooth, and C++ cross-platform layers. Track record of owning features
+runtime internals, and Core Bluetooth, plus cross-platform C++ interop. Track record of owning features
 end-to-end — from technical design to delivery — and driving architectural improvements that
 increase stability. Experienced collaborating with distributed international teams, and integrates
 AI-assisted tools (Claude~Code, Copilot) into daily engineering and planning workflows.
@@ -437,8 +437,8 @@ AI-assisted tools (Claude~Code, Copilot) into daily engineering and planning wor
         codebase, improving app stability and long-term maintainability
   \item \textbf{Restored dropped iOS platform support}: diagnosed customer-reported issues through
         deep git archaeology, CI pipeline adjustments, and TestFlight distribution
-  \item Developed C++ shared libraries and Swift network code for VPN/security layer using
-        the NetworkExtension framework
+  \item Built Swift network code for the VPN/security layer using the NetworkExtension
+        framework, interoperating with the team's existing C++ components via Swift/C++ interop
   \item Built and maintained CI/CD pipelines with GitHub Actions
 \end{itemize}
 
@@ -483,7 +483,7 @@ AI-assisted tools (Claude~Code, Copilot) into daily engineering and planning wor
 \section{Technical Skills}
 
 \begin{tabularx}{\textwidth}{@{}>{\bfseries\color{navy}}lX@{}}
-Languages    & Swift \textbullet\ Objective-C \textbullet\ C++ \\
+Languages    & Swift \textbullet\ Objective-C \\
 iOS / macOS  & UIKit \textbullet\ SwiftUI \textbullet\ AppKit \textbullet\ Core Bluetooth
                \textbullet\ CoreData \textbullet\ NetworkExtension \textbullet\ Combine
                \textbullet\ Swift Concurrency \textbullet\ XCTest / XCUITest
