@@ -18,6 +18,7 @@ from .base import SOURCE_REGISTRY as _RAW_REGISTRY
 from . import api_sources  # noqa: E402,F401
 from . import html_sources  # noqa: E402,F401
 from . import jobspy_sources  # noqa: E402,F401
+from . import linkedin_guest  # noqa: E402,F401
 from . import playwright_sources  # noqa: E402,F401
 from . import rss_sources  # noqa: E402,F401
 
@@ -27,6 +28,7 @@ SOURCE_ORDER = [
     "jobspy",
     "linkedin-global",
     "linkedin-israel",
+    "linkedin-guest",
     "arc",
     "mobile.career",
     "jobscroller",
