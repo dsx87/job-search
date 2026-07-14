@@ -16,6 +16,9 @@ FORBIDDEN_TERM_PATTERNS = [
     r"banking", r"\bbank\b", r"fintech", r"financial services",
     r"insurance", r"e-?commerce", r"\bgaming\b", r"advertising",
     r"StoreKit", r"WidgetKit", r"SwiftData", r"HealthKit", r"\bFDA\b", r"HIPAA",
+    # Igor never wrote C++ — only Swift/C++ interop is truthful. Catch any C++
+    # *development* claim while leaving the allowed "C++ interop" wording alone.
+    r"develop\w* c\+\+",
 ]
 
 
