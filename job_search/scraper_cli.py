@@ -136,7 +136,9 @@ def build_arg_parser():
     parser.add_argument(
         "--sources",
         default="all",
-        help="Comma-separated sources or 'all'. Use --list-sources to see names.",
+        help="Comma-separated sources or 'all' (the default-on set). Use "
+        "--list-sources to see names; sources marked (default: off) run only "
+        "when named explicitly.",
     )
     parser.add_argument(
         "--relocation-region",

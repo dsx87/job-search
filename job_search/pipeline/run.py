@@ -13,7 +13,7 @@ from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
 from ..models import job_to_dict
 from ..notify.telegram import TelegramClient
-from ..sources.fetch import fetch_jobs
+from ..sources.fetch import fetch_jobs, select_sources
 from ..state.seen_jobs import (
     load_seen_jobs,
     normalize_url,
@@ -25,7 +25,7 @@ from .stages import _send_error_notification, prepare_fit, process_job, send_fit
 
 def run_seed(cfg) -> None:
     """Mark all currently fetched jobs as seen without evaluating."""
-    raw_jobs = fetch_jobs(verbose=True)
+    raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
     added = 0
@@ -43,7 +43,7 @@ def run_seed(cfg) -> None:
 
 def run_list(cfg) -> None:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
-    raw_jobs = fetch_jobs(verbose=True)
+    raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
     new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen and title_company_key(j.title, j.company, j.location) not in seen]
@@ -72,7 +72,7 @@ def run_daily(cfg, test: bool = False) -> None:
         base_tex = load_base_tex()
 
         print("Fetching jobs...", flush=True)
-        raw_jobs = fetch_jobs(verbose=True)
+        raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
 
         if test:
             if not raw_jobs:

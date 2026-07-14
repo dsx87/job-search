@@ -6,6 +6,7 @@ http_request binding, so these run fully offline. Optional sources
 dependency is absent.
 """
 import datetime as dt
+from collections import OrderedDict
 
 import pytest
 
@@ -289,6 +290,84 @@ def test_fetch_jobs_runs_pipeline(monkeypatch):
 def test_fetch_jobs_empty_for_unknown_source(monkeypatch):
     monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"fake": object})
     assert fetch_mod.fetch_jobs(source_names=["nonexistent"]) == []
+
+
+# ── Default-on/off source selection (Part 2) ──────────────────────────────────
+def _selection_registry():
+    """Ordered fake registry: two default-on sources and one default-off."""
+    class A(base.BaseSource):
+        name = "a"
+
+    class B(base.BaseSource):
+        name = "b"
+
+    class Off(base.BaseSource):
+        name = "off"
+        default_enabled = False
+
+    return OrderedDict([("a", A), ("b", B), ("off", Off)])
+
+
+def test_default_source_names_excludes_default_off(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    assert fetch_mod.default_source_names() == ["a", "b"]
+    # Empty enable/disable reproduces the default-on set.
+    assert fetch_mod.select_sources() == ["a", "b"]
+
+
+def test_default_source_names_treats_bare_class_as_on(monkeypatch):
+    # A class with no default_enabled attr (getattr fallback) counts as on.
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", OrderedDict([("bare", object)]))
+    assert fetch_mod.default_source_names() == ["bare"]
+
+
+def test_select_sources_enable_resurrects_default_off(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    # Registry order preserved: 'off' comes last.
+    assert fetch_mod.select_sources(enable=("off",)) == ["a", "b", "off"]
+
+
+def test_select_sources_disable_removes_default_on(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    assert fetch_mod.select_sources(disable=("a",)) == ["b"]
+
+
+def test_select_sources_enable_wins_over_disable(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    # 'a' in both lists → enable wins, stays selected.
+    assert fetch_mod.select_sources(enable=("a",), disable=("a",)) == ["a", "b"]
+
+
+def test_select_sources_warns_on_unknown(monkeypatch, capsys):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    result = fetch_mod.select_sources(enable=("bogus",), disable=("nope",))
+    assert result == ["a", "b"]  # unknowns ignored, defaults unchanged
+    err = capsys.readouterr().err
+    assert "Ignoring unknown sources" in err
+    assert "bogus" in err and "nope" in err
+
+
+def test_fetch_jobs_none_uses_default_on_set(monkeypatch):
+    today = dt.date.today()
+
+    class On(base.BaseSource):
+        name = "on"
+
+        def fetch(self, verbose=False):
+            return [Job(title="iOS Engineer", company="Acme", location="Berlin, Germany",
+                        url="https://x/on", description="Swift UIKit fully remote",
+                        is_remote=True, date_posted=today)]
+
+    class Off(base.BaseSource):
+        name = "off"
+        default_enabled = False
+
+        def fetch(self, verbose=False):
+            raise AssertionError("default-off source must not run when source_names is None")
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", OrderedDict([("on", On), ("off", Off)]))
+    jobs = fetch_mod.fetch_jobs(source_names=None)
+    assert [j.company for j in jobs] == ["Acme"]
 
 
 def test_fetch_jobs_abandons_source_exceeding_budget(monkeypatch, capsys):
