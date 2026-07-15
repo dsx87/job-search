@@ -20,7 +20,21 @@ from ..state.seen_jobs import (
     save_seen_jobs,
     title_company_key,
 )
-from .stages import _send_error_notification, prepare_fit, process_job, send_fit
+from .stages import (
+    _format_deferred_notification,
+    _send_error_notification,
+    ensure_job_description,
+    prepare_fit,
+    process_job,
+    send_fit,
+)
+
+
+def _evaluate_candidate(gemini, criteria, job):
+    """Evaluate a candidate only when its cleaned description is sufficient."""
+    if not ensure_job_description(job):
+        return None
+    return evaluate_job(gemini, criteria, job)
 
 
 def run_seed(cfg) -> None:
@@ -82,6 +96,20 @@ def run_daily(cfg, test: bool = False) -> None:
             d = job_to_dict(j)
             d["description"] = j.description
             print("Test mode: processing one job without touching seen_jobs.json.")
+            if not ensure_job_description(d):
+                print(
+                    "Test job deferred — insufficient job-description text.",
+                    flush=True,
+                )
+                try:
+                    telegram.send_message(_format_deferred_notification([d]))
+                except Exception as exc:
+                    print(
+                        f"Telegram deferred-job notification error: {exc}",
+                        file=sys.stderr,
+                    )
+                print("Done.", flush=True)
+                return
             process_job(gemini, criteria, tailoring_instructions, base_tex, d, telegram)
             print("Done.", flush=True)
             return
@@ -121,11 +149,17 @@ def run_daily(cfg, test: bool = False) -> None:
         # across a thread pool. seen-set mutation stays on this (main) thread as
         # results arrive — no locks needed.
         fits = []  # list of (key, tc_key, job, evaluation) for jobs judged a fit
+        deferred = []
+        evaluated_count = 0
         if new_jobs:
             print(f"Evaluating {len(new_jobs)} job(s) with {cfg.eval_workers} workers...", flush=True)
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
-                    pool.submit(evaluate_job, gemini, criteria, job): (key, tc_key, job)
+                    pool.submit(_evaluate_candidate, gemini, criteria, job): (
+                        key,
+                        tc_key,
+                        job,
+                    )
                     for key, tc_key, job in new_jobs
                 }
                 for future in concurrent.futures.as_completed(future_to_job):
@@ -139,6 +173,10 @@ def run_daily(cfg, test: bool = False) -> None:
                             file=sys.stderr,
                         )
                         continue
+                    if evaluation is None:
+                        deferred.append(job)
+                        continue
+                    evaluated_count += 1
                     if evaluation.get("fit"):
                         fits.append((key, tc_key, job, evaluation))
                     else:
@@ -146,6 +184,18 @@ def run_daily(cfg, test: bool = False) -> None:
                         print(f"    Skip '{job.get('title')}' — {evaluation.get('reason', '')}")
                         seen.add(key)
                         seen.add(tc_key)
+        if deferred:
+            print(
+                f"Deferred {len(deferred)} job(s) with insufficient description text.",
+                flush=True,
+            )
+            try:
+                telegram.send_message(_format_deferred_notification(deferred))
+            except Exception as exc:
+                print(
+                    f"Telegram deferred-job notification error: {exc}",
+                    file=sys.stderr,
+                )
         # Persist the non-fits captured above in one write.
         save_seen_jobs(seen)
         print(f"{len(fits)} fit(s) to tailor.", flush=True)
@@ -193,10 +243,17 @@ def run_daily(cfg, test: bool = False) -> None:
                     file=sys.stderr,
                 )
 
-        if sent == 0:
-            noun = "new posting" if len(new_jobs) == 1 else "new postings"
+        if sent == 0 and (not new_jobs or evaluated_count > 0):
+            if new_jobs:
+                count = evaluated_count
+                noun = "new posting" if count == 1 else "new postings"
+                action = "evaluated"
+            else:
+                count = 0
+                noun = "new postings"
+                action = "checked"
             msg = (
-                f"✅ Job search complete — {len(new_jobs)} {noun} checked, "
+                f"✅ Job search complete — {count} {noun} {action}, "
                 f"none matched your criteria."
             )
             try:

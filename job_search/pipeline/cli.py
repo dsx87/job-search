@@ -7,28 +7,13 @@ from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
 from ..llm.clients import LLMClient
 from ..notify.telegram import TelegramClient
 from .run import run_daily, run_list, run_seed
-from .stages import _send_error_notification, fetch_job_text_from_url, tailor_single_job
+from .stages import _send_error_notification, ensure_job_description, tailor_single_job
 
 
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one job dict, then tailor it."""
     if not all([cfg.gemini_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
         print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
-        sys.exit(1)
-
-    description = (args.job_text or "").strip()
-    if not description and args.url:
-        print(f"  Fetching job text from {args.url}", flush=True)
-        description = fetch_job_text_from_url(args.url)
-
-    if len(description) < MIN_JOB_TEXT_LEN:
-        print(
-            "Error: could not obtain enough job-description text "
-            f"(got {len(description)} chars, need >= {MIN_JOB_TEXT_LEN}).\n"
-            "The URL was likely blocked or requires JavaScript. Re-run and pass "
-            "the description directly via --job-text (paste fallback).",
-            file=sys.stderr,
-        )
         sys.exit(1)
 
     company = (args.company or "").strip()
@@ -41,8 +26,18 @@ def run_tailor(args, cfg) -> None:
         "company": company or "the role",
         "location": (args.location or "").strip(),
         "url": (args.url or "").strip(),
-        "description": description,
+        "description": args.job_text or "",
     }
+
+    if not ensure_job_description(job):
+        print(
+            "Error: could not obtain enough job-description text "
+            f"(got {len(job['description'])} chars, need >= {MIN_JOB_TEXT_LEN}).\n"
+            "The URL was likely blocked or requires JavaScript. Re-run and pass "
+            "the description directly via --job-text (paste fallback).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     try:
