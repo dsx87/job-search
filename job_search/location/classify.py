@@ -7,6 +7,8 @@ from .db import (
     CA_LOCATIONS,
     EU_CITIES,
     EU_COUNTRIES,
+    EU_MEMBER_CITIES,
+    EU_MEMBER_COUNTRIES,
     IL_LOCATIONS,
     US_LOCATIONS,
     _SHORT_LOCATION_TOKENS,
@@ -36,6 +38,15 @@ def classify_region(job):
         if contains_location_token(loc, token):
             return Region.US
     return Region.UNKNOWN
+
+
+def is_eu_member_job(job):
+    """Return whether the location explicitly identifies the EU or an EU-27 member."""
+    loc = job.location.lower()
+    return any(
+        contains_location_token(loc, token)
+        for token in EU_MEMBER_COUNTRIES | EU_MEMBER_CITIES
+    )
 
 
 def apply_region(job):

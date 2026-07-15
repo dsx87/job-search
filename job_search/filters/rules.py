@@ -2,7 +2,7 @@
 import datetime as dt
 import re
 
-from ..location.classify import classify_region, is_israel_job
+from ..location.classify import classify_region, is_eu_member_job, is_israel_job
 from ..models import Region
 from ..text import collapse_ws, strip_html
 from .keywords import SKILL_KEYWORDS, match_keywords
@@ -115,6 +115,18 @@ _RELOCATION_BLOCKERS = set(
         "visa sponsorship is not available",
         "without current or future sponsorship",
         "must be authorized to work",
+        "locals only",
+        "local candidates only",
+        "eu citizens only",
+        "eu residents only",
+        "european union citizens only",
+        "european union residents only",
+        "must already be authorized to work",
+        "must currently be authorized to work",
+        "must be legally authorized to work",
+        "must have existing work authorization",
+        "must have the right to work",
+        "valid work permit required",
     ]
 )
 
@@ -237,12 +249,16 @@ def relocation_filter(job, relocation_regions=None):
     if region not in relocation_regions:
         return False
 
-    if job.source.lower() in RELOCATION_GUARANTEED_SOURCES:
-        return True
-
     text = job_text(job)
     if has_relocation_blocker(text):
         return False
+
+    if is_eu_member_job(job):
+        return True
+
+    if job.source.lower() in RELOCATION_GUARANTEED_SOURCES:
+        return True
+
     return has_relocation_evidence(text)
 
 

@@ -85,6 +85,26 @@ EU_CITIES = set(
     ]
 )
 
+_NON_EU_BROAD_REGION_TOKENS = {
+    "uk",
+    "gb",
+    "eng",
+    "sct",
+    "united kingdom",
+    "england",
+    "scotland",
+    "wales",
+    "northern ireland",
+    "switzerland",
+    "norway",
+    "europe",
+    "eea",
+    "emea",
+}
+
+EU_MEMBER_COUNTRIES = EU_COUNTRIES - _NON_EU_BROAD_REGION_TOKENS
+EU_MEMBER_CITIES = EU_CITIES - {"london", "zurich", "oslo"}
+
 IL_LOCATIONS = set(
     [
         "israel",

@@ -60,13 +60,34 @@ def test_remote_filter():
 
 
 def test_relocation_filter():
-    eu = {Region.EU, Region.CA, Region.US}
-    assert relocation_filter(Job(location="Berlin, Germany", description="visa sponsorship available"), eu) is True
-    assert relocation_filter(Job(location="Berlin, Germany", description="we cannot sponsor visas"), eu) is False
-    assert relocation_filter(Job(location="Berlin, Germany", description="just a normal role"), eu) is False
-    assert relocation_filter(Job(source="relocate.me", location="Germany", description="anything"), eu) is True
-    # AU not in the default relocation set
-    assert relocation_filter(Job(location="Sydney, Australia", description="visa sponsorship"), eu) is False
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="Normal full-time iOS role"),
+        {Region.EU},
+    ) is True
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="Local candidates only"),
+        {Region.EU},
+    ) is False
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="Normal role"),
+        {Region.EU},
+    ) is False
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="Visa sponsorship available"),
+        {Region.EU},
+    ) is True
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="Normal role"),
+        {Region.US},
+    ) is False
+    assert relocation_filter(
+        Job(
+            source="relocate.me",
+            location="Berlin, Germany",
+            description="Applicants must already be authorized to work",
+        ),
+        {Region.EU},
+    ) is False
 
 
 def test_opportunity_filter_israel_always_passes():
@@ -118,7 +139,7 @@ def test_run_pipeline_golden():
         Job(title="Android Developer", company="Initech", location="Remote",
             url="https://x/an", description="Swift Kotlin iOS Android remote", is_remote=True, date_posted=today),
         Job(title="iOS Dev", company="Onsite Co", location="Berlin",
-            url="https://x/on", description="strictly onsite in office, no visa", is_remote=False, date_posted=today),
+            url="https://x/on", description="strictly onsite, local candidates only", is_remote=False, date_posted=today),
         Job(title="macOS Engineer", company="Cupertino", location="Remote",
             url="https://x/mac", description="Swift, remote position", is_remote=True, date_posted=today),
     ]
@@ -127,3 +148,15 @@ def test_run_pipeline_golden():
         ("iOS Engineer", "EU"),
         ("macOS Engineer", "UNKNOWN"),
     ]
+
+
+def test_run_pipeline_keeps_onsite_eu_member_role_without_blocker():
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        location="Berlin, Germany",
+        url="https://x/berlin",
+        description="Build an onsite iOS application with Swift and UIKit.",
+    )
+
+    assert run_pipeline([job], max_age_days=30) == [job]

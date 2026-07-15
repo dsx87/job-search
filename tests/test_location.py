@@ -4,10 +4,24 @@ from job_search.models import Job, Region
 from job_search.location.classify import (
     classify_region,
     contains_location_token,
+    is_eu_member_job,
     is_israel_job,
     guess_location_from_text,
     apply_region,
 )
+
+
+def test_is_eu_member_job_is_strict():
+    assert is_eu_member_job(Job(location="Berlin, Germany")) is True
+    assert is_eu_member_job(Job(location="Paris, France")) is True
+    assert is_eu_member_job(Job(location="Remote - EU")) is True
+    assert is_eu_member_job(Job(location="European Union")) is True
+
+    assert is_eu_member_job(Job(location="London, United Kingdom")) is False
+    assert is_eu_member_job(Job(location="Zurich, Switzerland")) is False
+    assert is_eu_member_job(Job(location="Oslo, Norway")) is False
+    assert is_eu_member_job(Job(location="Europe")) is False
+    assert is_eu_member_job(Job(location="EMEA")) is False
 
 
 def test_classify_region():
