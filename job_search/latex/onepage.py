@@ -61,17 +61,17 @@ def _shrink_to_one_page(tex_source: str, pdf_bytes: bytes, page_count: int) -> t
     best = (pdf_bytes, tex_source, page_count)
     for i, step in enumerate(ONE_PAGE_SHRINK_LADDER, 1):
         candidate = _apply_density_overrides(tex_source, step)
-        ok, cand_pdf, _err, pages = _compile_latex(candidate)
-        if not ok or pages is None:
+        result = _compile_latex(candidate)
+        if not result.ok or result.page_count is None or not result.pdf_bytes:
             continue
-        if pages < best[2]:
-            best = (cand_pdf, candidate, pages)
-        if pages == 1:
+        if result.page_count < best[2]:
+            best = (result.pdf_bytes, candidate, result.page_count)
+        if result.page_count == 1:
             print(f"    Auto-shrink fit one page at step {i}/{len(ONE_PAGE_SHRINK_LADDER)}.", flush=True)
-            return cand_pdf, candidate, 1
+            return result.pdf_bytes, candidate, 1
     print(
         f"    Auto-shrink could not reach one page (best {best[2]} pages) — "
-        f"delivering tightest version, REVIEW BEFORE SENDING.",
+        f"blocking delivery.",
         file=sys.stderr,
     )
     return best

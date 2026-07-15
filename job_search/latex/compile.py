@@ -10,6 +10,16 @@ import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CompileResult:
+    ok: bool
+    pdf_bytes: "bytes | None"
+    error_excerpt: str
+    page_count: "int | None"
+    repairable: bool
 
 
 def _strip_latex_fences(text: str) -> str:
@@ -60,11 +70,32 @@ def pdf_pages_from_log(log_path: str) -> "int | None":
     return int(m.group(1)) if m else None
 
 
-def _compile_latex(tex_source: str, cv_phone=None) -> tuple:
+def _decode_output(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _compiler_error_excerpt(log_path: str, completed) -> str:
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            log = f.read()
+    except OSError:
+        log = ""
+    if log:
+        return _extract_latex_errors(log)
+    captured = []
+    for process in completed:
+        captured.extend((_decode_output(process.stderr), _decode_output(process.stdout)))
+    return "\n".join(part for part in captured if part).strip()
+
+
+def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
     """
     Compile tex_source with xelatex.
-    Returns (success: bool, pdf_bytes: bytes|None, error_excerpt: str,
-             page_count: int|None).
+    Returns a CompileResult. A result is successful only when both compiler
+    passes exit cleanly and produce a nonempty PDF with a known positive page
+    count.
 
     cv_phone=None (default) reads the real number from the CV_PHONE environment
     variable, kept out of the repo and the LLM prompt; pass a string to inject
@@ -88,21 +119,31 @@ def _compile_latex(tex_source: str, cv_phone=None) -> tuple:
 
             cmd = ["xelatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
             # Run twice so cross-references resolve.
+            completed = []
             for _ in range(2):
-                subprocess.run(cmd, capture_output=True, timeout=120)
+                completed.append(subprocess.run(cmd, capture_output=True, timeout=120))
 
+            pages = pdf_pages_from_log(log_path)
+            error_excerpt = _compiler_error_excerpt(log_path, completed)
+            if any(process.returncode != 0 for process in completed):
+                return CompileResult(False, None, error_excerpt, pages, True)
+
+            pdf_bytes = None
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
-                    return True, f.read(), "", pdf_pages_from_log(log_path)
-
-            error_excerpt = ""
-            if os.path.exists(log_path):
-                with open(log_path, encoding="utf-8", errors="replace") as f:
-                    error_excerpt = _extract_latex_errors(f.read())
-            return False, None, error_excerpt, None
+                    pdf_bytes = f.read()
+            if not pdf_bytes:
+                detail = error_excerpt or "xelatex did not produce a nonempty PDF"
+                return CompileResult(False, None, detail, pages, False)
+            if pages is None or pages <= 0:
+                detail = error_excerpt or "xelatex PDF page count could not be verified"
+                return CompileResult(False, None, detail, pages, False)
+            return CompileResult(True, pdf_bytes, "", pages, False)
 
     except FileNotFoundError:
-        return False, None, "xelatex not found — cannot compile PDF", None
+        return CompileResult(False, None, "xelatex not found — cannot compile PDF", None, False)
+    except subprocess.TimeoutExpired:
+        return CompileResult(False, None, "xelatex timed out — cannot verify PDF", None, False)
 
 
 def _fix_latex(client, tex_source: str, error_excerpt: str) -> str:
@@ -134,17 +175,29 @@ def compile_with_fixes(client, tex_source: str, max_attempts: int = 3) -> tuple:
     from .onepage import _shrink_to_one_page
 
     for attempt in range(1, max_attempts + 1):
-        success, pdf_bytes, error_excerpt, pages = _compile_latex(tex_source)
-        if success:
-            if pages is not None and pages > 1:
-                pdf_bytes, tex_source, pages = _shrink_to_one_page(tex_source, pdf_bytes, pages)
-            return True, pdf_bytes, tex_source
-        print(f"    Compilation failed (attempt {attempt}/{max_attempts}): {error_excerpt[:120]}", flush=True)
-        if attempt < max_attempts:
+        result = _compile_latex(tex_source)
+        if result.ok:
+            if result.page_count == 1 and result.pdf_bytes:
+                return True, result.pdf_bytes, tex_source
+            if result.page_count and result.page_count > 1:
+                pdf_bytes, tex_source, pages = _shrink_to_one_page(
+                    tex_source, result.pdf_bytes, result.page_count
+                )
+                if pages == 1 and pdf_bytes:
+                    return True, pdf_bytes, tex_source
+            return False, None, tex_source
+        print(
+            f"    Compilation failed (attempt {attempt}/{max_attempts}): "
+            f"{result.error_excerpt[:120]}",
+            flush=True,
+        )
+        if result.repairable and attempt < max_attempts:
             print(f"    Asking Gemini to fix LaTeX errors...", flush=True)
             try:
-                tex_source = _fix_latex(client, tex_source, error_excerpt)
+                tex_source = _fix_latex(client, tex_source, result.error_excerpt)
             except Exception as exc:
                 print(f"    Fix request failed: {exc}", file=sys.stderr)
                 break
+        else:
+            break
     return False, None, tex_source

@@ -1,8 +1,19 @@
 """Characterization tests for LaTeX string ops and the CV validator."""
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.profile import validate_tailored_cv, EXPECTED_JOB_ORDER
+from job_search.latex import compile as compile_mod
+from job_search.latex import onepage as onepage_mod
 from job_search.latex.compile import (
+    CompileResult,
+    _compile_latex,
     _strip_latex_fences,
+    compile_with_fixes,
     pdf_pages_from_log,
     _extract_latex_errors,
 )
@@ -99,3 +110,147 @@ def test_apply_density_overrides_lowers_font_and_inserts_block():
 
 def test_expected_job_order_constant():
     assert EXPECTED_JOB_ORDER == ["Check Point", "Applitools", "Shutterfly", "CNOGA"]
+
+
+def _fake_xelatex(monkeypatch, returncodes, pdf_bytes=b"PDF", log_text=None):
+    calls = []
+    codes = iter(returncodes)
+
+    def run(cmd, capture_output, timeout):
+        calls.append(cmd)
+        tmpdir = Path(cmd[cmd.index("-output-directory") + 1])
+        if pdf_bytes is not None:
+            (tmpdir / "cv.pdf").write_bytes(pdf_bytes)
+        if log_text is not None:
+            (tmpdir / "cv.log").write_text(log_text, encoding="utf-8")
+        return SimpleNamespace(
+            returncode=next(codes),
+            stdout=b"captured stdout",
+            stderr=b"captured stderr",
+        )
+
+    monkeypatch.setattr(compile_mod.subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize("returncodes", [(1, 0), (0, 1)])
+def test_compile_latex_rejects_either_failed_pass(monkeypatch, returncodes):
+    calls = _fake_xelatex(
+        monkeypatch,
+        returncodes,
+        log_text="! Undefined control sequence.\nOutput written on cv.pdf (1 page, 3 bytes).",
+    )
+
+    result = _compile_latex("\\documentclass{x}\\begin{document}x\\end{document}", cv_phone="")
+
+    assert len(calls) == 2
+    assert result.ok is False
+    assert result.pdf_bytes is None
+    assert result.page_count == 1
+    assert result.repairable is True
+    assert "Undefined control sequence" in result.error_excerpt
+
+
+@pytest.mark.parametrize(
+    ("pdf_bytes", "log_text", "page_count"),
+    [
+        (None, "Output written on cv.pdf (1 page, 3 bytes).", 1),
+        (b"", "Output written on cv.pdf (1 page, 0 bytes).", 1),
+        (b"PDF", "no output line", None),
+        (b"PDF", "Output written on cv.pdf (0 pages, 3 bytes).", 0),
+    ],
+)
+def test_compile_latex_rejects_unverifiable_pdf(monkeypatch, pdf_bytes, log_text, page_count):
+    _fake_xelatex(monkeypatch, (0, 0), pdf_bytes=pdf_bytes, log_text=log_text)
+
+    result = _compile_latex("source", cv_phone="")
+
+    assert result.ok is False
+    assert result.pdf_bytes is None
+    assert result.page_count == page_count
+    assert result.repairable is False
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (FileNotFoundError("xelatex"), "not found"),
+        (subprocess.TimeoutExpired(["xelatex"], 120), "timed out"),
+    ],
+)
+def test_compile_latex_environment_failures_are_not_repairable(monkeypatch, exc, expected):
+    monkeypatch.setattr(compile_mod.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(exc))
+
+    result = _compile_latex("source", cv_phone="")
+
+    assert result.ok is False
+    assert result.repairable is False
+    assert expected in result.error_excerpt
+
+
+def test_compile_with_fixes_does_not_repair_nonrepairable_failure(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex: CompileResult(False, None, "page count unavailable", None, False),
+    )
+    client = fake_llm(["unused"])
+
+    assert compile_with_fixes(client, "source") == (False, None, "source")
+    assert client.prompts == []
+
+
+def test_compile_with_fixes_repairs_compiler_failure(monkeypatch, fake_llm):
+    results = iter(
+        [
+            CompileResult(False, None, "undefined control sequence", None, True),
+            CompileResult(True, b"PDF", "", 1, False),
+        ]
+    )
+    monkeypatch.setattr(compile_mod, "_compile_latex", lambda _tex: next(results))
+    client = fake_llm(["fixed source"])
+
+    assert compile_with_fixes(client, "broken source") == (True, b"PDF", "fixed source")
+    assert len(client.prompts) == 1
+
+
+def test_compile_with_fixes_accepts_known_one_page_result(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex: CompileResult(True, b"PDF", "", 1, False),
+    )
+
+    assert compile_with_fixes(fake_llm([]), "source") == (True, b"PDF", "source")
+
+
+def test_compile_with_fixes_rejects_unrecoverable_multi_page_result(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex: CompileResult(True, b"TWO", "", 2, False),
+    )
+    monkeypatch.setattr(
+        onepage_mod,
+        "_shrink_to_one_page",
+        lambda tex, pdf, pages: (b"STILL_TWO", "shrunk", 2),
+    )
+
+    assert compile_with_fixes(fake_llm([]), "source") == (False, None, "shrunk")
+
+
+def test_shrink_to_one_page_uses_verified_compile_result(monkeypatch):
+    results = iter(
+        [
+            CompileResult(False, None, "broken", None, True),
+            CompileResult(True, b"ONE", "", 1, False),
+        ]
+    )
+    monkeypatch.setattr(onepage_mod, "_compile_latex", lambda _tex: next(results))
+
+    source = "\\documentclass[10pt]{article}\\begin{document}x\\end{document}"
+    pdf, final_tex, pages = onepage_mod._shrink_to_one_page(source, b"TWO", 2)
+
+    assert pdf == b"ONE"
+    assert final_tex != source
+    assert pages == 1

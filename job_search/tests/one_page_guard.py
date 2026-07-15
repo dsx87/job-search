@@ -3,7 +3,8 @@
 
 Verifies the two halves of the one-page guarantee:
   1. The hand-tuned base CV compiles to exactly one page.
-  2. latex.onepage._shrink_to_one_page deterministically pulls an overflowing CV
+  2. A malformed source that still emits a PDF is rejected on nonzero exit.
+  3. latex.onepage._shrink_to_one_page deterministically pulls an overflowing CV
      back to exactly one page.
 
 The overflow in (2) is manufactured by *loosening* the base's density (bigger
@@ -43,28 +44,52 @@ def main() -> int:
         tex = f.read()
 
     # 1. Base CV must be exactly one page.
-    ok, _pdf, err, pages = _compile_latex(tex)
-    if not ok:
-        print(f"FAIL: base CV did not compile: {err[:200]}", file=sys.stderr)
+    result = _compile_latex(tex)
+    if not result.ok:
+        print(f"FAIL: base CV did not compile: {result.error_excerpt[:200]}", file=sys.stderr)
         return 1
-    if pages != 1:
-        print(f"FAIL: base CV is {pages} pages, expected exactly 1.", file=sys.stderr)
+    if result.page_count != 1:
+        print(f"FAIL: base CV is {result.page_count} pages, expected exactly 1.", file=sys.stderr)
         return 1
     print("PASS: base CV compiles to exactly 1 page.")
 
-    # 2a. The blown-up CV must actually overflow (otherwise the test is vacuous).
-    blown = _blow_up(tex)
-    ok, pdf, err, pages = _compile_latex(blown)
-    if not ok:
-        print(f"FAIL: blown-up CV did not compile: {err[:200]}", file=sys.stderr)
+    # 2. Nonstop mode can emit a PDF despite compiler errors. The wrapper must
+    # reject that artifact based on the nonzero return code.
+    malformed = tex.replace(
+        "\\end{document}",
+        "\\ThisCommandDoesNotExist\n\\end{document}",
+        1,
+    )
+    malformed_result = _compile_latex(malformed)
+    if malformed_result.ok:
+        print("FAIL: malformed CV with compiler errors was accepted.", file=sys.stderr)
         return 1
-    if pages is None or pages < 2:
-        print(f"FAIL: blow-up did not overflow (got {pages} pages) — test invalid.", file=sys.stderr)
+    if not malformed_result.page_count:
+        print(
+            "FAIL: malformed CV did not emit a PDF under nonstopmode — test invalid.",
+            file=sys.stderr,
+        )
         return 1
-    print(f"PASS: blown-up CV overflows to {pages} pages.")
+    print("PASS: PDF-producing nonzero compile is rejected.")
 
-    # 2b. Auto-shrink must bring it back to exactly one page.
-    _pdf2, _final_tex, final_pages = _shrink_to_one_page(blown, pdf, pages)
+    # 3a. The blown-up CV must actually overflow (otherwise the test is vacuous).
+    blown = _blow_up(tex)
+    result = _compile_latex(blown)
+    if not result.ok:
+        print(f"FAIL: blown-up CV did not compile: {result.error_excerpt[:200]}", file=sys.stderr)
+        return 1
+    if result.page_count is None or result.page_count < 2:
+        print(
+            f"FAIL: blow-up did not overflow (got {result.page_count} pages) — test invalid.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"PASS: blown-up CV overflows to {result.page_count} pages.")
+
+    # 3b. Auto-shrink must bring it back to exactly one page.
+    _pdf2, _final_tex, final_pages = _shrink_to_one_page(
+        blown, result.pdf_bytes, result.page_count
+    )
     if final_pages != 1:
         print(f"FAIL: auto-shrink ended at {final_pages} pages, expected 1.", file=sys.stderr)
         return 1
