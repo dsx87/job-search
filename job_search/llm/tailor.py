@@ -1,8 +1,15 @@
 """LLM CV tailoring with a deterministic content guard + one corrective retry."""
-import sys
 
 from ..latex.compile import _strip_latex_fences
 from ..profile import EXPECTED_JOB_ORDER, validate_tailored_cv
+
+
+class CVValidationError(ValueError):
+    """Raised when a tailored CV still violates factual constraints."""
+
+    def __init__(self, violations):
+        self.violations = tuple(violations)
+        super().__init__("; ".join(self.violations))
 
 
 def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict) -> str:
@@ -10,8 +17,8 @@ def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict)
 
     Generates at temperature 0.0 for factual stability, then runs a
     deterministic guard (validate_tailored_cv). On violations it regenerates
-    once with a corrective instruction; if the second pass still fails, it logs
-    the remaining violations and returns the best attempt.
+    once with a corrective instruction; if the second pass still fails, it
+    raises CVValidationError so invalid content cannot reach delivery.
     """
     job_text = (
         f"Title: {job.get('title', '')}\n"
@@ -58,9 +65,5 @@ not have. Output raw LaTeX only.
     tex2 = _strip_latex_fences(client.generate(corrective, temperature=0.0))
     remaining = validate_tailored_cv(tex2)
     if remaining:
-        print(
-            f"    CV guard: violations persist after retry: {'; '.join(remaining)} — "
-            f"delivering best attempt, REVIEW BEFORE SENDING.",
-            file=sys.stderr,
-        )
+        raise CVValidationError(remaining)
     return tex2

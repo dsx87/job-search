@@ -6,7 +6,7 @@ import pytest
 # --- modules under test (repoint on migration) ---
 from job_search.llm.clients import LLMClient
 from job_search.llm.eval import evaluate_job
-from job_search.llm.tailor import tailor_resume
+from job_search.llm.tailor import CVValidationError, tailor_resume
 
 
 def _http_error(code):
@@ -111,3 +111,24 @@ def test_tailor_resume_regenerates_on_violation(fake_llm):
     assert out == good
     assert len(client.prompts) == 2
     assert "CORRECTION REQUIRED" in client.prompts[1]
+
+
+def test_tailor_resume_raises_when_violations_persist(fake_llm):
+    bad_first = (
+        "\\documentclass{x}\\begin{document}"
+        "\\jobheader{Applitools}\\jobheader{Check Point}"
+        "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}"
+    )
+    bad_second = (
+        "\\documentclass{x}\\begin{document}"
+        "\\jobheader{Check Point}\\jobheader{Applitools}"
+        "\\jobheader{Shutterfly}\\end{document}"
+    )
+    client = fake_llm([bad_first, bad_second])
+
+    with pytest.raises(CVValidationError) as raised:
+        tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme"})
+
+    assert len(client.prompts) == 2
+    assert isinstance(raised.value.violations, tuple)
+    assert any("missing job" in violation for violation in raised.value.violations)
