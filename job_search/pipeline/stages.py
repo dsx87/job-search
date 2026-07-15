@@ -17,6 +17,7 @@ from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instruction
 from ..latex.compile import compile_with_fixes
 from ..llm.eval import evaluate_job
 from ..llm.tailor import tailor_resume
+from ..profile import validate_tailored_cv
 from ..text import collapse_ws, strip_html
 
 
@@ -197,12 +198,19 @@ def _prepare_verified_pdf(client, instructions: str, base_tex: str, job: dict) -
         raise CVPreparationError(f"CV tailoring failed: {exc}") from exc
 
     try:
-        ok, pdf_bytes, _final_tex = compile_with_fixes(client, tex_source)
+        ok, pdf_bytes, final_tex = compile_with_fixes(client, tex_source)
     except Exception as exc:
         raise CVPreparationError(f"CV compilation failed: {exc}") from exc
 
     if not ok or not isinstance(pdf_bytes, bytes) or not pdf_bytes:
         raise CVPreparationError("CV compilation did not produce a verified one-page PDF")
+    if not isinstance(final_tex, str):
+        raise CVPreparationError("CV compilation did not return verifiable LaTeX source")
+    violations = validate_tailored_cv(final_tex)
+    if violations:
+        raise CVPreparationError(
+            "Final CV validation failed after compilation repair: " + "; ".join(violations)
+        )
     return pdf_bytes
 
 

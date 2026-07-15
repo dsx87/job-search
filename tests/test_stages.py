@@ -120,6 +120,30 @@ def test_prepare_fit_payload_contains_only_delivery_fields(monkeypatch, fake_llm
     assert payload["pdf_bytes"] == b"PDF"
 
 
+def test_prepare_fit_revalidates_compiler_repair_output(monkeypatch):
+    repaired_with_false_claim = CLEAN_CV.replace(
+        "\\end{document}",
+        "Built consumer banking systems.\\end{document}",
+    )
+    monkeypatch.setattr(stages, "tailor_resume", lambda *_args: CLEAN_CV)
+    monkeypatch.setattr(
+        stages,
+        "compile_with_fixes",
+        lambda _client, _tex: (True, b"PDF", repaired_with_false_claim),
+    )
+
+    with pytest.raises(CVPreparationError) as raised:
+        prepare_fit(
+            object(),
+            "instr",
+            "base",
+            {"title": "iOS", "company": "Acme"},
+            {"fit": True, "reason": "great"},
+        )
+
+    assert "banking" in str(raised.value)
+
+
 def test_process_job_not_fit(fake_llm):
     gemini = fake_llm(['{"fit": false, "reason": "no apple work", "timezone_note": null}'])
     tg = FakeTelegram()
