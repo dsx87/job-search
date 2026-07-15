@@ -40,17 +40,24 @@ def make_config():
     )
 
 
-def install_daily_fakes(monkeypatch, jobs, telegram=None):
+def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None):
     telegram = telegram or FakeTelegram()
+    state = set(initial_seen or ())
     saved = []
+
+    def save(seen):
+        state.clear()
+        state.update(seen)
+        saved.append(set(state))
+
     monkeypatch.setattr(run, "TelegramClient", lambda *_args: telegram)
     monkeypatch.setattr(run, "LLMClient", lambda *_args: FakeLLM())
     monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
     monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
     monkeypatch.setattr(run, "load_base_tex", lambda: "base")
-    monkeypatch.setattr(run, "fetch_jobs", lambda **_kwargs: jobs)
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: set())
-    monkeypatch.setattr(run, "save_seen_jobs", lambda seen: saved.append(set(seen)))
+    monkeypatch.setattr(run, "fetch_jobs", lambda **_kwargs: list(jobs))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda: set(state))
+    monkeypatch.setattr(run, "save_seen_jobs", save)
     return telegram, saved
 
 
@@ -122,6 +129,71 @@ def test_deferred_notice_failure_is_soft_and_job_stays_unseen(monkeypatch):
     run.run_daily(make_config())
 
     assert "https://x/short" not in saved[-1]
+    assert "deferred:url:https://x/short" in saved[-1]
+    assert "deferred:job:short|acme" in saved[-1]
+
+
+def test_repeat_deferred_notification_is_suppressed_but_job_is_retried(monkeypatch):
+    job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    attempts = []
+
+    def insufficient(candidate):
+        attempts.append(candidate["url"])
+        return False
+
+    monkeypatch.setattr(run, "ensure_job_description", insufficient)
+
+    run.run_daily(make_config())
+    run.run_daily(make_config())
+
+    deferred_messages = [m for m in telegram.messages if "posting deferred" in m]
+    assert attempts == ["https://x/short", "https://x/short"]
+    assert len(deferred_messages) == 1
+    assert "https://x/short" not in saved[-1]
+    assert "short|acme" not in saved[-1]
+    assert "deferred:url:https://x/short" in saved[-1]
+    assert "deferred:job:short|acme" in saved[-1]
+
+
+def test_previously_deferred_job_can_later_be_evaluated(monkeypatch):
+    job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    sufficiency = iter((False, True))
+    evaluated = []
+
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: next(sufficiency))
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda _client, _criteria, candidate: (
+            evaluated.append(candidate["url"])
+            or {"fit": False, "reason": "no", "timezone_note": None}
+        ),
+    )
+
+    run.run_daily(make_config())
+    run.run_daily(make_config())
+
+    assert evaluated == ["https://x/short"]
+    assert "https://x/short" in saved[-1]
+    assert "short|acme" in saved[-1]
+    assert len([m for m in telegram.messages if "posting deferred" in m]) == 1
+
+
+def test_new_sparse_job_still_notifies_after_another_job_was_deferred(monkeypatch):
+    jobs = [Job(title="First", company="Acme", url="https://x/first", description="tiny")]
+    telegram, _saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
+
+    run.run_daily(make_config())
+    jobs[:] = [Job(title="Second", company="Beta", url="https://x/second", description="tiny")]
+    run.run_daily(make_config())
+
+    deferred_messages = [m for m in telegram.messages if "posting deferred" in m]
+    assert len(deferred_messages) == 2
+    assert "First" in deferred_messages[0]
+    assert "Second" in deferred_messages[1]
 
 
 def test_mode_defers_before_process_job_without_seen_state(monkeypatch):

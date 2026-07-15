@@ -38,6 +38,18 @@ def _evaluate_candidate(gemini, criteria, job):
     return evaluate_job(gemini, criteria, job)
 
 
+_DEFERRED_MARKER_PREFIX = "deferred:"
+
+
+def _deferred_markers(key: str, tc_key: str) -> set[str]:
+    markers = set()
+    if key:
+        markers.add(f"{_DEFERRED_MARKER_PREFIX}url:{key}")
+    if tc_key:
+        markers.add(f"{_DEFERRED_MARKER_PREFIX}job:{tc_key}")
+    return markers
+
+
 def run_seed(cfg) -> None:
     """Mark all currently fetched jobs as seen without evaluating."""
     raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
@@ -155,7 +167,8 @@ def run_daily(cfg, test: bool = False) -> None:
         # across a thread pool. seen-set mutation stays on this (main) thread as
         # results arrive — no locks needed.
         fits = []  # list of (key, tc_key, job, evaluation) for jobs judged a fit
-        deferred = []
+        deferred_count = 0
+        newly_deferred = []
         evaluated_count = 0
         if new_jobs:
             print(f"Evaluating {len(new_jobs)} job(s) with {cfg.eval_workers} workers...", flush=True)
@@ -180,7 +193,11 @@ def run_daily(cfg, test: bool = False) -> None:
                         )
                         continue
                     if evaluation is None:
-                        deferred.append(job)
+                        deferred_count += 1
+                        markers = _deferred_markers(key, tc_key)
+                        if not markers or markers.isdisjoint(seen):
+                            newly_deferred.append(job)
+                        seen.update(markers)
                         continue
                     evaluated_count += 1
                     if evaluation.get("fit"):
@@ -190,13 +207,14 @@ def run_daily(cfg, test: bool = False) -> None:
                         print(f"    Skip '{job.get('title')}' — {evaluation.get('reason', '')}")
                         seen.add(key)
                         seen.add(tc_key)
-        if deferred:
+        if deferred_count:
             print(
-                f"Deferred {len(deferred)} job(s) with insufficient description text.",
+                f"Deferred {deferred_count} job(s) with insufficient description text.",
                 flush=True,
             )
+        if newly_deferred:
             try:
-                telegram.send_message(_format_deferred_notification(deferred))
+                telegram.send_message(_format_deferred_notification(newly_deferred))
             except Exception as exc:
                 print(
                     f"Telegram deferred-job notification error: {exc}",
