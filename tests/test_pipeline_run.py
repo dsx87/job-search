@@ -61,6 +61,13 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None):
     return telegram, saved
 
 
+def test_deferred_markers_ignore_semantically_empty_job_identity():
+    tc_key = run.title_company_key("", "", "")
+
+    assert tc_key == "|"
+    assert run._deferred_markers("", tc_key) == set()
+
+
 def test_all_deferred_stays_unseen_and_does_not_claim_none_matched(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, saved = install_daily_fakes(monkeypatch, [job])

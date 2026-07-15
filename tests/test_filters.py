@@ -1,6 +1,8 @@
 """Characterization tests for the filter rules and run_pipeline."""
 import datetime as dt
 
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.models import Job, Region
 from job_search.filters.rules import (
@@ -95,6 +97,30 @@ def test_relocation_filter_rejects_northern_ireland_without_evidence():
         title="iOS Engineer",
         company="Acme",
         location="Belfast, Northern Ireland",
+        description="Build an onsite iOS application with Swift and UIKit.",
+    )
+
+    assert relocation_filter(job, {Region.EU}) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Belfast, Northern-Ireland",
+        "Belfast, Northern  Ireland",
+        "Remote - non-EU",
+        "Dublin, Ohio, USA",
+        "Athens, Georgia, USA",
+        "Dublin, Canada",
+        "Athens, Australia",
+        "Dublin, United Kingdom",
+    ],
+)
+def test_relocation_filter_rejects_non_eu_and_conflicting_locations(location):
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        location=location,
         description="Build an onsite iOS application with Swift and UIKit.",
     )
 

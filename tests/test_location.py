@@ -1,4 +1,6 @@
 """Characterization tests for region classification and location helpers."""
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.models import Job, Region
 from job_search.location.classify import (
@@ -27,6 +29,45 @@ def test_is_eu_member_job_is_strict():
     assert is_eu_member_job(Job(location="Oslo, Norway")) is False
     assert is_eu_member_job(Job(location="Europe")) is False
     assert is_eu_member_job(Job(location="EMEA")) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Belfast, Northern-Ireland",
+        "Belfast, Northern  Ireland",
+    ],
+)
+def test_is_eu_member_job_rejects_northern_ireland_spelling_variants(location):
+    assert is_eu_member_job(Job(location=location)) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Remote - non-EU",
+        "Dublin, Ohio, USA",
+        "Athens, Georgia, USA",
+        "Dublin, Canada",
+        "Athens, Australia",
+        "Dublin, United Kingdom",
+    ],
+)
+def test_is_eu_member_job_rejects_negation_and_conflicting_city_evidence(location):
+    assert is_eu_member_job(Job(location=location)) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Dublin, Ireland / Belfast, Northern-Ireland",
+        "Berlin, Germany / USA",
+        "Remote - EU / USA",
+        "Non-EU applicants / Paris, France",
+    ],
+)
+def test_is_eu_member_job_keeps_independent_positive_eu_evidence(location):
+    assert is_eu_member_job(Job(location=location)) is True
 
 
 def test_classify_region():

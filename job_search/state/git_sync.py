@@ -1,9 +1,10 @@
 """Sync the dedup state (seen_jobs.json) with the repo's orphan ``state`` branch.
 
 A faithful Python port of the Pi's ``run.sh`` sync_pull / sync_push: PULL the
-shared seen-keys before a run and PUSH them back after, so staggered runners
-(the Pi and GitHub Actions) share one dedup baseline and neither re-delivers a
-job the other already sent. Gated by ``STATE_SYNC=1`` (``PipelineConfig.state_sync``).
+shared state keys before a run and PUSH them back after, so staggered runners
+(the Pi and GitHub Actions) share ordinary seen identities plus namespaced
+deferral markers. This prevents both repeated delivery and duplicate deferral
+notices. Gated by ``STATE_SYNC=1`` (``PipelineConfig.state_sync``).
 
 Everything is best-effort and **never raises**: a missing ``.state`` checkout,
 an unreachable remote, or any git failure logs a ``[state]`` line and returns,
@@ -67,11 +68,13 @@ def push_state(state_dir=STATE_DIR, branch=STATE_BRANCH, seen_file=SEEN_JOBS_FIL
                message=COMMIT_MESSAGE, attempts=PUSH_ATTEMPTS) -> bool:
     """Push the local seen_file to origin/<branch>, union-merging on rejection.
 
-    Safe to call even after a non-zero pipeline exit: seen_jobs.json only ever
-    holds jobs whose Telegram send already succeeded (incremental save), so a
-    partial run's state is safe to share. Returns True when the remote ends up
-    holding our keys (pushed / already had them / nothing changed), False when
-    we could not get them there. Never raises."""
+    Safe to call even after a non-zero pipeline exit: ordinary keys record
+    handled or deliberately silenced job identities, while reserved
+    ``deferred:`` markers suppress repeat notices without marking jobs seen.
+    Both are string keys with set-union semantics, so partial-run state is safe
+    to share. Returns True when the remote ends up holding our keys (pushed /
+    already had them / nothing changed), False when we could not get them
+    there. Never raises."""
     if not os.path.isdir(os.path.join(state_dir, ".git")):
         print(f"[state] push skipped (no {state_dir} checkout)", file=sys.stderr)
         return False

@@ -38,6 +38,7 @@ def _evaluate_candidate(gemini, criteria, job):
     return evaluate_job(gemini, criteria, job)
 
 
+# Reserved for pipeline metadata; these entries must never act as seen identities.
 _DEFERRED_MARKER_PREFIX = "deferred:"
 
 
@@ -45,7 +46,7 @@ def _deferred_markers(key: str, tc_key: str) -> set[str]:
     markers = set()
     if key:
         markers.add(f"{_DEFERRED_MARKER_PREFIX}url:{key}")
-    if tc_key:
+    if tc_key and tc_key != "|":
         markers.add(f"{_DEFERRED_MARKER_PREFIX}job:{tc_key}")
     return markers
 
@@ -294,7 +295,8 @@ def run_daily(cfg, test: bool = False) -> None:
         raise
     finally:
         if cfg.state_sync and not test:
-            # Push even on error: seen_jobs.json only ever holds already-delivered
-            # jobs (incremental save), so a partial run's state is safe to share.
+            # Push even on error: ordinary keys represent handled/silenced jobs,
+            # while namespaced deferral markers only suppress duplicate notices.
+            # Both are set-union-safe to share after a partial run.
             # Dev/test runs never push, mirroring run.sh's --list/--test rule.
             push_state()
