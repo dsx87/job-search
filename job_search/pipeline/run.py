@@ -7,6 +7,7 @@ save points) is preserved exactly from the original pipeline.
 import concurrent.futures
 import datetime
 import sys
+from dataclasses import dataclass
 
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
 from ..llm.clients import LLMClient
@@ -29,6 +30,41 @@ from .stages import (
     process_job,
     send_fit,
 )
+
+
+@dataclass
+class RunStats:
+    new_jobs: int = 0
+    evaluated: int = 0
+    non_fit: int = 0
+    fits: int = 0
+    deferred: int = 0
+    evaluation_failed: int = 0
+    preparation_failed: int = 0
+    notification_sent: int = 0
+    cv_sent: int = 0
+    delivery_failed: int = 0
+
+
+def _format_run_summary(stats: RunStats) -> str:
+    lines = [
+        "✅ <b>Job search complete</b>",
+        f"New candidates: {stats.new_jobs}",
+        f"Evaluated: {stats.evaluated} (non-fit: {stats.non_fit}, fit: {stats.fits})",
+        f"Deferred: {stats.deferred}",
+        f"Fit notifications sent: {stats.notification_sent}",
+        f"Verified CVs delivered: {stats.cv_sent}",
+        f"Evaluation failures: {stats.evaluation_failed}",
+        f"Preparation failures: {stats.preparation_failed}",
+        f"Delivery failures: {stats.delivery_failed}",
+    ]
+    if stats.fits == 0:
+        lines.extend(("", "No evaluated jobs matched your criteria."))
+    if stats.fits > stats.cv_sent:
+        pending = stats.fits - stats.cv_sent
+        noun = "fit" if pending == 1 else "fits"
+        lines.extend(("", f"⚠️ {pending} {noun} not fully delivered; they will retry next run."))
+    return "\n".join(lines)
 
 
 def _evaluate_candidate(gemini, criteria, job):
@@ -162,15 +198,14 @@ def run_daily(cfg, test: bool = False) -> None:
         # Persist seen set now — captures first-run silenced jobs; new jobs are NOT yet included.
         save_seen_jobs(seen)
         print(f"Found {len(new_jobs)} new job(s).", flush=True)
+        stats = RunStats(new_jobs=len(new_jobs))
 
         # ── Stage 2: Evaluate all new jobs concurrently ──────────────────────
         # Gemini calls are independent and the client is stateless, so we fan out
         # across a thread pool. seen-set mutation stays on this (main) thread as
         # results arrive — no locks needed.
         fits = []  # list of (key, tc_key, job, evaluation) for jobs judged a fit
-        deferred_count = 0
         newly_deferred = []
-        evaluated_count = 0
         if new_jobs:
             print(f"Evaluating {len(new_jobs)} job(s) with {cfg.eval_workers} workers...", flush=True)
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
@@ -188,29 +223,32 @@ def run_daily(cfg, test: bool = False) -> None:
                         evaluation = future.result()
                     except Exception as exc:
                         # Evaluation failed — leave unseen so it retries next run.
+                        stats.evaluation_failed += 1
                         print(
                             f"  Error evaluating '{job.get('title')}' — will retry next run: {exc}",
                             file=sys.stderr,
                         )
                         continue
                     if evaluation is None:
-                        deferred_count += 1
+                        stats.deferred += 1
                         markers = _deferred_markers(key, tc_key)
                         if not markers or markers.isdisjoint(seen):
                             newly_deferred.append(job)
                         seen.update(markers)
                         continue
-                    evaluated_count += 1
+                    stats.evaluated += 1
                     if evaluation.get("fit"):
+                        stats.fits += 1
                         fits.append((key, tc_key, job, evaluation))
                     else:
                         # Not a fit: mark seen so it won't be reprocessed.
+                        stats.non_fit += 1
                         print(f"    Skip '{job.get('title')}' — {evaluation.get('reason', '')}")
                         seen.add(key)
                         seen.add(tc_key)
-        if deferred_count:
+        if stats.deferred:
             print(
-                f"Deferred {deferred_count} job(s) with insufficient description text.",
+                f"Deferred {stats.deferred} job(s) with insufficient description text.",
                 flush=True,
             )
         if newly_deferred:
@@ -242,8 +280,7 @@ def run_daily(cfg, test: bool = False) -> None:
                     try:
                         payload = future.result()
                     except Exception as exc:
-                        # prepare_fit swallows tailoring/compile errors internally,
-                        # so this is unexpected — leave unseen to retry next run.
+                        stats.preparation_failed += 1
                         print(
                             f"  Error preparing '{job.get('title')}' — will retry next run: {exc}",
                             file=sys.stderr,
@@ -254,46 +291,35 @@ def run_daily(cfg, test: bool = False) -> None:
         # ── Stage 4: Send to Telegram sequentially ───────────────────────────
         # Sequential to preserve message order and stay polite to the Telegram API.
         # A successful send marks the job seen; a failed send leaves it for retry.
-        sent = 0
         for key, tc_key, payload in prepared:
             try:
-                send_fit(payload, telegram)
-                sent += 1
-                seen.add(key)
-                seen.add(tc_key)
-                save_seen_jobs(seen)
+                outcome = send_fit(payload, telegram)
             except Exception as exc:
+                stats.delivery_failed += 1
                 print(
                     f"  Error sending '{payload.get('title')}' — will retry next run: {exc}",
                     file=sys.stderr,
                 )
+                continue
 
-        # Suppress the "none matched" notice only when the deferred notice already
-        # covered the whole run (every new job deferred), and never send it when a
-        # real fit existed (a fit that failed to send is not "none matched"). An
-        # all-error run still gets a completion notice instead of going silent.
-        all_deferred = bool(new_jobs) and deferred_count == len(new_jobs)
-        if sent == 0 and not fits and not all_deferred:
-            if new_jobs and evaluated_count:
-                count = evaluated_count
-                noun = "new posting" if count == 1 else "new postings"
-                action = "evaluated"
-            elif new_jobs:
-                count = len(new_jobs)
-                noun = "new posting" if count == 1 else "new postings"
-                action = "checked"
+            stats.notification_sent += int(outcome.notification_sent)
+            stats.cv_sent += int(outcome.cv_sent)
+            if outcome.complete:
+                seen.add(key)
+                seen.add(tc_key)
+                save_seen_jobs(seen)
             else:
-                count = 0
-                noun = "new postings"
-                action = "checked"
-            msg = (
-                f"✅ Job search complete — {count} {noun} {action}, "
-                f"none matched your criteria."
-            )
-            try:
-                telegram.send_message(msg)
-            except Exception as exc:
-                print(f"Telegram notification error: {exc}", file=sys.stderr)
+                stats.delivery_failed += 1
+                detail = outcome.error or "incomplete delivery"
+                print(
+                    f"  Error sending '{payload.get('title')}' — will retry next run: {detail}",
+                    file=sys.stderr,
+                )
+
+        try:
+            telegram.send_message(_format_run_summary(stats))
+        except Exception as exc:
+            print(f"Telegram notification error: {exc}", file=sys.stderr)
 
         print(gemini.usage_summary(), flush=True)
         print("Done.", flush=True)

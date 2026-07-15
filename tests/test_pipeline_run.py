@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from job_search.models import Job
 from job_search.pipeline import run
 from job_search.pipeline import stages
+from job_search.pipeline.stages import DeliveryOutcome
 
 
 class FakeLLM:
@@ -68,7 +69,7 @@ def test_deferred_markers_ignore_semantically_empty_job_identity():
     assert run._deferred_markers("", tc_key) == set()
 
 
-def test_all_deferred_stays_unseen_and_does_not_claim_none_matched(monkeypatch):
+def test_all_deferred_stays_unseen_and_summary_reports_zero_matches(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
@@ -78,9 +79,10 @@ def test_all_deferred_stays_unseen_and_does_not_claim_none_matched(monkeypatch):
 
     assert all("https://x/short" not in state for state in saved)
     assert all("short|acme" not in state for state in saved)
-    assert len(telegram.messages) == 1
+    assert len(telegram.messages) == 2
     assert "1 new job posting deferred" in telegram.messages[0]
-    assert all("none matched" not in message for message in telegram.messages)
+    assert "Deferred: 1" in telegram.messages[-1]
+    assert "No evaluated jobs matched your criteria" in telegram.messages[-1]
 
 
 def test_mixed_run_evaluates_only_sufficient_job(monkeypatch):
@@ -101,7 +103,7 @@ def test_mixed_run_evaluates_only_sufficient_job(monkeypatch):
     assert "https://x/complete" in saved[-1]
     assert "https://x/short" not in saved[-1]
     assert any("Short" in message and "deferred" in message for message in telegram.messages)
-    assert any("1 new posting evaluated" in message for message in telegram.messages)
+    assert "Evaluated: 1 (non-fit: 1, fit: 0)" in telegram.messages[-1]
 
 
 def test_successful_enrichment_is_cleaned_before_evaluation(monkeypatch):
@@ -244,6 +246,130 @@ def test_fit_that_fails_to_send_does_not_claim_none_matched(monkeypatch):
     assert all("none matched" not in m for m in telegram.messages)
     # The unsent fit stays unseen so it retries next run.
     assert "https://x/match" not in saved[-1]
+
+
+def _install_fit(monkeypatch, send_outcome=None, prepare_error=None):
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: {"fit": True, "reason": "great", "timezone_note": None},
+    )
+    if prepare_error is not None:
+        monkeypatch.setattr(
+            run,
+            "prepare_fit",
+            lambda *_args: (_ for _ in ()).throw(prepare_error),
+        )
+    else:
+        monkeypatch.setattr(
+            run,
+            "prepare_fit",
+            lambda *_args: {
+                "title": "Match",
+                "company": "Acme",
+                "message": "fit",
+                "pdf_bytes": b"PDF",
+            },
+        )
+    if send_outcome is not None:
+        monkeypatch.setattr(run, "send_fit", lambda *_args: send_outcome)
+
+
+def test_preparation_failure_remains_unseen_and_is_reported(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    _install_fit(monkeypatch, prepare_error=RuntimeError("compile down"))
+
+    run.run_daily(make_config())
+
+    assert "https://x/match" not in saved[-1]
+    assert "Preparation failures: 1" in telegram.messages[-1]
+    assert "fit: 1" in telegram.messages[-1]
+    assert "No evaluated jobs matched" not in telegram.messages[-1]
+
+
+def test_message_failure_remains_unseen_and_is_reported(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    _install_fit(monkeypatch, DeliveryOutcome(error=RuntimeError("message down")))
+
+    run.run_daily(make_config())
+
+    assert "https://x/match" not in saved[-1]
+    assert "Fit notifications sent: 0" in telegram.messages[-1]
+    assert "Delivery failures: 1" in telegram.messages[-1]
+
+
+def test_document_failure_remains_unseen_and_reports_partial_delivery(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    _install_fit(
+        monkeypatch,
+        DeliveryOutcome(notification_sent=True, error=RuntimeError("document down")),
+    )
+
+    run.run_daily(make_config())
+
+    assert "https://x/match" not in saved[-1]
+    assert "Fit notifications sent: 1" in telegram.messages[-1]
+    assert "Verified CVs delivered: 0" in telegram.messages[-1]
+    assert "will retry" in telegram.messages[-1]
+
+
+def test_complete_delivery_marks_seen_and_is_reported(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    _install_fit(monkeypatch, DeliveryOutcome(notification_sent=True, cv_sent=True))
+
+    run.run_daily(make_config())
+
+    assert "https://x/match" in saved[-1]
+    assert "match|acme" in saved[-1]
+    assert "Fit notifications sent: 1" in telegram.messages[-1]
+    assert "Verified CVs delivered: 1" in telegram.messages[-1]
+    assert "Delivery failures: 0" in telegram.messages[-1]
+
+
+def test_mixed_outcomes_have_accurate_summary(monkeypatch):
+    jobs = [
+        Job(title="No", company="A", url="https://x/no", description="x" * 200),
+        Job(title="Good", company="B", url="https://x/good", description="x" * 200),
+        Job(title="Partial", company="C", url="https://x/partial", description="x" * 200),
+        Job(title="EvalFail", company="D", url="https://x/eval", description="x" * 200),
+    ]
+    telegram, saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+
+    def evaluate(_client, _criteria, job):
+        if job["title"] == "EvalFail":
+            raise RuntimeError("eval down")
+        return {"fit": job["title"] != "No", "reason": "result", "timezone_note": None}
+
+    monkeypatch.setattr(run, "evaluate_job", evaluate)
+    monkeypatch.setattr(
+        run,
+        "prepare_fit",
+        lambda *_args: {"title": _args[3]["title"], "company": "x", "message": "fit", "pdf_bytes": b"PDF"},
+    )
+    outcomes = {
+        "Good": DeliveryOutcome(notification_sent=True, cv_sent=True),
+        "Partial": DeliveryOutcome(notification_sent=True, error=RuntimeError("upload")),
+    }
+    monkeypatch.setattr(run, "send_fit", lambda payload, _telegram: outcomes[payload["title"]])
+
+    run.run_daily(make_config())
+
+    summary = telegram.messages[-1]
+    assert "New candidates: 4" in summary
+    assert "Evaluated: 3 (non-fit: 1, fit: 2)" in summary
+    assert "Fit notifications sent: 2" in summary
+    assert "Verified CVs delivered: 1" in summary
+    assert "Evaluation failures: 1" in summary
+    assert "Delivery failures: 1" in summary
+    assert "https://x/good" in saved[-1]
+    assert "https://x/partial" not in saved[-1]
+    assert "https://x/eval" not in saved[-1]
 
 
 def test_mode_defers_before_process_job_without_seen_state(monkeypatch):

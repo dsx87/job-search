@@ -124,6 +124,40 @@ def test_min_job_text_len_constant():
     assert MIN_JOB_TEXT_LEN == 200
 
 
+def test_format_run_summary_reports_all_outcomes():
+    stats = run_mod.RunStats(
+        new_jobs=7,
+        evaluated=5,
+        non_fit=3,
+        fits=2,
+        deferred=1,
+        evaluation_failed=1,
+        preparation_failed=1,
+        notification_sent=1,
+        cv_sent=0,
+        delivery_failed=1,
+    )
+
+    message = run_mod._format_run_summary(stats)
+
+    assert "New candidates: 7" in message
+    assert "Evaluated: 5 (non-fit: 3, fit: 2)" in message
+    assert "Deferred: 1" in message
+    assert "Fit notifications sent: 1" in message
+    assert "Verified CVs delivered: 0" in message
+    assert "Evaluation failures: 1" in message
+    assert "Preparation failures: 1" in message
+    assert "Delivery failures: 1" in message
+    assert "No evaluated jobs matched" not in message
+    assert "will retry" in message
+
+
+def test_format_run_summary_zero_matches_adds_none_matched_notice():
+    message = run_mod._format_run_summary(run_mod.RunStats(evaluated=2, non_fit=2))
+
+    assert "No evaluated jobs matched your criteria" in message
+
+
 def test_fetch_job_text_strips_scripts(monkeypatch, fake_http_response):
     html = (
         "<html><head><style>.x{color:red}</style></head>"
