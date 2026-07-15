@@ -90,6 +90,17 @@ def test_relocation_filter():
     ) is False
 
 
+def test_relocation_filter_rejects_northern_ireland_without_evidence():
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        location="Belfast, Northern Ireland",
+        description="Build an onsite iOS application with Swift and UIKit.",
+    )
+
+    assert relocation_filter(job, {Region.EU}) is False
+
+
 def test_opportunity_filter_israel_always_passes():
     assert opportunity_filter(Job(location="Tel Aviv", description="onsite only")) is True
 

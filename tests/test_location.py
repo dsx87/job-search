@@ -16,6 +16,11 @@ def test_is_eu_member_job_is_strict():
     assert is_eu_member_job(Job(location="Paris, France")) is True
     assert is_eu_member_job(Job(location="Remote - EU")) is True
     assert is_eu_member_job(Job(location="European Union")) is True
+    assert is_eu_member_job(Job(location="Dublin, Ireland")) is True
+    assert is_eu_member_job(Job(location="Belfast, Northern Ireland")) is False
+    assert is_eu_member_job(
+        Job(location="Dublin, Ireland / Belfast, Northern Ireland")
+    ) is True
 
     assert is_eu_member_job(Job(location="London, United Kingdom")) is False
     assert is_eu_member_job(Job(location="Zurich, Switzerland")) is False

@@ -42,7 +42,7 @@ def classify_region(job):
 
 def is_eu_member_job(job):
     """Return whether the location explicitly identifies the EU or an EU-27 member."""
-    loc = job.location.lower()
+    loc = job.location.lower().replace("northern ireland", " ")
     return any(
         contains_location_token(loc, token)
         for token in EU_MEMBER_COUNTRIES | EU_MEMBER_CITIES
