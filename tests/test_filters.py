@@ -92,6 +92,28 @@ def test_relocation_filter():
     ) is False
 
 
+def test_relocation_filter_boilerplate_auth_phrase_does_not_block():
+    # "must have the right to work" is common boilerplate in sponsoring listings;
+    # it must no longer block an otherwise-qualifying EU-member role.
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="You must have the right to work in the EU."),
+        {Region.EU},
+    ) is True
+
+
+def test_relocation_filter_blocker_yields_to_sponsorship_evidence():
+    # A blocker phrase alongside an explicit sponsorship offer must not filter the job.
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="EU citizens only, but visa sponsorship available"),
+        {Region.EU},
+    ) is True
+    # ...but the same blocker with no sponsorship offer still disqualifies.
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="EU citizens only. No sponsorship."),
+        {Region.EU},
+    ) is False
+
+
 def test_relocation_filter_rejects_northern_ireland_without_evidence():
     job = Job(
         title="iOS Engineer",
@@ -114,6 +136,9 @@ def test_relocation_filter_rejects_northern_ireland_without_evidence():
         "Dublin, Canada",
         "Athens, Australia",
         "Dublin, United Kingdom",
+        "Belfast, N. Ireland",
+        "Dublin, GA",
+        "Athens, OH",
     ],
 )
 def test_relocation_filter_rejects_non_eu_and_conflicting_locations(location):

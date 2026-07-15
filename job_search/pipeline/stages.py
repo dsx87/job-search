@@ -18,9 +18,25 @@ from ..llm.tailor import tailor_resume
 from ..text import collapse_ws, strip_html
 
 
+# Only run HTML stripping when the value actually looks like markup, so plain-text
+# descriptions keep literal angle-bracket content (generics like ``Map<String, Int>``
+# and markdown autolinks like ``<https://apply.example.com>``).
+_HTML_MARKUP_RE = re.compile(
+    r"</[a-z][^>]*>"                                   # any closing tag
+    r"|<(?:div|p|br|span|ul|ol|li|table|tr|td|th|h[1-6]|strong|em|b|i|a|"
+    r"section|article|header|footer|body|html|head|script|style|img|hr|"
+    r"blockquote|pre|code)\b[^>]*>"                    # common opening tags
+    r"|&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);",         # entities
+    re.I,
+)
+
+
 def clean_job_description(value):
-    """Return HTML-free, entity-decoded, collapsed plain text."""
-    return collapse_ws(strip_html(value))
+    """Return collapsed plain text, stripping HTML only when markup is present."""
+    text = str(value or "")
+    if _HTML_MARKUP_RE.search(text):
+        return collapse_ws(strip_html(text))
+    return collapse_ws(text)
 
 
 def _is_http_job_url(url):

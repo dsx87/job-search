@@ -203,6 +203,49 @@ def test_new_sparse_job_still_notifies_after_another_job_was_deferred(monkeypatc
     assert "Second" in deferred_messages[1]
 
 
+def test_all_evaluations_error_still_sends_completion_notice(monkeypatch):
+    job = Job(title="Boom", company="Acme", url="https://x/boom", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("llm down")),
+    )
+
+    run.run_daily(make_config())
+
+    # Not silent: an all-error run still delivers a completion notice.
+    assert any("Job search complete" in m for m in telegram.messages)
+    # The errored job stays unseen so it retries next run.
+    assert "https://x/boom" not in saved[-1]
+    assert "boom|acme" not in saved[-1]
+
+
+def test_fit_that_fails_to_send_does_not_claim_none_matched(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: {"fit": True, "reason": "great", "timezone_note": None},
+    )
+    monkeypatch.setattr(run, "prepare_fit", lambda *_args: {"title": "Match"})
+    monkeypatch.setattr(
+        run,
+        "send_fit",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("telegram down")),
+    )
+
+    run.run_daily(make_config())
+
+    # A fit that merely failed to send is NOT "none matched".
+    assert all("none matched" not in m for m in telegram.messages)
+    # The unsent fit stays unseen so it retries next run.
+    assert "https://x/match" not in saved[-1]
+
+
 def test_mode_defers_before_process_job_without_seen_state(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, _saved = install_daily_fakes(monkeypatch, [job])

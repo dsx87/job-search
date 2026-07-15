@@ -36,6 +36,9 @@ def test_is_eu_member_job_is_strict():
     [
         "Belfast, Northern-Ireland",
         "Belfast, Northern  Ireland",
+        "Belfast, N. Ireland",
+        "Belfast, N Ireland",
+        "Belfast, N.Ireland",
     ],
 )
 def test_is_eu_member_job_rejects_northern_ireland_spelling_variants(location):
@@ -51,10 +54,31 @@ def test_is_eu_member_job_rejects_northern_ireland_spelling_variants(location):
         "Dublin, Canada",
         "Athens, Australia",
         "Dublin, United Kingdom",
+        # US state postal codes without a spelled-out country
+        "Dublin, GA",
+        "Athens, OH",
+        "Dublin, OH",
     ],
 )
 def test_is_eu_member_job_rejects_negation_and_conflicting_city_evidence(location):
     assert is_eu_member_job(Job(location=location)) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        # A genuine member city plus a broad-Europe umbrella still qualifies.
+        "Munich, EMEA",
+        "Berlin, Europe",
+        "Amsterdam, EEA",
+        # DE is the Germany country code, not the Delaware state code.
+        "Munich, DE",
+        # Irish "Co." county notation must not read as the Colorado state code.
+        "Dublin, Co. Dublin",
+    ],
+)
+def test_is_eu_member_job_keeps_member_city_with_broad_or_ambiguous_qualifier(location):
+    assert is_eu_member_job(Job(location=location)) is True
 
 
 @pytest.mark.parametrize(

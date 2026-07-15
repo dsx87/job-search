@@ -125,8 +125,6 @@ _RELOCATION_BLOCKERS = set(
         "must currently be authorized to work",
         "must be legally authorized to work",
         "must have existing work authorization",
-        "must have the right to work",
-        "valid work permit required",
     ]
 )
 
@@ -250,7 +248,10 @@ def relocation_filter(job, relocation_regions=None):
         return False
 
     text = job_text(job)
-    if has_relocation_blocker(text):
+    # A blocker phrase only disqualifies when the posting shows no sponsorship /
+    # relocation offer — many listings carry boilerplate authorization wording
+    # alongside an explicit "visa sponsorship available".
+    if has_relocation_blocker(text) and not has_relocation_evidence(text):
         return False
 
     if is_eu_member_job(job):

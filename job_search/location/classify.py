@@ -16,16 +16,28 @@ from .db import (
 
 
 _NORTHERN_IRELAND_RE = re.compile(
-    r"(?<![a-z0-9])northern[\s-]+ireland(?![a-z0-9])"
+    r"(?<![a-z0-9])n(?:orthern)?\.?[\s-]*ireland(?![a-z0-9])"
 )
 _NEGATED_EU_RE = re.compile(r"(?<![a-z0-9])non[\s-]+eu(?![a-z0-9])")
+# 2-letter US state codes as a ", XX" suffix (e.g. "Dublin, GA"). Excludes "de"
+# (collides with the DE=Germany country code) and requires the code not be
+# followed by a letter or "." so Irish "Co." county notation (", Co. Antrim")
+# is never matched.
+_US_STATE_CODE_RE = re.compile(
+    r",\s*(?:al|ak|az|ar|ca|co|ct|fl|ga|hi|ia|id|il|in|ks|ky|la|ma|md|me|mi|"
+    r"mn|mo|ms|mt|nc|nd|ne|nh|nj|nm|nv|ny|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|va|vt|"
+    r"wa|wi|wv|wy)(?![a-z.])"
+)
 _POSITIVE_EU_TOKENS = {"eu", "european union"}
 _EU_MEMBER_COUNTRY_NAMES = EU_MEMBER_COUNTRIES - _POSITIVE_EU_TOKENS
+# Broad Europe umbrellas are NOT a conflict: a genuine member city carrying one
+# (e.g. "Munich, EMEA") must still qualify.
+_BROAD_EUROPE_TOKENS = {"europe", "eea", "emea"}
 _NON_EU_LOCATION_TOKENS = (
     CA_LOCATIONS
     | AU_LOCATIONS
     | US_LOCATIONS
-    | (EU_COUNTRIES - EU_MEMBER_COUNTRIES)
+    | (EU_COUNTRIES - EU_MEMBER_COUNTRIES - _BROAD_EUROPE_TOKENS)
 )
 
 
@@ -70,8 +82,10 @@ def is_eu_member_job(job):
     has_member_city = any(
         contains_location_token(loc, token) for token in EU_MEMBER_CITIES
     )
-    has_conflicting_location = has_northern_ireland or any(
-        contains_location_token(loc, token) for token in _NON_EU_LOCATION_TOKENS
+    has_conflicting_location = (
+        has_northern_ireland
+        or bool(_US_STATE_CODE_RE.search(loc))
+        or any(contains_location_token(loc, token) for token in _NON_EU_LOCATION_TOKENS)
     )
     return has_member_city and not has_negated_eu and not has_conflicting_location
 

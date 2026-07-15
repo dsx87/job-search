@@ -268,11 +268,20 @@ def run_daily(cfg, test: bool = False) -> None:
                     file=sys.stderr,
                 )
 
-        if sent == 0 and (not new_jobs or evaluated_count > 0):
-            if new_jobs:
+        # Suppress the "none matched" notice only when the deferred notice already
+        # covered the whole run (every new job deferred), and never send it when a
+        # real fit existed (a fit that failed to send is not "none matched"). An
+        # all-error run still gets a completion notice instead of going silent.
+        all_deferred = bool(new_jobs) and deferred_count == len(new_jobs)
+        if sent == 0 and not fits and not all_deferred:
+            if new_jobs and evaluated_count:
                 count = evaluated_count
                 noun = "new posting" if count == 1 else "new postings"
                 action = "evaluated"
+            elif new_jobs:
+                count = len(new_jobs)
+                noun = "new posting" if count == 1 else "new postings"
+                action = "checked"
             else:
                 count = 0
                 noun = "new postings"

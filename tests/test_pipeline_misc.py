@@ -20,6 +20,17 @@ def test_clean_job_description():
     )
 
 
+def test_clean_job_description_preserves_plain_text_angle_brackets():
+    # Non-HTML descriptions must keep literal angle-bracket content.
+    assert clean_job_description("Map<String, Int> and Flow<T>") == "Map<String, Int> and Flow<T>"
+    assert clean_job_description("Apply at <https://apply.example.com>") == (
+        "Apply at <https://apply.example.com>"
+    )
+    # Entity-only text is still decoded, and real closing tags are still stripped.
+    assert clean_job_description("Swift &amp; UIKit") == "Swift & UIKit"
+    assert clean_job_description("<main>Complete details</main>") == "Complete details"
+
+
 def test_description_length_boundary():
     assert ensure_job_description({"description": "x" * 200, "url": ""}) is True
     assert ensure_job_description({"description": "x" * 199, "url": ""}) is False
