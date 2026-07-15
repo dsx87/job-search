@@ -10,12 +10,38 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
+from typing import Optional
 
 from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instructions
 from ..latex.compile import compile_with_fixes
 from ..llm.eval import evaluate_job
 from ..llm.tailor import tailor_resume
 from ..text import collapse_ws, strip_html
+
+
+class CVPreparationError(RuntimeError):
+    """Raised when a verified one-page PDF cannot be prepared."""
+
+
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    notification_sent: bool = False
+    cv_sent: bool = False
+    error: Optional[Exception] = None
+
+    @property
+    def complete(self) -> bool:
+        return self.notification_sent and self.cv_sent and self.error is None
+
+
+class CVDeliveryError(RuntimeError):
+    """Raised when both Telegram delivery steps do not complete."""
+
+    def __init__(self, outcome: DeliveryOutcome):
+        self.outcome = outcome
+        detail = str(outcome.error) if outcome.error else "incomplete delivery"
+        super().__init__(detail)
 
 
 # Only run HTML stripping when the value actually looks like markup, so plain-text
@@ -163,12 +189,29 @@ def _format_notification(job: dict, evaluation: dict) -> str:
     return "\n".join(lines)
 
 
+def _prepare_verified_pdf(client, instructions: str, base_tex: str, job: dict) -> bytes:
+    """Tailor and compile a job-specific CV, failing unless a verified PDF exists."""
+    try:
+        tex_source = tailor_resume(client, instructions, base_tex, job)
+    except Exception as exc:
+        raise CVPreparationError(f"CV tailoring failed: {exc}") from exc
+
+    try:
+        ok, pdf_bytes, _final_tex = compile_with_fixes(client, tex_source)
+    except Exception as exc:
+        raise CVPreparationError(f"CV compilation failed: {exc}") from exc
+
+    if not ok or not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        raise CVPreparationError("CV compilation did not produce a verified one-page PDF")
+    return pdf_bytes
+
+
 def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
     """
     Tailor + compile the CV for a job already judged a fit, and assemble the
     Telegram send-payload. Performs NO Telegram I/O — pure preparation, so it is
-    safe to run concurrently across jobs. Tailoring/compilation failures are soft:
-    we fall back to raw .tex or no document.
+    safe to run concurrently across jobs. Preparation failures propagate so the
+    job remains eligible for a later retry.
 
     Returns a payload dict consumed by send_fit().
     """
@@ -176,77 +219,52 @@ def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, e
     company = job.get("company", "?")
     print(f"    Fit! Tailoring resume: {title} at {company}", flush=True)
 
-    tex_source = None
-    try:
-        tex_source = tailor_resume(gemini, tailoring_instructions, base_tex, job)
-    except Exception as exc:
-        print(f"    Tailoring error: {exc}", file=sys.stderr)
-
-    pdf_bytes = None
-    final_tex = tex_source
-    compilation_failed = False
-    if tex_source:
-        print(f"    Compiling PDF: {title} at {company}...", flush=True)
-        ok, pdf_bytes, final_tex = compile_with_fixes(gemini, tex_source)
-        if ok:
-            print(f"    PDF compiled successfully: {title} at {company}.", flush=True)
-        else:
-            compilation_failed = True
-            print(f"    PDF compilation failed after all attempts ({title} at {company}) — will send .tex as fallback.", flush=True)
-
-    message = _format_notification(job, evaluation)
-    if compilation_failed:
-        message += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
+    print(f"    Preparing verified PDF: {title} at {company}...", flush=True)
+    pdf_bytes = _prepare_verified_pdf(gemini, tailoring_instructions, base_tex, job)
+    print(f"    Verified one-page PDF ready: {title} at {company}.", flush=True)
 
     return {
         "title": title,
         "company": company,
-        "message": message,
+        "message": _format_notification(job, evaluation),
         "pdf_bytes": pdf_bytes,
-        "final_tex": final_tex,
     }
 
 
-def send_fit(payload: dict, telegram) -> None:
+def send_fit(payload: dict, telegram) -> DeliveryOutcome:
     """
     Send a prepared fit to Telegram: the notification message, then the tailored
-    CV document (PDF, or .tex fallback). Raises if the message send fails so the
-    caller can leave the job unseen for a retry next run; document-send failures
-    are soft (logged, not raised).
+    verified PDF. Returns explicit partial-progress flags for orchestration.
     """
     title = payload["title"]
     company = payload["company"]
+    pdf_bytes = payload.get("pdf_bytes")
+    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        return DeliveryOutcome(error=ValueError("verified PDF bytes are required for delivery"))
 
-    # Let Telegram message errors propagate — caller will not mark the job as seen.
-    telegram.send_message(payload["message"])
+    try:
+        telegram.send_message(payload["message"])
+    except Exception as exc:
+        return DeliveryOutcome(error=exc)
 
     slug = _company_slug(company)
-    pdf_bytes = payload.get("pdf_bytes")
-    final_tex = payload.get("final_tex")
-    if pdf_bytes:
-        try:
-            telegram.send_document(
-                f"igor_pivnyk_cv_{slug}.pdf", pdf_bytes,
-                caption=f"Tailored CV — {title} at {company}",
-            )
-        except Exception as exc:
-            print(f"    Telegram PDF error: {exc}", file=sys.stderr)
-    elif final_tex:
-        try:
-            telegram.send_document(
-                f"igor_pivnyk_cv_{slug}.tex", final_tex.encode("utf-8"),
-                caption=f"Tailored CV (LaTeX source) — {title} at {company}",
-            )
-        except Exception as exc:
-            print(f"    Telegram document error: {exc}", file=sys.stderr)
+    try:
+        telegram.send_document(
+            f"igor_pivnyk_cv_{slug}.pdf",
+            pdf_bytes,
+            caption=f"Tailored CV — {title} at {company}",
+        )
+    except Exception as exc:
+        return DeliveryOutcome(notification_sent=True, error=exc)
+    return DeliveryOutcome(notification_sent=True, cv_sent=True)
 
 
 def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:
     """
     Evaluate → tailor → compile → send a single job end-to-end.
     Returns True if a notification was sent (job was a fit).
-    Raises on errors that warrant a retry next run (evaluation failure, Telegram send failure).
-    Tailoring/compilation failures are soft — we fall back to no CV or raw .tex.
+    Raises on evaluation, preparation, or incomplete-delivery errors so the job
+    can retry next run.
 
     Thin wrapper over evaluate_job/prepare_fit/send_fit, kept for --test mode.
     """
@@ -262,7 +280,9 @@ def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: st
         return False
 
     payload = prepare_fit(gemini, tailoring_instructions, base_tex, job, evaluation)
-    send_fit(payload, telegram)
+    outcome = send_fit(payload, telegram)
+    if not outcome.complete:
+        raise CVDeliveryError(outcome)
     return True
 
 
@@ -276,11 +296,13 @@ def tailor_single_job(client, job: dict, telegram) -> None:
     title = job.get("title", "iOS Developer")
     company = job.get("company", "the role")
 
-    print(f"  Tailoring CV for: {title} at {company}", flush=True)
-    tex_source = tailor_resume(client, load_tailoring_instructions(), load_base_tex(), job)
-
-    print("  Compiling PDF...", flush=True)
-    ok, pdf_bytes, final_tex = compile_with_fixes(client, tex_source)
+    print(f"  Tailoring and verifying CV for: {title} at {company}", flush=True)
+    pdf_bytes = _prepare_verified_pdf(
+        client,
+        load_tailoring_instructions(),
+        load_base_tex(),
+        job,
+    )
 
     header = (
         f"<b>{title}</b>\n"
@@ -288,23 +310,18 @@ def tailor_single_job(client, job: dict, telegram) -> None:
         + (f'<a href="{job["url"]}">View posting</a>\n' if job.get("url") else "")
         + "\n📄 Tailored CV attached."
     )
-    if not ok:
-        header += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
-    telegram.send_message(header)
-
-    slug = _company_slug(company)
-    if pdf_bytes:
-        telegram.send_document(
-            f"igor_pivnyk_cv_{slug}.pdf", pdf_bytes,
-            caption=f"Tailored CV — {title} at {company}",
-        )
-        print("  PDF sent to Telegram.", flush=True)
-    else:
-        telegram.send_document(
-            f"igor_pivnyk_cv_{slug}.tex", final_tex.encode("utf-8"),
-            caption=f"Tailored CV (LaTeX source) — {title} at {company}",
-        )
-        print("  LaTeX source sent to Telegram (compilation failed).", flush=True)
+    outcome = send_fit(
+        {
+            "title": title,
+            "company": company,
+            "message": header,
+            "pdf_bytes": pdf_bytes,
+        },
+        telegram,
+    )
+    if not outcome.complete:
+        raise CVDeliveryError(outcome)
+    print("  Verified PDF sent to Telegram.", flush=True)
 
 
 def _send_error_notification(exc: Exception, telegram) -> None:
