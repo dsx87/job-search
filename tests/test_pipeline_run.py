@@ -34,6 +34,9 @@ def make_config():
         telegram_chat_id="chat",
         eval_workers=2,
         tailor_workers=1,
+        sources_enable=(),
+        sources_disable=(),
+        state_sync=False,
     )
 
 
@@ -45,7 +48,7 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None):
     monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
     monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
     monkeypatch.setattr(run, "load_base_tex", lambda: "base")
-    monkeypatch.setattr(run, "fetch_jobs", lambda verbose=True: jobs)
+    monkeypatch.setattr(run, "fetch_jobs", lambda **_kwargs: jobs)
     monkeypatch.setattr(run, "load_seen_jobs", lambda: set())
     monkeypatch.setattr(run, "save_seen_jobs", lambda seen: saved.append(set(seen)))
     return telegram, saved

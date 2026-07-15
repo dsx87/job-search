@@ -51,6 +51,15 @@ TAILOR_WORKERS = 8
 MIN_JOB_TEXT_LEN = 200
 
 
+def _split_csv(raw: str) -> tuple:
+    """Parse a comma-separated env list into a lowercased/stripped/de-empty tuple.
+
+    e.g. ``" A, b ,,"`` → ``("a", "b")``. Tuples (not lists) so the frozen
+    PipelineConfig can carry them as safe defaults.
+    """
+    return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
 @dataclass(frozen=True)
 class ScraperConfig:
     http_timeout_seconds: int = HTTP_TIMEOUT_SECONDS
@@ -77,6 +86,15 @@ class PipelineConfig:
     criteria_file: str = CRITERIA_FILE
     cv_tailoring_prompt_file: str = CV_TAILORING_PROMPT_FILE
     base_tex_file: str = BASE_TEX_FILE
+    # Source selection: names forced ON (adds default-off sources like
+    # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
+    # today's default-on set, so CI with no env is unchanged. See
+    # sources.fetch.select_sources for the resolution rule.
+    sources_enable: tuple = ()
+    sources_disable: tuple = ()
+    # STATE_SYNC=1 → git-sync seen_jobs.json (pull before / push after) around
+    # run_daily, sharing the dedup baseline via the orphan `state` branch.
+    state_sync: bool = False
 
     @classmethod
     def from_env(cls) -> "PipelineConfig":
@@ -87,6 +105,9 @@ class PipelineConfig:
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
             eval_workers=int(os.environ.get("EVAL_WORKERS", str(EVAL_WORKERS))),
             tailor_workers=int(os.environ.get("TAILOR_WORKERS", str(TAILOR_WORKERS))),
+            sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
+            sources_disable=_split_csv(os.environ.get("SOURCES_DISABLE", "")),
+            state_sync=os.environ.get("STATE_SYNC", "") == "1",
         )
 
 

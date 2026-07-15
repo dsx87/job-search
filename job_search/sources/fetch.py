@@ -30,6 +30,41 @@ def parse_sources(value):
     return valid
 
 
+def default_source_names():
+    """Names of the default-on sources, in registry order.
+
+    A source is default-on unless it registered with ``default_enabled=False``.
+    Uses ``getattr(..., True)`` so bare fake classes (as tests monkeypatch onto
+    ALL_SOURCES) are treated as on."""
+    return [name for name, cls in ALL_SOURCES.items() if getattr(cls, "default_enabled", True)]
+
+
+def select_sources(enable=(), disable=()):
+    """Resolve which sources to run from enable/disable name lists.
+
+    A source runs when it is explicitly enabled, or when it is default-on and
+    not explicitly disabled — so ``enable`` wins over ``disable`` for a name in
+    both. Registry order is preserved. Unknown names in either list are warned
+    about on stderr and ignored (parse_sources style). Empty lists reproduce
+    default_source_names(), so the no-env path is unchanged."""
+    enable = tuple(enable)
+    disable = tuple(disable)
+    known = set(ALL_SOURCES)
+    unknown = []
+    for name in enable + disable:
+        if name not in known and name not in unknown:
+            unknown.append(name)
+    if unknown:
+        print("Ignoring unknown sources: {}".format(", ".join(unknown)), file=sys.stderr)
+    enabled_set = set(enable)
+    disabled_set = set(disable)
+    selected = []
+    for name, cls in ALL_SOURCES.items():
+        if name in enabled_set or (getattr(cls, "default_enabled", True) and name not in disabled_set):
+            selected.append(name)
+    return selected
+
+
 def parse_regions(value):
     regions = set()
     for raw in str(value or "").split(","):
@@ -94,7 +129,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
     """
     if budget_seconds is None:
         budget_seconds = _budget_seconds_from_env(SCRAPE_BUDGET_SECONDS)
-    selected_names = source_names or list(ALL_SOURCES.keys())
+    selected_names = source_names or default_source_names()
     selected = [(name, ALL_SOURCES[name]) for name in selected_names if name in ALL_SOURCES]
 
     if not selected:
@@ -163,7 +198,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
 
 
 def run_scraper(source_names=None, relocation_regions=None, max_age=30, as_json=False, verbose=False):
-    selected_names = source_names or list(ALL_SOURCES.keys())
+    selected_names = source_names or default_source_names()
     selected = [(name, ALL_SOURCES[name]) for name in selected_names if name in ALL_SOURCES]
 
     if not selected:
@@ -231,4 +266,5 @@ def render_jobs(jobs, as_json=False):
 def print_sources():
     print("Available sources:")
     for name in ALL_SOURCES:
-        print("  {:18} {}".format(name, SOURCE_DESCRIPTIONS.get(name, "")))
+        marker = "" if getattr(ALL_SOURCES[name], "default_enabled", True) else "  (default: off)"
+        print("  {:18} {}{}".format(name, SOURCE_DESCRIPTIONS.get(name, ""), marker))

@@ -13,7 +13,8 @@ from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
 from ..models import job_to_dict
 from ..notify.telegram import TelegramClient
-from ..sources.fetch import fetch_jobs
+from ..sources.fetch import fetch_jobs, select_sources
+from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
     load_seen_jobs,
     normalize_url,
@@ -39,7 +40,7 @@ def _evaluate_candidate(gemini, criteria, job):
 
 def run_seed(cfg) -> None:
     """Mark all currently fetched jobs as seen without evaluating."""
-    raw_jobs = fetch_jobs(verbose=True)
+    raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
     added = 0
@@ -57,7 +58,7 @@ def run_seed(cfg) -> None:
 
 def run_list(cfg) -> None:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
-    raw_jobs = fetch_jobs(verbose=True)
+    raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
     new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen and title_company_key(j.title, j.company, j.location) not in seen]
@@ -72,6 +73,11 @@ def run_list(cfg) -> None:
 
 def run_daily(cfg, test: bool = False) -> None:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
+    if cfg.state_sync:
+        # Pull the shared dedup baseline FIRST: linkedin-guest peeks at
+        # seen_jobs.json during fetch to skip description requests for jobs the
+        # other runner already delivered. Best-effort; never raises.
+        pull_state()
     if not all([cfg.gemini_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
         print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
         sys.exit(1)
@@ -86,7 +92,7 @@ def run_daily(cfg, test: bool = False) -> None:
         base_tex = load_base_tex()
 
         print("Fetching jobs...", flush=True)
-        raw_jobs = fetch_jobs(verbose=True)
+        raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
 
         if test:
             if not raw_jobs:
@@ -268,3 +274,9 @@ def run_daily(cfg, test: bool = False) -> None:
         print(f"Fatal error: {exc}", file=sys.stderr)
         _send_error_notification(exc, telegram)
         raise
+    finally:
+        if cfg.state_sync and not test:
+            # Push even on error: seen_jobs.json only ever holds already-delivered
+            # jobs (incremental save), so a partial run's state is safe to share.
+            # Dev/test runs never push, mirroring run.sh's --list/--test rule.
+            push_state()

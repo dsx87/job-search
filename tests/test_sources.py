@@ -6,6 +6,7 @@ http_request binding, so these run fully offline. Optional sources
 dependency is absent.
 """
 import datetime as dt
+from collections import OrderedDict
 
 import pytest
 
@@ -14,6 +15,8 @@ from job_search.models import Job
 from job_search.sources import base
 from job_search.sources import api_sources, html_sources, rss_sources
 from job_search.sources import fetch as fetch_mod
+from job_search.sources import linkedin_guest
+from job_search.state.seen_jobs import normalize_url
 from job_search.sources.api_sources import (
     ArbeitnowSource,
     HimalayasSource,
@@ -291,6 +294,84 @@ def test_fetch_jobs_empty_for_unknown_source(monkeypatch):
     assert fetch_mod.fetch_jobs(source_names=["nonexistent"]) == []
 
 
+# ── Default-on/off source selection (Part 2) ──────────────────────────────────
+def _selection_registry():
+    """Ordered fake registry: two default-on sources and one default-off."""
+    class A(base.BaseSource):
+        name = "a"
+
+    class B(base.BaseSource):
+        name = "b"
+
+    class Off(base.BaseSource):
+        name = "off"
+        default_enabled = False
+
+    return OrderedDict([("a", A), ("b", B), ("off", Off)])
+
+
+def test_default_source_names_excludes_default_off(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    assert fetch_mod.default_source_names() == ["a", "b"]
+    # Empty enable/disable reproduces the default-on set.
+    assert fetch_mod.select_sources() == ["a", "b"]
+
+
+def test_default_source_names_treats_bare_class_as_on(monkeypatch):
+    # A class with no default_enabled attr (getattr fallback) counts as on.
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", OrderedDict([("bare", object)]))
+    assert fetch_mod.default_source_names() == ["bare"]
+
+
+def test_select_sources_enable_resurrects_default_off(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    # Registry order preserved: 'off' comes last.
+    assert fetch_mod.select_sources(enable=("off",)) == ["a", "b", "off"]
+
+
+def test_select_sources_disable_removes_default_on(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    assert fetch_mod.select_sources(disable=("a",)) == ["b"]
+
+
+def test_select_sources_enable_wins_over_disable(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    # 'a' in both lists → enable wins, stays selected.
+    assert fetch_mod.select_sources(enable=("a",), disable=("a",)) == ["a", "b"]
+
+
+def test_select_sources_warns_on_unknown(monkeypatch, capsys):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", _selection_registry())
+    result = fetch_mod.select_sources(enable=("bogus",), disable=("nope",))
+    assert result == ["a", "b"]  # unknowns ignored, defaults unchanged
+    err = capsys.readouterr().err
+    assert "Ignoring unknown sources" in err
+    assert "bogus" in err and "nope" in err
+
+
+def test_fetch_jobs_none_uses_default_on_set(monkeypatch):
+    today = dt.date.today()
+
+    class On(base.BaseSource):
+        name = "on"
+
+        def fetch(self, verbose=False):
+            return [Job(title="iOS Engineer", company="Acme", location="Berlin, Germany",
+                        url="https://x/on", description="Swift UIKit fully remote",
+                        is_remote=True, date_posted=today)]
+
+    class Off(base.BaseSource):
+        name = "off"
+        default_enabled = False
+
+        def fetch(self, verbose=False):
+            raise AssertionError("default-off source must not run when source_names is None")
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", OrderedDict([("on", On), ("off", Off)]))
+    jobs = fetch_mod.fetch_jobs(source_names=None)
+    assert [j.company for j in jobs] == ["Acme"]
+
+
 def test_fetch_jobs_abandons_source_exceeding_budget(monkeypatch, capsys):
     """A source slower than the fetch budget is abandoned; the run proceeds with
     whatever the other sources returned, instead of hanging on the slow one."""
@@ -328,3 +409,110 @@ def test_fetch_jobs_abandons_source_exceeding_budget(monkeypatch, capsys):
     assert [j.company for j in jobs] == ["FastCo"]
     # The truncation is surfaced (names the abandoned source) rather than silent.
     assert "slow" in capsys.readouterr().err
+
+
+# ── linkedin-guest offline parse (Part 3) ─────────────────────────────────────
+# Two cards; job 111 appears twice (within-run dedup). Whitespace and an HTML
+# entity in the first title exercise the _clean() path.
+_LG_SEARCH_HTML = """
+<ul>
+<li>
+<div class="base-card relative" data-entity-urn="urn:li:jobPosting:111">
+  <h3 class="base-search-card__title">
+    iOS   Engineer &amp; Developer
+  </h3>
+  <h4 class="base-search-card__subtitle">
+    <a class="hidden-nested-link" href="/company/acme">Acme Corp</a>
+  </h4>
+  <span class="job-search-card__location">
+    Berlin, Germany
+  </span>
+  <time class="job-search-card__listdate" datetime="2026-07-10">1 week ago</time>
+</div>
+</li>
+<li>
+<div class="base-card relative" data-entity-urn="urn:li:jobPosting:222">
+  <h3 class="base-search-card__title">Backend Engineer</h3>
+  <h4 class="base-search-card__subtitle">
+    <a class="hidden-nested-link" href="/company/globex">Globex</a>
+  </h4>
+  <span class="job-search-card__location">Toronto, Canada</span>
+  <time datetime="2026-07-09">2 weeks ago</time>
+</div>
+</li>
+<li>
+<div class="base-card relative" data-entity-urn="urn:li:jobPosting:111">
+  <h3 class="base-search-card__title">iOS Engineer &amp; Developer</h3>
+  <h4 class="base-search-card__subtitle">
+    <a class="hidden-nested-link" href="/company/acme">Acme Corp</a>
+  </h4>
+  <span class="job-search-card__location">Berlin, Germany</span>
+  <time datetime="2026-07-10">1 week ago</time>
+</div>
+</li>
+</ul>
+"""
+
+_LG_DETAIL_HTML = """
+<section>
+<div class="show-more-less-html__markup relative overflow-hidden">
+  <strong>We are hiring an iOS engineer.</strong> Swift, UIKit, fully remote.
+</div>
+</section>
+"""
+
+
+def _lg_fake_http(calls):
+    """URL-dispatching fake for linkedin_guest.http_request → (status, text)."""
+    def fake(url, params=None, timeout=None, **kwargs):
+        calls.append(url)
+        if "seeMoreJobPostings" in url:
+            return 200, _LG_SEARCH_HTML
+        return 200, _LG_DETAIL_HTML
+    return fake
+
+
+def _lg_patch(monkeypatch, calls, seen):
+    monkeypatch.setattr(linkedin_guest, "QUERIES", ["iOS"])
+    monkeypatch.setattr(linkedin_guest, "LOCATIONS", [("European Union", 10)])
+    monkeypatch.setattr(linkedin_guest, "POLITE_DELAY", 0)
+    monkeypatch.setattr(linkedin_guest, "http_request", _lg_fake_http(calls))
+    monkeypatch.setattr("job_search.state.seen_jobs.load_seen_jobs", lambda: seen)
+
+
+def test_linkedin_guest_parses_canonicalizes_and_dedupes(monkeypatch):
+    calls = []
+    _lg_patch(monkeypatch, calls, set())  # nothing seen
+    jobs = linkedin_guest.LinkedInGuestSource().fetch(verbose=False)
+
+    # Within-run dedup: job 111 appears twice in the page but yields one Job.
+    # URLs are jobspy's canonical .../jobs/view/<id> form.
+    assert [j.url for j in jobs] == [
+        "https://www.linkedin.com/jobs/view/111",
+        "https://www.linkedin.com/jobs/view/222",
+    ]
+    ios = jobs[0]
+    assert ios.title == "iOS Engineer & Developer"  # whitespace collapsed, &amp; unescaped
+    assert ios.company == "Acme Corp"
+    assert ios.location == "Berlin, Germany"
+    assert ios.source == "linkedin-guest"
+    assert ios.date_posted == dt.date(2026, 7, 10)
+    assert ios.description == "We are hiring an iOS engineer. Swift, UIKit, fully remote."
+
+
+def test_linkedin_guest_skips_description_for_seen_job(monkeypatch):
+    calls = []
+    seen = {normalize_url("https://www.linkedin.com/jobs/view/111")}
+    _lg_patch(monkeypatch, calls, seen)
+    jobs = linkedin_guest.LinkedInGuestSource().fetch(verbose=False)
+    by_url = {j.url: j for j in jobs}
+
+    # Seen job is still returned (downstream dedup drops it) but its expensive
+    # description request is skipped.
+    assert by_url["https://www.linkedin.com/jobs/view/111"].description == ""
+    assert not any("jobPosting/111" in u for u in calls)
+    # The genuinely-new job still fetches its description.
+    assert by_url["https://www.linkedin.com/jobs/view/222"].description == (
+        "We are hiring an iOS engineer. Swift, UIKit, fully remote."
+    )
+    assert any("jobPosting/222" in u for u in calls)

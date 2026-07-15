@@ -18,10 +18,14 @@ import sys
 from ..config import SEEN_JOBS_FILE
 
 
-def keys_from_ref(ref, filename=SEEN_JOBS_FILE):
-    """The set of seen-keys recorded at `ref:filename`, or empty if absent/blank."""
+def keys_from_ref(ref, filename=SEEN_JOBS_FILE, repo_dir=None):
+    """The set of seen-keys recorded at `ref:filename`, or empty if absent/blank.
+
+    `repo_dir` runs git via `-C repo_dir` (so callers like git_sync need no
+    chdir). When it's None the command shape stays exactly `git show <spec>`."""
+    cmd = ["git"] + (["-C", repo_dir] if repo_dir else []) + ["show", f"{ref}:{filename}"]
     r = subprocess.run(
-        ["git", "show", f"{ref}:{filename}"],
+        cmd,
         capture_output=True,
         text=True,
     )
@@ -30,17 +34,17 @@ def keys_from_ref(ref, filename=SEEN_JOBS_FILE):
     return set(json.loads(r.stdout))
 
 
-def merge_refs(refs, filename=SEEN_JOBS_FILE):
+def merge_refs(refs, filename=SEEN_JOBS_FILE, repo_dir=None):
     """Sorted set-union of the seen-keys across `refs`."""
     merged = set()
     for ref in refs:
-        merged |= keys_from_ref(ref, filename)
+        merged |= keys_from_ref(ref, filename, repo_dir=repo_dir)
     return sorted(merged)
 
 
-def write_merged(out_path, refs, filename=SEEN_JOBS_FILE):
+def write_merged(out_path, refs, filename=SEEN_JOBS_FILE, repo_dir=None):
     """Write the sorted union to out_path in the canonical seen_jobs.json format."""
-    merged = merge_refs(refs, filename)
+    merged = merge_refs(refs, filename, repo_dir=repo_dir)
     with open(out_path, "w") as f:
         json.dump(merged, f, indent=2)
     return merged

@@ -2,7 +2,8 @@
 import urllib.request
 
 # --- modules under test (repoint on migration) ---
-from job_search.config import MIN_JOB_TEXT_LEN
+from job_search.config import MIN_JOB_TEXT_LEN, PipelineConfig
+from job_search.pipeline import run as run_mod
 from job_search.pipeline.stages import (
     _company_slug,
     _format_deferred_notification,
@@ -134,3 +135,65 @@ def test_fetch_job_text_returns_empty_on_error(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     assert fetch_job_text_from_url("https://x/job") == ""
+
+
+# ── run_daily state-sync wiring (Part 4c) ─────────────────────────────────────
+def _stub_daily(monkeypatch, calls):
+    """Neutralize run_daily's external work, recording pull/fetch/push order."""
+    def fake_fetch(*a, **k):
+        calls.append("fetch")
+        return []
+
+    monkeypatch.setattr(run_mod, "pull_state", lambda *a, **k: calls.append("pull"))
+    monkeypatch.setattr(run_mod, "push_state", lambda *a, **k: calls.append("push"))
+    monkeypatch.setattr(run_mod, "fetch_jobs", fake_fetch)
+    monkeypatch.setattr(run_mod, "load_criteria", lambda: "criteria")
+    monkeypatch.setattr(run_mod, "load_tailoring_instructions", lambda: "instr")
+    monkeypatch.setattr(run_mod, "load_base_tex", lambda: "tex")
+    monkeypatch.setattr(run_mod, "load_seen_jobs", lambda: set())
+    monkeypatch.setattr(run_mod, "save_seen_jobs", lambda *a, **k: None)
+
+    class FakeLLM:
+        def __init__(self, *a, **k):
+            pass
+
+        def usage_summary(self):
+            return ""
+
+    class FakeTelegram:
+        def __init__(self, *a, **k):
+            pass
+
+        def send_message(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(run_mod, "LLMClient", FakeLLM)
+    monkeypatch.setattr(run_mod, "TelegramClient", FakeTelegram)
+
+
+def _daily_cfg(**overrides):
+    base = dict(gemini_api_key="g", telegram_bot_token="t", telegram_chat_id="c")
+    base.update(overrides)
+    return PipelineConfig(**base)
+
+
+def test_run_daily_state_sync_pulls_before_fetch_and_pushes_after(monkeypatch):
+    calls = []
+    _stub_daily(monkeypatch, calls)
+    run_mod.run_daily(_daily_cfg(state_sync=True))
+    assert calls == ["pull", "fetch", "push"]  # pull is load-bearing before fetch
+
+
+def test_run_daily_test_mode_pulls_but_never_pushes(monkeypatch):
+    calls = []
+    _stub_daily(monkeypatch, calls)
+    run_mod.run_daily(_daily_cfg(state_sync=True), test=True)
+    assert "pull" in calls
+    assert "push" not in calls
+
+
+def test_run_daily_without_state_sync_neither_pulls_nor_pushes(monkeypatch):
+    calls = []
+    _stub_daily(monkeypatch, calls)
+    run_mod.run_daily(_daily_cfg(state_sync=False))
+    assert calls == ["fetch"]
