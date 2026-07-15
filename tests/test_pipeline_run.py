@@ -1,10 +1,16 @@
 """Regressions for description gating in the scheduled pipeline."""
+import datetime
 from types import SimpleNamespace
 
 from job_search.models import Job
 from job_search.pipeline import run
 from job_search.pipeline import stages
 from job_search.pipeline.stages import DeliveryOutcome
+from job_search.state.seen_jobs import (
+    delivery_identity_tokens,
+    mark_delivery_notified,
+    record_delivery_failure,
+)
 
 
 class FakeLLM:
@@ -13,13 +19,19 @@ class FakeLLM:
 
 
 class FakeTelegram:
-    def __init__(self, fail_deferred=False):
+    def __init__(self, fail_deferred=False, fail_pending=False, fail_block=False):
         self.messages = []
         self.documents = []
         self.fail_deferred = fail_deferred
+        self.fail_pending = fail_pending
+        self.fail_block = fail_block
 
     def send_message(self, message):
         if self.fail_deferred and "deferred" in message:
+            raise RuntimeError("telegram down")
+        if self.fail_pending and "verified CV pending" in message:
+            raise RuntimeError("telegram down")
+        if self.fail_block and "automated CV delivery blocked" in message:
             raise RuntimeError("telegram down")
         self.messages.append(message)
 
@@ -273,7 +285,7 @@ def _install_fit(monkeypatch, send_outcome=None, prepare_error=None):
             },
         )
     if send_outcome is not None:
-        monkeypatch.setattr(run, "send_fit", lambda *_args: send_outcome)
+        monkeypatch.setattr(run, "send_fit", lambda *_args, **_kwargs: send_outcome)
 
 
 def test_preparation_failure_remains_unseen_and_is_reported(monkeypatch):
@@ -306,7 +318,11 @@ def test_document_failure_remains_unseen_and_reports_partial_delivery(monkeypatc
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     _install_fit(
         monkeypatch,
-        DeliveryOutcome(notification_sent=True, error=RuntimeError("document down")),
+        DeliveryOutcome(
+            notification_sent=True,
+            notification_satisfied=True,
+            error=RuntimeError("document down"),
+        ),
     )
 
     run.run_daily(make_config())
@@ -320,7 +336,10 @@ def test_document_failure_remains_unseen_and_reports_partial_delivery(monkeypatc
 def test_complete_delivery_marks_seen_and_is_reported(monkeypatch):
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, saved = install_daily_fakes(monkeypatch, [job])
-    _install_fit(monkeypatch, DeliveryOutcome(notification_sent=True, cv_sent=True))
+    _install_fit(
+        monkeypatch,
+        DeliveryOutcome(notification_sent=True, notification_satisfied=True, cv_sent=True),
+    )
 
     run.run_daily(make_config())
 
@@ -353,10 +372,18 @@ def test_mixed_outcomes_have_accurate_summary(monkeypatch):
         lambda *_args: {"title": _args[3]["title"], "company": "x", "message": "fit", "pdf_bytes": b"PDF"},
     )
     outcomes = {
-        "Good": DeliveryOutcome(notification_sent=True, cv_sent=True),
-        "Partial": DeliveryOutcome(notification_sent=True, error=RuntimeError("upload")),
+        "Good": DeliveryOutcome(notification_sent=True, notification_satisfied=True, cv_sent=True),
+        "Partial": DeliveryOutcome(
+            notification_sent=True,
+            notification_satisfied=True,
+            error=RuntimeError("upload"),
+        ),
     }
-    monkeypatch.setattr(run, "send_fit", lambda payload, _telegram: outcomes[payload["title"]])
+    monkeypatch.setattr(
+        run,
+        "send_fit",
+        lambda payload, _telegram, **_kwargs: outcomes[payload["title"]],
+    )
 
     run.run_daily(make_config())
 
@@ -384,3 +411,181 @@ def test_mode_defers_before_process_job_without_seen_state(monkeypatch):
 
     assert len(telegram.messages) == 1
     assert "1 new job posting deferred" in telegram.messages[0]
+
+
+def test_first_preparation_failure_records_attempt_and_sends_pending_fit_once(monkeypatch):
+    job = Job(title="<Match>", company="A&B", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 15))
+    _install_fit(monkeypatch, prepare_error=RuntimeError("compile down"))
+
+    run.run_daily(make_config())
+
+    tokens = delivery_identity_tokens("https://x/match", "<Match>", "A&B", "")
+    assert all(f"delivery:attempt:{token}:1:2026-07-16" in saved[-1] for token in tokens)
+    assert all(f"delivery:notified:{token}" in saved[-1] for token in tokens)
+    pending = [message for message in telegram.messages if "verified CV pending" in message]
+    assert len(pending) == 1
+    assert "great" in pending[0]
+    assert "&lt;Match&gt;" in telegram.messages[-1]
+    assert "Preparation, attempt 1, next retry 2026-07-16" in telegram.messages[-1]
+
+
+def test_waiting_retry_skips_all_llm_work(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    seen = set()
+    record_delivery_failure(
+        seen,
+        {"url": job.url, "title": job.title, "company": job.company, "location": job.location},
+        datetime.date(2026, 7, 15),
+        "preparation",
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 15))
+    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(run, "prepare_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no preparation")))
+    monkeypatch.setattr(run, "prepare_retry_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no retry")))
+
+    run.run_daily(make_config())
+
+    assert "Retries waiting for backoff: 1" in telegram.messages[-1]
+    assert "Retry attempts executed: 0" in telegram.messages[-1]
+    assert "New candidates: 0" in telegram.messages[-1]
+    assert "No evaluated jobs matched" not in telegram.messages[-1]
+
+
+def test_notified_due_retry_skips_evaluation_and_uploads_only_pdf(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    job_dict = {"url": job.url, "title": job.title, "company": job.company, "location": job.location}
+    seen = set()
+    record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 15), "document")
+    mark_delivery_notified(seen, **job_dict)
+    telegram, saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
+    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(
+        run,
+        "prepare_retry_fit",
+        lambda *_args: {"title": "Match", "company": "Acme", "pdf_bytes": b"PDF"},
+    )
+
+    run.run_daily(make_config())
+
+    assert telegram.documents[0][1] == b"PDF"
+    assert all("<b>Match</b>" not in message for message in telegram.messages)
+    assert "https://x/match" in saved[-1]
+    assert "Known-fit retries that skipped evaluation: 1" in telegram.messages[-1]
+
+
+def test_failed_pending_notification_re_evaluates_on_due_retry(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram(fail_pending=True)
+    _telegram, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    today = [datetime.date(2026, 7, 15)]
+    monkeypatch.setattr(run, "_today", lambda: today[0])
+    evaluations = []
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
+    )
+    monkeypatch.setattr(run, "prepare_fit", lambda *_args: (_ for _ in ()).throw(RuntimeError("compile down")))
+
+    run.run_daily(make_config())
+    today[0] = datetime.date(2026, 7, 16)
+    run.run_daily(make_config())
+
+    assert evaluations == [datetime.date(2026, 7, 15), datetime.date(2026, 7, 16)]
+    tokens = delivery_identity_tokens("https://x/match", "Match", "Acme", "")
+    assert all(f"delivery:notified:{token}" not in saved[-1] for token in tokens)
+
+
+def test_third_failure_blocks_without_seen_keys_and_sends_terminal_alert(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    job_dict = {"url": job.url, "title": job.title, "company": job.company, "location": job.location}
+    seen = set()
+    record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 15), "preparation")
+    record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 16), "preparation")
+    mark_delivery_notified(seen, **job_dict)
+    telegram, saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 18))
+    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(run, "prepare_retry_fit", lambda *_args: (_ for _ in ()).throw(RuntimeError("compile down")))
+
+    run.run_daily(make_config())
+
+    assert "https://x/match" not in saved[-1]
+    assert "match|acme" not in saved[-1]
+    assert any(marker.startswith("delivery:blocked:") for marker in saved[-1])
+    assert len([message for message in telegram.messages if "automated CV delivery blocked" in message]) == 1
+    assert any(marker.startswith("delivery:block-alerted:") for marker in saved[-1])
+    assert "Newly blocked fits: 1" in telegram.messages[-1]
+
+
+def test_blocked_job_only_retries_terminal_alert_until_acknowledged(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    job_dict = {"url": job.url, "title": job.title, "company": job.company, "location": job.location}
+    seen = set()
+    record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 15), "document")
+    record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 16), "document")
+    record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 18), "document")
+    telegram = FakeTelegram(fail_block=True)
+    _telegram, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram, initial_seen=seen)
+    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(run, "prepare_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no preparation")))
+    monkeypatch.setattr(run, "prepare_retry_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no retry")))
+
+    run.run_daily(make_config())
+    assert not any(marker.startswith("delivery:block-alerted:") for marker in saved[-1])
+    telegram.fail_block = False
+    run.run_daily(make_config())
+
+    assert len([message for message in telegram.messages if "automated CV delivery blocked" in message]) == 1
+    assert any(marker.startswith("delivery:block-alerted:") for marker in saved[-1])
+
+
+def test_three_attempt_lifecycle_runs_on_days_zero_one_and_three(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    today = [datetime.date(2026, 7, 15)]
+    evaluations = []
+    preparations = []
+    monkeypatch.setattr(run, "_today", lambda: today[0])
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
+    )
+    monkeypatch.setattr(
+        run,
+        "prepare_fit",
+        lambda *_args: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
+    )
+    monkeypatch.setattr(
+        run,
+        "prepare_retry_fit",
+        lambda *_args: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
+    )
+
+    run.run_daily(make_config())
+    assert any(":1:2026-07-16" in marker for marker in saved[-1])
+
+    today[0] = datetime.date(2026, 7, 16)
+    run.run_daily(make_config())
+    assert any(":2:2026-07-18" in marker for marker in saved[-1])
+
+    today[0] = datetime.date(2026, 7, 17)
+    run.run_daily(make_config())
+    assert "Retries waiting for backoff: 1" in telegram.messages[-1]
+
+    today[0] = datetime.date(2026, 7, 18)
+    run.run_daily(make_config())
+
+    assert evaluations == [datetime.date(2026, 7, 15)]
+    assert preparations == [
+        datetime.date(2026, 7, 15),
+        datetime.date(2026, 7, 16),
+        datetime.date(2026, 7, 18),
+    ]
+    assert any(marker.startswith("delivery:blocked:") for marker in saved[-1])
+    assert "will retry next run" not in telegram.messages[-1]

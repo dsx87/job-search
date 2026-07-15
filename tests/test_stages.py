@@ -12,6 +12,7 @@ from job_search.pipeline.stages import (
     CVPreparationError,
     _send_error_notification,
     prepare_fit,
+    prepare_retry_fit,
     process_job,
     send_fit,
     tailor_single_job,
@@ -53,6 +54,7 @@ def test_send_fit_complete_delivery():
 
     assert outcome.complete is True
     assert outcome.notification_sent is True
+    assert outcome.notification_satisfied is True
     assert outcome.cv_sent is True
     assert outcome.error is None
     assert tg.messages == ["hi"]
@@ -91,9 +93,35 @@ def test_send_fit_reports_document_failure_after_message():
 
     assert outcome.complete is False
     assert outcome.notification_sent is True
+    assert outcome.notification_satisfied is True
     assert outcome.cv_sent is False
     assert isinstance(outcome.error, RuntimeError)
     assert tg.messages == ["hi"]
+
+
+def test_send_fit_skips_repeat_notification_for_pdf_only_retry():
+    tg = FakeTelegram()
+
+    outcome = send_fit(_payload(), tg, notification_already_sent=True)
+
+    assert outcome.complete is True
+    assert outcome.notification_sent is False
+    assert outcome.notification_satisfied is True
+    assert outcome.cv_sent is True
+    assert tg.messages == []
+    assert len(tg.documents) == 1
+
+
+def test_send_fit_pdf_only_failure_keeps_notification_satisfied():
+    tg = FakeTelegram(raise_on_document=True)
+
+    outcome = send_fit(_payload(), tg, notification_already_sent=True)
+
+    assert outcome.complete is False
+    assert outcome.notification_sent is False
+    assert outcome.notification_satisfied is True
+    assert outcome.cv_sent is False
+    assert tg.messages == []
 
 
 def test_prepare_fit_requires_verified_pdf(monkeypatch, fake_llm):
@@ -118,6 +146,20 @@ def test_prepare_fit_payload_contains_only_delivery_fields(monkeypatch, fake_llm
 
     assert set(payload) == {"title", "company", "message", "pdf_bytes"}
     assert payload["pdf_bytes"] == b"PDF"
+
+
+def test_prepare_retry_fit_builds_verified_pdf_without_evaluation_message(monkeypatch, fake_llm):
+    monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
+    client = fake_llm([CLEAN_CV])
+
+    payload = prepare_retry_fit(
+        client,
+        "instr",
+        "base",
+        {"title": "iOS", "company": "Acme"},
+    )
+
+    assert payload == {"title": "iOS", "company": "Acme", "pdf_bytes": b"PDF"}
 
 
 def test_prepare_fit_revalidates_compiler_repair_output(monkeypatch):

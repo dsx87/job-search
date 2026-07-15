@@ -200,9 +200,20 @@ on startup, so autocomplete works with no @BotFather step.
 Daily runs, CLI `--tailor`, and bot `/tailor` all use the same fail-closed CV
 path. The pipeline tries one factual correction and repairs eligible compiler
 errors, but unresolved validation, compilation, page-verification, or upload
-failures block artifact delivery. Scheduled fits remain unseen for a full retry
-and the final run summary reports preparation, notification, CV-delivery, and
-failure counts. The system never sends raw `.tex`, an unknown-page PDF, or a
+failures block artifact delivery. Scheduled fits make no more than three
+automated delivery attempts: the initial day, one day later, and two days after
+that (days 0, 1, and 3). While backoff is pending, the job performs no LLM work.
+
+When a fit is known but its PDF cannot be prepared, Telegram sends one
+“verified CV pending” message containing the fit reasoning and next retry date.
+That successful text delivery is recorded immediately. Later attempts skip
+evaluation and send only a newly verified PDF, so a failed upload never repeats
+the fit notification. After attempt three, the job enters a blocked state and a
+terminal alert points to `/tailor`; terminal alerts retry until Telegram accepts
+them without repeating any LLM work. `/tailor` is intentionally manual and
+bypasses this daily state. The final summary reports retry, backoff, known-fit,
+blocked, preparation, notification, and CV-delivery counts plus bounded per-job
+failure details. The system never sends raw `.tex`, an unknown-page PDF, or a
 multi-page PDF.
 
 **Everything runs through one wrapper.** Both the daily timer and the bot execute
@@ -306,4 +317,4 @@ else keeps running on system python3).
 | TLS/certificate errors to Gemini/Telegram | `sudo apt install ca-certificates && sudo update-ca-certificates`. |
 | First run takes hours | You didn't seed `seen_jobs.json` — see "Seeding the dedup state". |
 | Fetch hangs | Expected occasionally (LinkedIn throttling); `SCRAPE_BUDGET_SECONDS` caps the fetch stage so the run continues. |
-| A matching job has no CV | Check the final run summary and logs for validation, preparation, or delivery failures; failed fits remain unseen and retry the full flow next run. |
+| A matching job has no CV | Check the final summary for its attempt and next retry date. Automated attempts run on days 0, 1, and 3; after the terminal blocked alert, use `/tailor <url>` (or paste the description) to recover manually. |

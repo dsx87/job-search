@@ -86,8 +86,9 @@ So the core has **none of them**:
 - **Strict, self-healing CV delivery** — factual validation and repair run before
   compilation; repairable XeLaTeX errors are fed back to the LLM. A persistent
   content violation, compiler failure, unverifiable page count, multi-page PDF,
-  or failed document upload blocks completion, remains retryable, and is counted
-  in the daily run summary. Raw `.tex` is never delivered.
+  or failed document upload blocks completion and is counted in the daily run
+  summary. Automated delivery makes at most three attempts (days 0, 1, and 3),
+  then blocks until a manual `/tailor`. Raw `.tex` is never delivered.
 - **Model fallback** — Gemini is primary, with an optional Qwen fallback so a
   single provider outage doesn't stop the run.
 - **Concurrency-safe state** — the daily job commits updated `seen_jobs.json`
@@ -179,9 +180,13 @@ python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
 
 The daily flow, CLI `--tailor`, and Telegram `/tailor` command share the same
 delivery contract: validation, successful compilation, exactly-one-page
-verification, and PDF upload must all succeed. A failed fit stays unseen for a
-later full retry; after a partial Telegram delivery, its text notification may
-repeat on that retry.
+verification, and PDF upload must all succeed. If preparation fails after a fit
+is found, Telegram receives one “verified CV pending” notice with the next retry
+date. Successful text delivery is persisted immediately, so a later document
+retry uploads only the newly verified PDF and never repeats the fit message.
+Failures retry on days 1 and 3; after the third failed attempt, automated work
+stops and Telegram directs recovery through `/tailor`. Manual tailoring bypasses
+the daily retry state.
 
 ## Tech stack
 

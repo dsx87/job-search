@@ -30,10 +30,11 @@ class DeliveryOutcome:
     notification_sent: bool = False
     cv_sent: bool = False
     error: Optional[Exception] = None
+    notification_satisfied: bool = False
 
     @property
     def complete(self) -> bool:
-        return self.notification_sent and self.cv_sent and self.error is None
+        return self.notification_satisfied and self.cv_sent and self.error is None
 
 
 class CVDeliveryError(RuntimeError):
@@ -239,7 +240,16 @@ def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, e
     }
 
 
-def send_fit(payload: dict, telegram) -> DeliveryOutcome:
+def prepare_retry_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict) -> dict:
+    """Prepare a verified CV for a known fit without creating another fit message."""
+    title = job.get("title", "?")
+    company = job.get("company", "?")
+    print(f"    Retrying verified PDF: {title} at {company}...", flush=True)
+    pdf_bytes = _prepare_verified_pdf(gemini, tailoring_instructions, base_tex, job)
+    return {"title": title, "company": company, "pdf_bytes": pdf_bytes}
+
+
+def send_fit(payload: dict, telegram, notification_already_sent=False) -> DeliveryOutcome:
     """
     Send a prepared fit to Telegram: the notification message, then the tailored
     verified PDF. Returns explicit partial-progress flags for orchestration.
@@ -248,12 +258,18 @@ def send_fit(payload: dict, telegram) -> DeliveryOutcome:
     company = payload["company"]
     pdf_bytes = payload.get("pdf_bytes")
     if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
-        return DeliveryOutcome(error=ValueError("verified PDF bytes are required for delivery"))
+        return DeliveryOutcome(
+            error=ValueError("verified PDF bytes are required for delivery"),
+            notification_satisfied=notification_already_sent,
+        )
 
-    try:
-        telegram.send_message(payload["message"])
-    except Exception as exc:
-        return DeliveryOutcome(error=exc)
+    notification_sent = False
+    if not notification_already_sent:
+        try:
+            telegram.send_message(payload["message"])
+        except Exception as exc:
+            return DeliveryOutcome(error=exc)
+        notification_sent = True
 
     slug = _company_slug(company)
     try:
@@ -263,8 +279,16 @@ def send_fit(payload: dict, telegram) -> DeliveryOutcome:
             caption=f"Tailored CV — {title} at {company}",
         )
     except Exception as exc:
-        return DeliveryOutcome(notification_sent=True, error=exc)
-    return DeliveryOutcome(notification_sent=True, cv_sent=True)
+        return DeliveryOutcome(
+            notification_sent=notification_sent,
+            notification_satisfied=True,
+            error=exc,
+        )
+    return DeliveryOutcome(
+        notification_sent=notification_sent,
+        notification_satisfied=True,
+        cv_sent=True,
+    )
 
 
 def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:

@@ -4,11 +4,24 @@ The seen_jobs.json format (sorted list, indent=2) is load-bearing: the daily
 workflow's set-union merge depends on it byte-for-byte.
 """
 import json
+import datetime
+import hashlib
 
 # --- modules under test (repoint on migration) ---
 from job_search.state import seen_jobs as seen_mod
 from job_search.state import seen_merge
-from job_search.state.seen_jobs import normalize_url, title_company_key, load_seen_jobs, save_seen_jobs
+from job_search.state.seen_jobs import (
+    acknowledge_block_alert,
+    delivery_identity_tokens,
+    delivery_retry_state,
+    load_seen_jobs,
+    mark_delivery_notified,
+    normalize_url,
+    pending_block_alerts,
+    record_delivery_failure,
+    save_seen_jobs,
+    title_company_key,
+)
 from job_search.state.seen_merge import keys_from_ref, merge_refs, write_merged
 from job_search.models import Job, Region
 from job_search.state.job_store import JobStore, job_to_store_dict
@@ -36,6 +49,94 @@ def test_seen_jobs_roundtrip_and_format(tmp_path, monkeypatch):
     # exact on-disk format the workflow merge relies on
     assert path.read_text() == json.dumps(["a", "b", "c"], indent=2)
     assert load_seen_jobs() == {"a", "b", "c"}
+
+
+def test_delivery_identity_tokens_use_full_sha256_for_url_and_meaningful_job_key():
+    tokens = delivery_identity_tokens("HTTPS://X.com/Role/", " iOS Dev ", "Acme", " Tel Aviv ")
+
+    assert tokens == (
+        hashlib.sha256(b"https://x.com/role").hexdigest(),
+        hashlib.sha256(b"ios dev|acme|tel aviv").hexdigest(),
+    )
+    assert delivery_identity_tokens("", "", "", "") == ()
+
+
+def test_delivery_attempt_markers_round_trip_across_both_identities():
+    seen = set()
+    job = {"url": "https://x/role", "title": "iOS", "company": "Acme", "location": "EU"}
+
+    state = record_delivery_failure(seen, job, datetime.date(2026, 7, 15), "preparation")
+
+    assert state.attempt == 1
+    assert state.retry_on == datetime.date(2026, 7, 16)
+    assert state.blocked is False
+    tokens = delivery_identity_tokens("https://x/role", "iOS", "Acme", "EU")
+    assert all(f"delivery:attempt:{token}:1:2026-07-16" in seen for token in tokens)
+    assert delivery_retry_state(seen, **job) == state
+
+
+def test_delivery_retry_state_uses_highest_union_attempt_and_latest_date():
+    token = delivery_identity_tokens("https://x/role", "", "", "")[0]
+    seen = {
+        f"delivery:attempt:{token}:1:2026-07-16",
+        f"delivery:attempt:{token}:2:2026-07-17",
+        f"delivery:attempt:{token}:2:2026-07-18",
+        "delivery:attempt:bad:wat:nope",
+        f"delivery:attempt:{token}:99:2026-07-19",
+        "delivery:unknown:anything",
+    }
+
+    state = delivery_retry_state(seen, url="https://x/role")
+
+    assert state.attempt == 2
+    assert state.retry_on == datetime.date(2026, 7, 18)
+
+
+def test_notification_and_blocked_state_are_union_safe_for_dual_identity():
+    seen = set()
+    job = {"url": "https://x/role", "title": "iOS", "company": "Acme", "location": "EU"}
+    mark_delivery_notified(seen, **job)
+    record_delivery_failure(seen, job, datetime.date(2026, 7, 15), "document")
+    record_delivery_failure(seen, job, datetime.date(2026, 7, 16), "document")
+    state = record_delivery_failure(seen, job, datetime.date(2026, 7, 18), "document")
+
+    assert state.attempt == 3
+    assert state.notified is True
+    assert state.blocked is True
+    assert state.retry_on is None
+    tokens = delivery_identity_tokens(**job)
+    assert all(f"delivery:notified:{token}" in seen for token in tokens)
+    assert all(f"delivery:blocked:{token}" in seen for token in tokens)
+
+
+def test_pending_block_alert_round_trip_and_acknowledgement():
+    seen = set()
+    job = {
+        "url": "https://x/role",
+        "title": "<iOS>" + "x" * 300,
+        "company": "Acme",
+        "location": "EU",
+    }
+    record_delivery_failure(seen, job, datetime.date(2026, 7, 15), "preparation")
+    record_delivery_failure(seen, job, datetime.date(2026, 7, 16), "preparation")
+    record_delivery_failure(seen, job, datetime.date(2026, 7, 18), "preparation")
+
+    alerts = pending_block_alerts(seen)
+
+    assert len(alerts) == 1
+    token, payload = alerts[0]
+    assert payload["url"] == "https://x/role"
+    assert payload["stage"] == "preparation"
+    assert len(payload["title"]) <= 180
+    acknowledge_block_alert(seen, token)
+    assert pending_block_alerts(seen) == []
+    assert f"delivery:block-alerted:{token}" in seen
+
+
+def test_pending_block_alerts_ignore_malformed_payloads():
+    token = "a" * 64
+
+    assert pending_block_alerts({f"delivery:block-alert:{token}:a"}) == []
 
 
 def test_job_to_store_dict():
