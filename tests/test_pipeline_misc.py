@@ -3,7 +3,81 @@ import urllib.request
 
 # --- modules under test (repoint on migration) ---
 from job_search.config import MIN_JOB_TEXT_LEN
-from job_search.pipeline.stages import _company_slug, _format_notification, fetch_job_text_from_url
+from job_search.pipeline.stages import (
+    _company_slug,
+    _format_deferred_notification,
+    _format_notification,
+    clean_job_description,
+    ensure_job_description,
+    fetch_job_text_from_url,
+)
+
+
+def test_clean_job_description():
+    assert clean_job_description("<p>Swift &amp; UIKit</p>\n<p>Remote</p>") == (
+        "Swift & UIKit Remote"
+    )
+
+
+def test_description_length_boundary():
+    assert ensure_job_description({"description": "x" * 200, "url": ""}) is True
+    assert ensure_job_description({"description": "x" * 199, "url": ""}) is False
+
+
+def test_sufficient_description_does_not_fetch():
+    def unexpected_fetch(_url):
+        raise AssertionError("fetch must not run")
+
+    job = {"description": "x" * 200, "url": "https://example.com/job"}
+    assert ensure_job_description(job, fetcher=unexpected_fetch) is True
+
+
+def test_short_description_is_enriched():
+    job = {"description": "<p>Swift</p>", "url": "https://example.com/job"}
+    fetched = "<main>{}</main>".format("Complete iOS requirements " * 20)
+
+    assert ensure_job_description(job, fetcher=lambda _url: fetched) is True
+    assert "<main>" not in job["description"]
+    assert len(job["description"]) >= 200
+
+
+def test_shorter_fetched_text_does_not_replace_source():
+    job = {"description": "x" * 150, "url": "https://example.com/job"}
+    assert ensure_job_description(job, fetcher=lambda _url: "short") is False
+    assert job["description"] == "x" * 150
+
+
+def test_non_http_job_urls_do_not_fetch():
+    calls = []
+
+    for url in ("", "/relative", "mailto:jobs@example.com", "file:///tmp/job"):
+        job = {"description": "short", "url": url}
+        assert ensure_job_description(job, fetcher=calls.append) is False
+
+    assert calls == []
+
+
+def test_format_deferred_notification_is_bounded_and_html_safe():
+    jobs = [
+        {
+            "title": "iOS <Lead>",
+            "company": "A & B",
+            "url": "https://example.com/job?a=1&b=2",
+        },
+        {"title": "Plain role", "company": "No Link", "url": "file:///job"},
+    ] + [
+        {"title": f"Role {index}", "company": "Acme", "url": f"https://x/{index}"}
+        for index in range(10)
+    ]
+
+    message = _format_deferred_notification(jobs)
+
+    assert "iOS &lt;Lead&gt; — A &amp; B" in message
+    assert 'href="https://example.com/job?a=1&amp;b=2"' in message
+    assert "• Plain role — No Link" in message
+    assert 'href="file:///job"' not in message
+    assert message.count("• ") == 11
+    assert "• … and 2 more" in message
 
 
 def test_company_slug():

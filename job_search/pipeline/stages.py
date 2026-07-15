@@ -5,15 +5,55 @@ rather than module globals, so a single client is built once in run.py/cli.py
 and threaded through. prepare_fit performs NO Telegram I/O (safe to run
 concurrently); send_fit does the delivery.
 """
+import html
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instructions
 from ..latex.compile import compile_with_fixes
 from ..llm.eval import evaluate_job
 from ..llm.tailor import tailor_resume
-from ..text import strip_html
+from ..text import collapse_ws, strip_html
+
+
+def clean_job_description(value):
+    """Return HTML-free, entity-decoded, collapsed plain text."""
+    return collapse_ws(strip_html(value))
+
+
+def _is_http_job_url(url):
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
+
+
+def ensure_job_description(job, fetcher=None, min_length=MIN_JOB_TEXT_LEN):
+    """Keep the richest cleaned description and report whether it is sufficient."""
+    current = clean_job_description(job.get("description", ""))
+    job["description"] = current
+
+    if len(current) >= min_length:
+        return True
+
+    url = str(job.get("url", "") or "").strip()
+    if not _is_http_job_url(url):
+        return False
+
+    fetch = fetcher or fetch_job_text_from_url
+    try:
+        fetched = clean_job_description(fetch(url))
+    except Exception as exc:
+        print(
+            f"    Job-description enrichment failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        fetched = ""
+
+    if len(fetched) > len(current):
+        job["description"] = fetched
+
+    return len(job["description"]) >= min_length
 
 
 def _company_slug(company: str) -> str:
@@ -51,8 +91,38 @@ def fetch_job_text_from_url(url: str) -> str:
     # only removes tags, not the CSS/JS text between them, which would otherwise
     # flood the LLM prompt with markup noise.
     body = re.sub(r"(?is)<(script|style|head|noscript)\b.*?</\1>", " ", body)
-    text = strip_html(body)
-    return " ".join(text.split())
+    return clean_job_description(body)
+
+
+def _format_deferred_notification(jobs, limit=10):
+    """Build one bounded, HTML-safe Telegram summary for deferred jobs."""
+    count = len(jobs)
+    noun = "posting" if count == 1 else "postings"
+    lines = [
+        f"⚠️ <b>{count} new job {noun} deferred</b>",
+        "Not enough job-description text for reliable AI evaluation. "
+        "They will retry next run.",
+        "",
+    ]
+
+    for job in jobs[:limit]:
+        title = collapse_ws(job.get("title", ""))
+        company = collapse_ws(job.get("company", ""))
+        label = " — ".join(part for part in (title, company) if part) or "Unknown job"
+        if len(label) > 180:
+            label = label[:179] + "…"
+        safe_label = html.escape(label)
+        url = str(job.get("url", "") or "").strip()
+        if _is_http_job_url(url):
+            lines.append(f'• <a href="{html.escape(url, quote=True)}">{safe_label}</a>')
+        else:
+            lines.append(f"• {safe_label}")
+
+    omitted = count - min(count, limit)
+    if omitted:
+        lines.append(f"• … and {omitted} more")
+
+    return "\n".join(lines)
 
 
 def _format_notification(job: dict, evaluation: dict) -> str:

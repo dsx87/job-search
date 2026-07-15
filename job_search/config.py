@@ -47,7 +47,7 @@ GEMINI_CIRCUIT_BREAK_STATUS = {429, 503}
 EVAL_WORKERS = 12
 TAILOR_WORKERS = 8
 
-# Minimum job-description length before we trust it enough to tailor against.
+# Minimum job-description length before we trust it for evaluation or tailoring.
 MIN_JOB_TEXT_LEN = 200
 
 
