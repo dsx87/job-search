@@ -45,7 +45,8 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
                     └─────────────────────────────────────────────┬─┘
                                                                    ▼
                                                     Telegram: match + tailored
-                                                    PDF/.tex, with reasoning
+                                                    verified one-page PDF
+                                                    with reasoning
 ```
 
 1. **Fetch** — pulls listings concurrently from ~20 sources (Remotive, RemoteOK,
@@ -58,7 +59,8 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
    (stack fit, seniority, remote/relocation, industry exclusions, timezone) and
    explains its verdict.
 4. **Tailor** — for every match, the model rewrites my base LaTeX résumé to
-   emphasize the relevant experience, then compiles it to PDF.
+   emphasize the relevant experience. A factual-content guard validates it,
+   XeLaTeX compiles it, and the page guard verifies exactly one page.
 5. **Notify** — the match, the reasoning, and the tailored CV land in Telegram.
 
 ## The design choice that makes both work
@@ -81,9 +83,11 @@ So the core has **none of them**:
 
 ## Engineering highlights
 
-- **Self-healing LaTeX compilation** — if `xelatex` fails, the compiler log is
-  fed back to the LLM to repair the source and recompile, so a malformed CV
-  never blocks a notification.
+- **Strict, self-healing CV delivery** — factual validation and repair run before
+  compilation; repairable XeLaTeX errors are fed back to the LLM. A persistent
+  content violation, compiler failure, unverifiable page count, multi-page PDF,
+  or failed document upload blocks completion, remains retryable, and is counted
+  in the daily run summary. Raw `.tex` is never delivered.
 - **Model fallback** — Gemini is primary, with an optional Qwen fallback so a
   single provider outage doesn't stop the run.
 - **Concurrency-safe state** — the daily job commits updated `seen_jobs.json`
@@ -172,6 +176,12 @@ python3 -m job_search.pipeline --tailor --url "https://…"          # auto-fetc
 python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
   --title "Senior iOS Developer" --company "Acme"                  # paste fallback
 ```
+
+The daily flow, CLI `--tailor`, and Telegram `/tailor` command share the same
+delivery contract: validation, successful compilation, exactly-one-page
+verification, and PDF upload must all succeed. A failed fit stays unseen for a
+later full retry; after a partial Telegram delivery, its text notification may
+repeat on that retry.
 
 ## Tech stack
 

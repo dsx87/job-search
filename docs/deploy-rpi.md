@@ -1,8 +1,8 @@
 # Running the daily flow on a Raspberry Pi
 
 This runs the full pipeline — **fetch → dedupe → LLM filter → tailor résumé →
-compile PDF → Telegram** — on a self-hosted Pi instead of (or alongside) the
-GitHub Actions cron.
+validate → compile and verify a one-page PDF → Telegram** — on a self-hosted Pi
+instead of (or alongside) the GitHub Actions cron.
 
 > The GitHub Actions cron is still the more reliable option (no SD-card wear, no
 > home power/network dependency). Treat the Pi as a project or a redundant runner
@@ -113,7 +113,9 @@ secrets and enabling the timer — finish those two steps below.
      --job-text 'Senior iOS Engineer, remote, Swift/SwiftUI' \
      --title 'Senior iOS Developer' --company 'Acme'
    ```
-   A tailored PDF landing in Telegram means the whole chain works.
+   A tailored PDF landing in Telegram means the whole strict chain worked:
+   factual validation, XeLaTeX compilation, one-page verification, and PDF
+   upload all succeeded.
 
 5. **Enable the daily timer**:
    ```bash
@@ -194,6 +196,14 @@ account are ignored silently):
 
 The bot **self-registers** this command menu with Telegram via `setMyCommands`
 on startup, so autocomplete works with no @BotFather step.
+
+Daily runs, CLI `--tailor`, and bot `/tailor` all use the same fail-closed CV
+path. The pipeline tries one factual correction and repairs eligible compiler
+errors, but unresolved validation, compilation, page-verification, or upload
+failures block artifact delivery. Scheduled fits remain unseen for a full retry
+and the final run summary reports preparation, notification, CV-delivery, and
+failure counts. The system never sends raw `.tex`, an unknown-page PDF, or a
+multi-page PDF.
 
 **Everything runs through one wrapper.** Both the daily timer and the bot execute
 `scripts/run_pipeline.sh`, guarded by a single `flock` — the single 700 MHz core
@@ -296,3 +306,4 @@ else keeps running on system python3).
 | TLS/certificate errors to Gemini/Telegram | `sudo apt install ca-certificates && sudo update-ca-certificates`. |
 | First run takes hours | You didn't seed `seen_jobs.json` — see "Seeding the dedup state". |
 | Fetch hangs | Expected occasionally (LinkedIn throttling); `SCRAPE_BUDGET_SECONDS` caps the fetch stage so the run continues. |
+| A matching job has no CV | Check the final run summary and logs for validation, preparation, or delivery failures; failed fits remain unseen and retry the full flow next run. |
