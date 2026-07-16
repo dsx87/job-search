@@ -77,6 +77,23 @@ def test_gemini_request_uses_configured_model_base_header_and_low_thinking(monke
     assert "temperature" not in payload["generationConfig"]
 
 
+def test_gemini_response_skips_non_text_parts(monkeypatch):
+    def urlopen(_request, timeout):
+        return _Response({
+            "candidates": [{
+                "content": {"parts": [
+                    {"thoughtSignature": "opaque"},
+                    {"text": "answer"},
+                ]},
+                "finishReason": "STOP",
+            }],
+        })
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    assert GeminiClient("key", model="gemini-3.5-flash").generate("prompt") == "answer"
+
+
 def test_gemini_25_override_disables_thinking_with_budget(monkeypatch):
     captured = {}
 

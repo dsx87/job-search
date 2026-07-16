@@ -127,6 +127,7 @@ class LinkedInGuestSource(BaseSource):
         for query in QUERIES:
             for location, results_wanted in LOCATIONS:
                 if time.monotonic() >= deadline:
+                    self._timed_out("LinkedIn source time budget reached")
                     if verbose:
                         print("[{}] time budget reached — returning {} job(s)".format(NAME, len(jobs)), flush=True)
                     return jobs
@@ -135,6 +136,7 @@ class LinkedInGuestSource(BaseSource):
                     print("[{}] {!r} in {} ({} page(s))...".format(NAME, query, location, pages), flush=True)
                 for page in range(pages):
                     if time.monotonic() >= deadline:
+                        self._timed_out("LinkedIn source time budget reached")
                         return jobs
                     start = page * PER_PAGE
                     try:

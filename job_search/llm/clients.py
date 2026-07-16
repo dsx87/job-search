@@ -70,7 +70,13 @@ class GeminiClient:
             raise RuntimeError(
                 f"Gemini returned no content (finishReason={finish_reason})"
             )
-        return parts[0]["text"]
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if text:
+                return text
+        raise RuntimeError(
+            f"Gemini returned no text content (finishReason={finish_reason})"
+        )
 
 
 class QwenClient:

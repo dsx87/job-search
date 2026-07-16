@@ -132,6 +132,12 @@ def _source_health(name, jobs, error, source):
         return SourceHealth(name, SourceStatus.SKIPPED, failure_detail=source._skip_detail)
     attempts = source._attempts
     failures = source._failures
+    if source._timeout_detail:
+        successes = attempts - len(failures)
+        status = SourceStatus.PARTIAL if successes else SourceStatus.TIMED_OUT
+        return SourceHealth(
+            name, status, len(jobs), attempts, source._timeout_detail,
+        )
     if attempts == 0:
         return SourceHealth(name, SourceStatus.SUCCESS, len(jobs), 0)
     successes = attempts - len(failures)

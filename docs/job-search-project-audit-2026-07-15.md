@@ -314,7 +314,7 @@ The package layout is good, but internal structure is not yet consistent:
 ## Verification and limitations
 
 - Existing offline suite: **123 tests passed**.
-- Post-remediation offline suite: **345 tests passed**.
+- Post-remediation offline suite: **348 tests passed**.
 - Additional audit verification: **nine currently uncovered behaviors reproduced with in-memory assertions**.
 - The original exploration was read-only; remediation changes are tracked in the table above.
 - Real XeLaTeX integration was not run because `xelatex` was unavailable locally.

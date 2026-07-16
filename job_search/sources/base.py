@@ -18,6 +18,7 @@ class BaseSource(object):
         self._attempts = 0
         self._failures = []
         self._skip_detail = ""
+        self._timeout_detail = ""
 
     def _attempt_succeeded(self):
         self._attempts += 1
@@ -36,6 +37,9 @@ class BaseSource(object):
 
     def _skip(self, detail):
         self._skip_detail = " ".join(str(detail).split())[:240]
+
+    def _timed_out(self, detail):
+        self._timeout_detail = " ".join(str(detail).split())[:240]
 
     def fetch(self, verbose=False):
         raise NotImplementedError

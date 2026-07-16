@@ -501,6 +501,7 @@ def test_fetch_jobs_with_health_reports_skip_exception_and_timeout(monkeypatch):
     assert report.outcomes[0].failure_detail == "optional dependency missing"
     assert report.outcomes[1].failure_detail == "kaboom"
     assert report.has_usable_source is False
+    assert report.incomplete_sources == ("skipped", "boom", "slow")
 
 
 def test_fetch_jobs_compatibility_wrapper_returns_list(monkeypatch):
@@ -513,6 +514,31 @@ def test_fetch_jobs_compatibility_wrapper_returns_list(monkeypatch):
     monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"empty": Empty})
     assert fetch_mod.fetch_jobs(source_names=["empty"]) == []
     assert isinstance(fetch_mod.fetch_jobs(source_names=["empty"]), list)
+
+
+def test_linkedin_guest_budget_expiration_before_first_request_is_timed_out(monkeypatch):
+    source = linkedin_guest.LinkedInGuestSource()
+    times = iter((0.0, 2.0))
+    monkeypatch.setenv("LINKEDIN_BUDGET_SECONDS", "1")
+    monkeypatch.setattr(linkedin_guest.time, "monotonic", lambda: next(times))
+
+    jobs = source.fetch()
+    outcome = fetch_mod._source_health(source.name, jobs, None, source)
+
+    assert outcome.status is SourceStatus.TIMED_OUT
+    assert outcome.attempt_count == 0
+    assert "budget" in outcome.failure_detail
+
+
+def test_source_budget_expiration_after_success_is_partial():
+    source = base.BaseSource()
+    source._attempt_succeeded()
+    source._timed_out("source budget reached")
+
+    outcome = fetch_mod._source_health("partial", [Job(title="iOS")], None, source)
+
+    assert outcome.status is SourceStatus.PARTIAL
+    assert outcome.raw_job_count == 1
 
 
 def test_run_scraper_keeps_json_stdout_pure_and_reports_health(monkeypatch, capsys):
