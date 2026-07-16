@@ -21,25 +21,45 @@ from ..config import (
 
 
 class GeminiClient:
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = GEMINI_MODEL,
+        api_base: str = GEMINI_API_BASE,
+    ):
         self.api_key = api_key
+        self.model = model
+        self.api_base = api_base.rstrip("/")
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+        generation_config = {}
+        if self.model.startswith("gemini-3"):
+            generation_config["thinkingConfig"] = {"thinkingLevel": "low"}
+        else:
+            generation_config["temperature"] = temperature
+            if self.model.startswith("gemini-2.5"):
+                generation_config["thinkingConfig"] = {"thinkingBudget": 0}
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": temperature, "thinkingConfig": {"thinkingBudget": 0}},
+            "generationConfig": generation_config,
         }
         if json_mode:
             payload["generationConfig"]["responseMimeType"] = "application/json"
 
-        url = f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent?key={self.api_key}"
+        url = f"{self.api_base}/{self.model}:generateContent"
         data = json.dumps(payload).encode()
 
         # Single attempt — no retry, no backoff sleep. Errors propagate to
         # LLMClient, whose circuit-breaker decides whether to disable Gemini
         # (on 429/503) and switch to Qwen.
         req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
         )
         with urllib.request.urlopen(req, timeout=90) as resp:
             result = json.loads(resp.read())
@@ -56,19 +76,27 @@ class GeminiClient:
 class QwenClient:
     """Alibaba DashScope Qwen via the OpenAI-compatible chat/completions endpoint."""
 
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = QWEN_MODEL,
+        api_base: str = QWEN_API_BASE,
+    ):
         self.api_key = api_key
+        self.model = model
+        self.api_base = api_base.rstrip("/")
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
         payload = {
-            "model": QWEN_MODEL,
+            "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        url = f"{QWEN_API_BASE}/chat/completions"
+        url = f"{self.api_base}/chat/completions"
         data = json.dumps(payload).encode()
         headers = {
             "Content-Type": "application/json",
@@ -91,7 +119,7 @@ class QwenClient:
             except urllib.error.HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == len(delays):
                     raise
-                print(f"    Qwen transient error {exc.code} — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
+                print(f"    Qwen ({self.model}) transient error {exc.code} — waiting {delay}s (attempt {attempt}/{len(delays)})...", flush=True)
                 time.sleep(delay)
 
 
@@ -105,9 +133,28 @@ class LLMClient:
     Gemini. Thread-safe: the eval/tailor stages call this from worker threads.
     """
 
-    def __init__(self, gemini_api_key: str, qwen_api_key: str = ""):
-        self.gemini = GeminiClient(gemini_api_key)
-        self.qwen = QwenClient(qwen_api_key) if qwen_api_key else None
+    def __init__(
+        self,
+        gemini_api_key: str,
+        qwen_api_key: str = "",
+        *,
+        gemini_model: str = GEMINI_MODEL,
+        gemini_api_base: str = GEMINI_API_BASE,
+        qwen_model: str = QWEN_MODEL,
+        qwen_api_base: str = QWEN_API_BASE,
+    ):
+        self.gemini_model = gemini_model
+        self.qwen_model = qwen_model
+        self.gemini = GeminiClient(
+            gemini_api_key,
+            model=gemini_model,
+            api_base=gemini_api_base,
+        )
+        self.qwen = (
+            QwenClient(qwen_api_key, model=qwen_model, api_base=qwen_api_base)
+            if qwen_api_key
+            else None
+        )
         self._lock = threading.Lock()
         self._gemini_disabled = False
         self._gemini_disabled_reason = ""
@@ -132,19 +179,19 @@ class LLMClient:
             # Other HTTP errors: per-request fallback, Gemini stays enabled.
             if self.qwen is None:
                 raise
-            print(f"    Gemini HTTP {exc.code} — falling back to Qwen for this request...", flush=True)
+            print(f"    Gemini ({self.gemini_model}) HTTP {exc.code} — falling back to Qwen ({self.qwen_model}) for this request...", flush=True)
             return self._use_qwen(prompt, temperature, json_mode)
         except Exception as exc:
             # Non-HTTP error (timeout, connection reset, malformed body): per-request fallback.
             if self.qwen is None:
                 raise
-            print(f"    Gemini error ({type(exc).__name__}) — falling back to Qwen for this request...", flush=True)
+            print(f"    Gemini ({self.gemini_model}) error ({type(exc).__name__}) — falling back to Qwen ({self.qwen_model}) for this request...", flush=True)
             return self._use_qwen(prompt, temperature, json_mode)
 
     def _use_qwen(self, prompt: str, temperature: float, json_mode: bool) -> str:
         if self.qwen is None:
             raise RuntimeError(
-                f"Gemini unavailable ({self._gemini_disabled_reason or 'error'}) and no Qwen fallback configured."
+                f"Gemini ({self.gemini_model}) unavailable ({self._gemini_disabled_reason or 'error'}) and no Qwen ({self.qwen_model}) fallback configured."
             )
         with self._lock:
             self._qwen_calls += 1
@@ -164,8 +211,8 @@ class LLMClient:
             served = self._gemini_calls
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         print(
-            f"    [LLM] {stamp} Gemini {label} after {served} successful call(s) this run "
-            f"— disabling Gemini, switching to Qwen ({QWEN_MODEL}) for the rest of the run.",
+            f"    [LLM] {stamp} Gemini ({self.gemini_model}) {label} after {served} successful call(s) this run "
+            f"— disabling Gemini, switching to Qwen ({self.qwen_model}) for the rest of the run.",
             flush=True,
         )
 
@@ -173,7 +220,10 @@ class LLMClient:
         with self._lock:
             gemini, qwen = self._gemini_calls, self._qwen_calls
             reason = self._gemini_disabled_reason
-        line = f"[LLM] Usage this run — Gemini: {gemini}, Qwen: {qwen}."
+        line = (
+            f"[LLM] Usage this run — Gemini ({self.gemini_model}): {gemini}, "
+            f"Qwen ({self.qwen_model}): {qwen}."
+        )
         if reason:
             line += f" Gemini was disabled mid-run ({reason}) — consider adjusting limits."
         return line

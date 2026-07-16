@@ -121,6 +121,13 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `QWEN_API_KEY` | optional | fallback model |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 
+The default providers are Gemini `gemini-3.5-flash` at Google's v1beta models
+endpoint and Qwen `qwen-plus` at DashScope's international OpenAI-compatible
+endpoint. To override them without changing code, add any of these optional
+**Actions repository variables** (Settings → Secrets and variables → Actions →
+Variables): `GEMINI_MODEL`, `GEMINI_API_BASE`, `QWEN_MODEL`, and
+`QWEN_API_BASE`. Unset or blank variables use the application defaults.
+
 The workflow keeps dedup state on an orphan **`state`** branch (see [layout](#repository-layout)),
 installs a right-sized XeLaTeX + Chromium, runs the pipeline, and commits the
 updated `seen_jobs.json` back to `state`. No server to operate.

@@ -100,11 +100,18 @@ secrets and enabling the timer — finish those two steps below.
    | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
    | `TELEGRAM_CHAT_ID` | ✅ | delivery |
    | `QWEN_API_KEY` | optional | fallback model |
+   | `GEMINI_MODEL` | optional | Gemini model override (default `gemini-3.5-flash`) |
+   | `GEMINI_API_BASE` | optional | Gemini models API base override |
+   | `QWEN_MODEL` | optional | Qwen model override (default `qwen-plus`) |
+   | `QWEN_API_BASE` | optional | Qwen OpenAI-compatible API base override |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
    | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | comma lists forcing sources on/off; the Pi ships `linkedin-guest` on and the jobspy LinkedIn sources off |
    | `STATE_SYNC` | sync | `1` to sync `seen_jobs.json` with the `state` branch (see below); default `0` |
+
+   Leave provider overrides unset, empty, or whitespace-only to use the defaults.
+   API-base overrides may include a trailing slash; the client normalizes it.
 
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
    ```bash

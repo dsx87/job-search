@@ -123,6 +123,11 @@ TELEGRAM_CHAT_ID=REPLACE_ME
 # --- Optional ---
 QWEN_API_KEY=
 CV_PHONE=
+# --- Optional provider overrides (blank/unset = application defaults) ---
+# GEMINI_MODEL=gemini-3.5-flash
+# GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta/models
+# QWEN_MODEL=qwen-plus
+# QWEN_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 # --- Pi tuning (single core / 512 MB) ---
 EVAL_WORKERS=${EVAL_WORKERS}
 TAILOR_WORKERS=${TAILOR_WORKERS}

@@ -10,6 +10,10 @@ def make_config():
     return SimpleNamespace(
         gemini_api_key="gemini",
         qwen_api_key="qwen",
+        gemini_model="gemini-custom",
+        gemini_api_base="https://gemini.example/models",
+        qwen_model="qwen-custom",
+        qwen_api_base="https://qwen.example/v1",
         telegram_bot_token="token",
         telegram_chat_id="chat",
     )
@@ -25,12 +29,33 @@ def make_args(job_text, url="https://example.com/job"):
     )
 
 
-def install_clients(monkeypatch):
+def install_clients(monkeypatch, llm_calls=None):
     client = object()
     telegram = object()
-    monkeypatch.setattr(cli, "LLMClient", lambda *_args: client)
+
+    def make_llm(*args, **kwargs):
+        if llm_calls is not None:
+            llm_calls.append((args, kwargs))
+        return client
+
+    monkeypatch.setattr(cli, "LLMClient", make_llm)
     monkeypatch.setattr(cli, "TelegramClient", lambda *_args: telegram)
     return client, telegram
+
+
+def test_manual_tailor_forwards_provider_configuration(monkeypatch):
+    llm_calls = []
+    install_clients(monkeypatch, llm_calls)
+    monkeypatch.setattr(cli, "tailor_single_job", lambda *_args: None)
+
+    cli.run_tailor(make_args("x" * 200), make_config())
+
+    assert llm_calls == [(('gemini', 'qwen'), {
+        "gemini_model": "gemini-custom",
+        "gemini_api_base": "https://gemini.example/models",
+        "qwen_model": "qwen-custom",
+        "qwen_api_base": "https://qwen.example/v1",
+    })]
 
 
 def test_short_pasted_description_is_enriched_and_cleaned(monkeypatch):

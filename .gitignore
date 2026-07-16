@@ -23,6 +23,8 @@
 !job_search/**
 !tests/
 !tests/**
+!docs/
+!docs/job-search-project-audit-2026-07-15.md
 !pyproject.toml
 
 # Unignore the Raspberry Pi deployment doc and setup script (but nothing else

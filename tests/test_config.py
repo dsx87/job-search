@@ -15,7 +15,7 @@ def test_scraper_config_defaults():
 def test_pipeline_config_defaults():
     assert config.EVAL_WORKERS == 12
     assert config.TAILOR_WORKERS == 8
-    assert config.GEMINI_MODEL == "gemini-2.5-flash"
+    assert config.GEMINI_MODEL == "gemini-3.5-flash"
     assert config.GEMINI_API_BASE == "https://generativelanguage.googleapis.com/v1beta/models"
     assert config.QWEN_MODEL == "qwen-plus"
     assert config.QWEN_API_BASE == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -43,8 +43,36 @@ def test_pipeline_config_from_env_reads_keys(monkeypatch):
     assert pc.telegram_chat_id == "chat"
     assert pc.eval_workers == 5
     # defaults preserved for unset values
-    assert pc.gemini_model == "gemini-2.5-flash"
+    assert pc.gemini_model == "gemini-3.5-flash"
+    assert pc.gemini_api_base == config.GEMINI_API_BASE
     assert pc.qwen_model == "qwen-plus"
+    assert pc.qwen_api_base == config.QWEN_API_BASE
+
+
+def test_pipeline_config_from_env_reads_provider_overrides(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "  gemini-custom  ")
+    monkeypatch.setenv("GEMINI_API_BASE", "  https://gemini.example/models/  ")
+    monkeypatch.setenv("QWEN_MODEL", "  qwen-custom  ")
+    monkeypatch.setenv("QWEN_API_BASE", "  https://qwen.example/v1/  ")
+
+    pc = PipelineConfig.from_env()
+
+    assert pc.gemini_model == "gemini-custom"
+    assert pc.gemini_api_base == "https://gemini.example/models/"
+    assert pc.qwen_model == "qwen-custom"
+    assert pc.qwen_api_base == "https://qwen.example/v1/"
+
+
+def test_pipeline_config_from_env_uses_provider_defaults_for_blank_overrides(monkeypatch):
+    for name in ("GEMINI_MODEL", "GEMINI_API_BASE", "QWEN_MODEL", "QWEN_API_BASE"):
+        monkeypatch.setenv(name, " \t ")
+
+    pc = PipelineConfig.from_env()
+
+    assert pc.gemini_model == config.GEMINI_MODEL
+    assert pc.gemini_api_base == config.GEMINI_API_BASE
+    assert pc.qwen_model == config.QWEN_MODEL
+    assert pc.qwen_api_base == config.QWEN_API_BASE
 
 
 def test_pipeline_config_selection_and_sync_defaults():

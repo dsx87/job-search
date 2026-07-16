@@ -15,10 +15,11 @@ class CVValidationError(ValueError):
 def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict) -> str:
     """Returns tailored LaTeX source (code fences stripped).
 
-    Generates at temperature 0.0 for factual stability, then runs a
-    deterministic guard (validate_tailored_cv). On violations it regenerates
-    once with a corrective instruction; if the second pass still fails, it
-    raises CVValidationError so invalid content cannot reach delivery.
+    Requests temperature 0.0 for providers that support deterministic sampling;
+    Gemini 3 clients omit that parameter to retain Google's recommended default.
+    A deterministic guard (validate_tailored_cv) checks the result. On violations
+    it regenerates once with a corrective instruction; if the second pass still
+    fails, it raises CVValidationError so invalid content cannot reach delivery.
     """
     job_text = (
         f"Title: {job.get('title', '')}\n"

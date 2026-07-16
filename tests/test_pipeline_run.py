@@ -43,6 +43,10 @@ def make_config():
     return SimpleNamespace(
         gemini_api_key="gemini",
         qwen_api_key="qwen",
+        gemini_model="gemini-custom",
+        gemini_api_base="https://gemini.example/models",
+        qwen_model="qwen-custom",
+        qwen_api_base="https://qwen.example/v1",
         telegram_bot_token="token",
         telegram_chat_id="chat",
         eval_workers=2,
@@ -53,7 +57,7 @@ def make_config():
     )
 
 
-def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None):
+def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm_calls=None):
     telegram = telegram or FakeTelegram()
     state = set(initial_seen or ())
     saved = []
@@ -64,7 +68,12 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None):
         saved.append(set(state))
 
     monkeypatch.setattr(run, "TelegramClient", lambda *_args: telegram)
-    monkeypatch.setattr(run, "LLMClient", lambda *_args: FakeLLM())
+    def make_llm(*args, **kwargs):
+        if llm_calls is not None:
+            llm_calls.append((args, kwargs))
+        return FakeLLM()
+
+    monkeypatch.setattr(run, "LLMClient", make_llm)
     monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
     monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
     monkeypatch.setattr(run, "load_base_tex", lambda: "base")
@@ -72,6 +81,20 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None):
     monkeypatch.setattr(run, "load_seen_jobs", lambda: set(state))
     monkeypatch.setattr(run, "save_seen_jobs", save)
     return telegram, saved
+
+
+def test_run_daily_forwards_provider_configuration(monkeypatch):
+    llm_calls = []
+    install_daily_fakes(monkeypatch, [], llm_calls=llm_calls)
+
+    run.run_daily(make_config())
+
+    assert llm_calls == [(('gemini', 'qwen'), {
+        "gemini_model": "gemini-custom",
+        "gemini_api_base": "https://gemini.example/models",
+        "qwen_model": "qwen-custom",
+        "qwen_api_base": "https://qwen.example/v1",
+    })]
 
 
 def test_deferred_markers_ignore_semantically_empty_job_identity():

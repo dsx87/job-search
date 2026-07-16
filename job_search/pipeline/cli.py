@@ -41,7 +41,14 @@ def run_tailor(args, cfg) -> None:
 
     telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     try:
-        client = LLMClient(cfg.gemini_api_key, cfg.qwen_api_key)
+        client = LLMClient(
+            cfg.gemini_api_key,
+            cfg.qwen_api_key,
+            gemini_model=cfg.gemini_model,
+            gemini_api_base=cfg.gemini_api_base,
+            qwen_model=cfg.qwen_model,
+            qwen_api_base=cfg.qwen_api_base,
+        )
         tailor_single_job(client, job, telegram)
         print("Done.", flush=True)
     except Exception as exc:

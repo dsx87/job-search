@@ -29,7 +29,7 @@ BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
 OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
 
 # ── LLM defaults ───────────────────────────────────────────────────────────────
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
@@ -58,6 +58,11 @@ def _split_csv(raw: str) -> tuple:
     PipelineConfig can carry them as safe defaults.
     """
     return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def _non_empty_env(name: str, default: str) -> str:
+    """Return a stripped environment override, or the default when it is blank."""
+    return os.environ.get(name, "").strip() or default
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,10 @@ class PipelineConfig:
             qwen_api_key=os.environ.get("QWEN_API_KEY", ""),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+            gemini_model=_non_empty_env("GEMINI_MODEL", GEMINI_MODEL),
+            gemini_api_base=_non_empty_env("GEMINI_API_BASE", GEMINI_API_BASE),
+            qwen_model=_non_empty_env("QWEN_MODEL", QWEN_MODEL),
+            qwen_api_base=_non_empty_env("QWEN_API_BASE", QWEN_API_BASE),
             eval_workers=int(os.environ.get("EVAL_WORKERS", str(EVAL_WORKERS))),
             tailor_workers=int(os.environ.get("TAILOR_WORKERS", str(TAILOR_WORKERS))),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),

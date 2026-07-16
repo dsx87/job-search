@@ -60,6 +60,10 @@ jobs:
           PYTHONUNBUFFERED: "1"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+          QWEN_MODEL: ${{ vars.QWEN_MODEL }}
+          QWEN_API_BASE: ${{ vars.QWEN_API_BASE }}
           CV_PHONE: ${{ secrets.CV_PHONE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
