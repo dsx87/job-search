@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass, field
 
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
-from ..identity import job_identity_keys, normalize_url, title_company_key
+from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
 from ..models import coerce_job
@@ -183,12 +183,12 @@ def _evaluate_candidate(gemini, criteria, job):
 _DEFERRED_MARKER_PREFIX = "deferred:"
 
 
-def _deferred_markers(key: str, tc_key: str) -> set[str]:
+def _deferred_markers(job) -> set[str]:
     markers = set()
-    if key:
-        markers.add(f"{_DEFERRED_MARKER_PREFIX}url:{key}")
-    if tc_key and tc_key != "|":
-        markers.add(f"{_DEFERRED_MARKER_PREFIX}job:{tc_key}")
+    url_key = normalize_url(job.url)
+    for key in job_identity_keys(job):
+        kind = "url" if url_key and key == url_key else "job"
+        markers.add(f"{_DEFERRED_MARKER_PREFIX}{kind}:{key}")
     return markers
 
 
@@ -287,27 +287,25 @@ def run_daily(cfg, test: bool = False) -> None:
         cutoff = today - datetime.timedelta(days=7)
 
         stats = RunStats()
-        # evaluation_jobs: list of (url_key, tc_key, Job, retry_state)
+        # evaluation_jobs: list of (Job, retry_state)
         # Keys are NOT added to seen yet — added only after successful processing.
         evaluation_jobs = []
         fits = []
         newly_deferred = []
         candidate_count = 0
-        for j in raw_jobs:
-            keys = job_identity_keys(j)
-            key = normalize_url(j.url)
-            tc_key = title_company_key(j.title, j.company, j.location)
+        for value in raw_jobs:
+            job = coerce_job(value)
+            keys = job_identity_keys(job)
             if not seen.isdisjoint(keys):
                 continue
             if first_run:
                 # On first run, silently mark jobs older than 7 days as seen without evaluating.
-                dp = j.date_posted
+                dp = job.date_posted
                 posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
                 if posted is not None and posted < cutoff:
                     seen.update(keys)
                     continue
-            d = coerce_job(j)
-            retry_state = delivery_retry_state(seen, **d)
+            retry_state = delivery_retry_state(seen, **job)
             if retry_state.blocked:
                 continue
             candidate_count += 1
@@ -317,19 +315,19 @@ def run_daily(cfg, test: bool = False) -> None:
                 stats.retries_waiting += 1
                 continue
             if retry_state.notified:
-                if not ensure_job_description(d):
+                if not ensure_job_description(job):
                     stats.deferred += 1
-                    markers = _deferred_markers(key, tc_key)
+                    markers = _deferred_markers(job)
                     if not markers or markers.isdisjoint(seen):
-                        newly_deferred.append(d)
+                        newly_deferred.append(job)
                     seen.update(markers)
                     continue
                 stats.retry_attempts += int(retry_state.attempt > 0)
                 stats.known_fit_retries += 1
                 stats.fits += 1
-                fits.append((key, tc_key, d, None, retry_state))
+                fits.append((job, None, retry_state))
                 continue
-            evaluation_jobs.append((key, tc_key, d, retry_state))
+            evaluation_jobs.append((job, retry_state))
 
         # Persist seen set now — captures first-run silenced jobs; new jobs are NOT yet included.
         save_seen_jobs(seen)
@@ -343,16 +341,11 @@ def run_daily(cfg, test: bool = False) -> None:
             print(f"Evaluating {len(evaluation_jobs)} job(s) with {cfg.eval_workers} workers...", flush=True)
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
-                    pool.submit(_evaluate_candidate, gemini, criteria, job): (
-                        key,
-                        tc_key,
-                        job,
-                        retry_state,
-                    )
-                    for key, tc_key, job, retry_state in evaluation_jobs
+                    pool.submit(_evaluate_candidate, gemini, criteria, job): (job, retry_state)
+                    for job, retry_state in evaluation_jobs
                 }
                 for future in concurrent.futures.as_completed(future_to_job):
-                    key, tc_key, job, retry_state = future_to_job[future]
+                    job, retry_state = future_to_job[future]
                     try:
                         evaluation = future.result()
                     except Exception as exc:
@@ -365,7 +358,7 @@ def run_daily(cfg, test: bool = False) -> None:
                         continue
                     if evaluation is None:
                         stats.deferred += 1
-                        markers = _deferred_markers(key, tc_key)
+                        markers = _deferred_markers(job)
                         if not markers or markers.isdisjoint(seen):
                             newly_deferred.append(job)
                         seen.update(markers)
@@ -374,7 +367,7 @@ def run_daily(cfg, test: bool = False) -> None:
                     stats.evaluated += 1
                     if evaluation.get("fit"):
                         stats.fits += 1
-                        fits.append((key, tc_key, job, evaluation, retry_state))
+                        fits.append((job, evaluation, retry_state))
                     else:
                         # Not a fit: mark seen so it won't be reprocessed.
                         stats.non_fit += 1
@@ -401,12 +394,12 @@ def run_daily(cfg, test: bool = False) -> None:
         # Tailoring is Gemini-bound and compilation is CPU-bound; a smaller pool
         # keeps parallel xelatex runs from starving the runner. No Telegram I/O
         # happens here, so order doesn't matter and failures stay soft.
-        prepared = []  # list of (key, tc_key, job, payload, retry_state) ready to send
+        prepared = []  # list of (job, payload, retry_state) ready to send
         if fits:
             print(f"Tailoring {len(fits)} CV(s) with {cfg.tailor_workers} workers...", flush=True)
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.tailor_workers) as pool:
                 future_to_fit = {}
-                for key, tc_key, job, evaluation, retry_state in fits:
+                for job, evaluation, retry_state in fits:
                     if retry_state.notified:
                         future = pool.submit(
                             prepare_retry_fit,
@@ -424,9 +417,9 @@ def run_daily(cfg, test: bool = False) -> None:
                             job,
                             evaluation,
                         )
-                    future_to_fit[future] = (key, tc_key, job, evaluation, retry_state)
+                    future_to_fit[future] = (job, evaluation, retry_state)
                 for future in concurrent.futures.as_completed(future_to_fit):
-                    key, tc_key, job, evaluation, retry_state = future_to_fit[future]
+                    job, evaluation, retry_state = future_to_fit[future]
                     try:
                         payload = future.result()
                     except Exception as exc:
@@ -458,12 +451,12 @@ def run_daily(cfg, test: bool = False) -> None:
                                 mark_delivery_notified(seen, **job)
                                 save_seen_jobs(seen)
                         continue
-                    prepared.append((key, tc_key, job, payload, retry_state))
+                    prepared.append((job, payload, retry_state))
 
         # ── Stage 4: Send to Telegram sequentially ───────────────────────────
         # Sequential to preserve message order and stay polite to the Telegram API.
         # A successful send marks the job seen; a failed send leaves it for retry.
-        for key, tc_key, job, payload, retry_state in prepared:
+        for job, payload, retry_state in prepared:
             try:
                 outcome = send_fit(
                     payload,

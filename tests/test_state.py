@@ -210,6 +210,73 @@ def test_jobstore_uses_canonical_keys_for_url_less_and_equivalent_jobs(tmp_path)
     assert store.jobs["ios|acme"]["seen"] is True
 
 
+def test_jobstore_keeps_distinct_url_backed_postings_with_same_fallback(tmp_path):
+    store = JobStore(path=str(tmp_path / "store.json"))
+    first = Job(title="iOS Engineer", company="Acme", url="https://x/1")
+    second = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://x/2",
+        description="new opening",
+    )
+    store.merge([first])
+    assert store.toggle_seen(first) is True
+
+    store.merge([first, second])
+
+    assert set(store.jobs) == {"https://x/1", "https://x/2"}
+    assert store.jobs["https://x/1"]["seen"] is True
+    assert store.jobs["https://x/1"]["url"] == "https://x/1"
+    assert store.jobs["https://x/2"]["seen"] is False
+    assert store.jobs["https://x/2"]["url"] == "https://x/2"
+    assert store.jobs["https://x/2"]["description"] == "new opening"
+
+
+def test_jobstore_toggles_legacy_raw_url_key_from_stored_job(tmp_path):
+    path = tmp_path / "store.json"
+    raw_url = "https://X.com/Role/"
+    path.write_text(json.dumps({
+        "jobs": {
+            raw_url: {
+                "title": "iOS",
+                "company": "Acme",
+                "url": raw_url,
+                "seen": False,
+            }
+        }
+    }))
+    store = JobStore(path=str(path))
+
+    assert store.toggle_seen(store.jobs[raw_url]) is True
+    assert store.jobs[raw_url]["seen"] is True
+
+
+def test_jobstore_merge_builds_stored_identity_index_once(tmp_path, monkeypatch):
+    store = JobStore(path=str(tmp_path / "store.json"))
+    store.jobs = {
+        "https://old/{}".format(index): Job(
+            title="Old {}".format(index), url="https://old/{}".format(index)
+        ).to_dict()
+        for index in range(10)
+    }
+    new_jobs = [
+        Job(title="New {}".format(index), url="https://new/{}".format(index))
+        for index in range(10)
+    ]
+    original = Job.from_dict
+    calls = []
+
+    def counted(data):
+        calls.append(data)
+        return original(data)
+
+    monkeypatch.setattr(Job, "from_dict", counted)
+
+    store.merge(new_jobs)
+
+    assert len(calls) <= 20
+
+
 # ── seen_merge: the workflow's set-union merge (extracted from inline YAML) ────
 
 class _FakeProc:

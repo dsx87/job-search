@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import SEEN_JOBS_FILE
-from ..identity import job_identity_keys, normalize_url, title_company_key
+from ..identity import identity_keys_from_fields, normalize_url, title_company_key
 
 
 _DELIVERY_PREFIX = "delivery:"
@@ -42,12 +42,7 @@ def delivery_identity_tokens(
     **_ignored,
 ):
     """Return stable, union-safe identities for a posting's URL and job key."""
-    values = job_identity_keys({
-        "url": url,
-        "title": title,
-        "company": company,
-        "location": location,
-    })
+    values = identity_keys_from_fields(url, title, company, location)
     return tuple(_identity_token(value) for value in values)
 
 

@@ -98,10 +98,7 @@ def test_run_daily_forwards_provider_configuration(monkeypatch):
 
 
 def test_deferred_markers_ignore_semantically_empty_job_identity():
-    tc_key = run.title_company_key("", "", "")
-
-    assert tc_key == "|"
-    assert run._deferred_markers("", tc_key) == set()
+    assert run._deferred_markers(Job()) == set()
 
 
 def test_run_seed_does_not_persist_empty_identity_keys(monkeypatch):

@@ -79,33 +79,23 @@ def ensure_job_description(job, fetcher=None, min_length=MIN_JOB_TEXT_LEN):
     legacy = job if isinstance(job, MutableMapping) and not isinstance(job, Job) else None
     job = coerce_job(job)
     current = clean_job_description(job.description)
+    if len(current) < min_length and _is_http_job_url(job.url):
+        fetch = fetcher or fetch_job_text_from_url
+        try:
+            fetched = clean_job_description(fetch(job.url))
+        except Exception as exc:
+            print(
+                f"    Job-description enrichment failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            fetched = ""
+        if len(fetched) > len(current):
+            current = fetched
+
     job.description = current
     if legacy is not None:
         legacy["description"] = current
-
-    if len(current) >= min_length:
-        return True
-
-    url = job.url
-    if not _is_http_job_url(url):
-        return False
-
-    fetch = fetcher or fetch_job_text_from_url
-    try:
-        fetched = clean_job_description(fetch(url))
-    except Exception as exc:
-        print(
-            f"    Job-description enrichment failed: {type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-        fetched = ""
-
-    if len(fetched) > len(current):
-        job.description = fetched
-        if legacy is not None:
-            legacy["description"] = fetched
-
-    return len(job.description) >= min_length
+    return len(current) >= min_length
 
 
 def _company_slug(company: str) -> str:

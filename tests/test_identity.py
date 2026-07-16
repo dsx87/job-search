@@ -51,3 +51,15 @@ def test_delivery_tokens_keep_existing_url_and_alias_hashes():
         hashlib.sha256(value.encode("utf-8")).hexdigest()
         for value in ("https://x.com/role", "ios dev|acme|tel aviv")
     )
+
+
+def test_delivery_tokens_do_not_construct_full_job(monkeypatch):
+    monkeypatch.setattr(
+        Job,
+        "from_dict",
+        lambda _data: (_ for _ in ()).throw(AssertionError("no Job allocation")),
+    )
+
+    assert seen_jobs.delivery_identity_tokens(
+        "https://x/role", "iOS", "Acme", "Berlin"
+    )

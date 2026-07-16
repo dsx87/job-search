@@ -6,7 +6,7 @@ never committed. This is independent of the pipeline's seen_jobs.json dedup set.
 import json
 import os
 
-from ..identity import canonical_job_key, job_identity_keys, normalize_url
+from ..identity import canonical_job_key, normalize_url, title_company_key
 from ..models import coerce_job
 
 STATE_PATH = "job_state.json"
@@ -55,48 +55,80 @@ class JobStore:
     def merge(self, new_jobs):
         """Merge new jobs into the store. New jobs are unseen by default.
         Existing jobs keep their seen status. Missing jobs are removed."""
-        new_keys = set()
+        url_index, fallback_index, url_less_fallback_index = self._identity_indexes()
+        merged = {}
         for value in new_jobs:
             job = coerce_job(value)
             key = canonical_job_key(job)
             if key is None:
                 continue
-            new_keys.add(key)
-            identities = set(job_identity_keys(job))
-            existing_key = next(
-                (
-                    stored_key
-                    for stored_key, stored_job in self.jobs.items()
-                    if not identities.isdisjoint(job_identity_keys(stored_job))
-                ),
-                None,
-            )
-            if existing_key is None:
-                self.jobs[key] = job_to_store_dict(job)
-            elif existing_key != key:
-                self.jobs[key] = self.jobs.pop(existing_key)
+            url_key = normalize_url(job.url)
+            fallback_key = title_company_key(job.title, job.company, job.location)
+            existing_key = url_index.get(url_key) if url_key else None
+            if existing_key is None and fallback_key != "|":
+                if url_key:
+                    # A fallback alias can migrate a URL-less legacy record, but
+                    # two records with different URLs are distinct postings.
+                    existing_key = url_less_fallback_index.get(fallback_key)
+                else:
+                    existing_key = fallback_index.get(fallback_key)
 
-        # Remove jobs that are no longer present
-        for key in list(self.jobs.keys()):
-            if key not in new_keys:
-                del self.jobs[key]
+            previous = merged.get(key)
+            if previous is None and existing_key is not None:
+                previous = self.jobs.get(existing_key)
+            data = job_to_store_dict(job)
+            if previous is not None:
+                data["seen"] = previous.get("seen", False)
+            merged[key] = data
+
+        self.jobs = merged
 
         self.save()
 
     def toggle_seen(self, identity):
         key = identity if isinstance(identity, str) and identity in self.jobs else None
-        if key is None and isinstance(identity, str):
-            normalized = normalize_url(identity)
-            if normalized in self.jobs:
-                key = normalized
-        if key is None and not isinstance(identity, str):
-            key = canonical_job_key(identity)
+        if key is None:
+            for stored_key, stored_job in self.jobs.items():
+                if stored_job is identity:
+                    key = stored_key
+                    break
+        if key is None:
+            url_index, fallback_index, _url_less = self._identity_indexes()
+            if isinstance(identity, str):
+                key = url_index.get(normalize_url(identity))
+            else:
+                job = coerce_job(identity)
+                url_key = normalize_url(job.url)
+                key = url_index.get(url_key) if url_key else None
+                if key is None:
+                    fallback = title_company_key(job.title, job.company, job.location)
+                    key = fallback_index.get(fallback)
         job = self.jobs.get(key)
         if job:
             job["seen"] = not job.get("seen", False)
             self.save()
             return job["seen"]
         return None
+
+    def _identity_indexes(self):
+        """Build constant-time lookups for the current stored snapshot."""
+        url_index = {}
+        fallback_index = {}
+        url_less_fallback_index = {}
+        for stored_key, value in self.jobs.items():
+            try:
+                job = coerce_job(value)
+            except TypeError:
+                continue
+            url_key = normalize_url(job.url)
+            fallback_key = title_company_key(job.title, job.company, job.location)
+            if url_key:
+                url_index.setdefault(url_key, stored_key)
+            if fallback_key != "|":
+                fallback_index.setdefault(fallback_key, stored_key)
+                if not url_key:
+                    url_less_fallback_index.setdefault(fallback_key, stored_key)
+        return url_index, fallback_index, url_less_fallback_index
 
     def get_jobs(self, show_seen=None):
         if show_seen is None:
