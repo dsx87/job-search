@@ -21,16 +21,21 @@ from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
     acknowledge_block_alert,
+    criteria_version,
     delivery_retry_state,
+    evaluation_signature,
     load_seen_jobs,
     mark_delivery_notified,
     pending_block_alerts,
     record_delivery_failure,
+    record_evaluation,
     save_seen_jobs,
+    should_reevaluate,
 )
 from .stages import (
     _format_deferred_notification,
     _send_error_notification,
+    clean_job_description,
     ensure_job_description,
     prepare_fit,
     prepare_retry_fit,
@@ -271,6 +276,7 @@ def run_daily(cfg, test: bool = False) -> int:
         if not cfg.qwen_api_key:
             print("Note: QWEN_API_KEY not set — no fallback model available.", flush=True)
         criteria = load_criteria()
+        crit_ver = criteria_version(criteria)
         tailoring_instructions = load_tailoring_instructions()
         base_tex = load_base_tex()
 
@@ -328,11 +334,27 @@ def run_daily(cfg, test: bool = False) -> int:
         fits = []
         newly_deferred = []
         candidate_count = 0
+        # Content/criteria signature per identity, captured from the RAW scraped
+        # description before ensure_job_description mutates it, so the same value
+        # drives both the reopen check and the later verdict record.
+        job_signatures = {}
+
+        def _signature_for(job):
+            keys = job_identity_keys(job)
+            return job_signatures.get(keys[0]) if keys else None
+
         for value in raw_jobs:
             job = coerce_job(value)
             keys = job_identity_keys(job)
+            signature = evaluation_signature(clean_job_description(job.description), crit_ver)
+            if keys:
+                job_signatures[keys[0]] = signature
             if not seen.isdisjoint(keys):
-                continue
+                # Known identity: skip unless a structured lifecycle record shows
+                # the content or criteria signature changed (a reopen). Legacy
+                # string-only seen entries have no record and stay suppressed.
+                if not should_reevaluate(seen, job, signature):
+                    continue
             if first_run:
                 # On first run, silently mark jobs older than 7 days as seen without evaluating.
                 dp = job.date_posted
@@ -397,6 +419,15 @@ def run_daily(cfg, test: bool = False) -> int:
                         if not markers or markers.isdisjoint(seen):
                             newly_deferred.append(job)
                         seen.update(markers)
+                        # Only a reopened (already-seen) job benefits from a
+                        # deferred signature: it stops the reopen→defer loop next
+                        # run. Brand-new pure-deferred jobs never reach
+                        # should_reevaluate (their plain keys aren't in seen), so
+                        # recording there is inert and would grow state per run.
+                        if not seen.isdisjoint(job_identity_keys(job)):
+                            signature = _signature_for(job)
+                            if signature is not None:
+                                record_evaluation(seen, job, signature, "deferred", today)
                         continue
                     stats.retry_attempts += int(retry_state.attempt > 0)
                     stats.evaluated += 1
@@ -408,6 +439,9 @@ def run_daily(cfg, test: bool = False) -> int:
                         stats.non_fit += 1
                         print(f"    Skip '{job.get('title')}' — {evaluation.get('reason', '')}")
                         seen.update(job_identity_keys(job))
+                        signature = _signature_for(job)
+                        if signature is not None:
+                            record_evaluation(seen, job, signature, "nonfit", today)
         if stats.deferred:
             print(
                 f"Deferred {stats.deferred} job(s) with insufficient description text.",
@@ -514,6 +548,9 @@ def run_daily(cfg, test: bool = False) -> int:
                 save_seen_jobs(seen)
             if outcome.complete:
                 seen.update(job_identity_keys(job))
+                signature = _signature_for(job)
+                if signature is not None:
+                    record_evaluation(seen, job, signature, "fit", today)
                 save_seen_jobs(seen)
             else:
                 stats.delivery_failed += 1

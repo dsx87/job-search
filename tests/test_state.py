@@ -11,18 +11,25 @@ import hashlib
 from job_search.state import seen_jobs as seen_mod
 from job_search.state import seen_merge
 from job_search.state.seen_jobs import (
+    LifecycleRecord,
     acknowledge_block_alert,
+    criteria_version,
     delivery_identity_tokens,
     delivery_retry_state,
+    evaluation_signature,
+    lifecycle_record,
     load_seen_jobs,
     mark_delivery_notified,
     normalize_url,
     pending_block_alerts,
     record_delivery_failure,
+    record_evaluation,
     save_seen_jobs,
+    should_reevaluate,
     title_company_key,
 )
 from job_search.state.seen_merge import keys_from_ref, merge_refs, write_merged
+from job_search.identity import job_identity_keys
 from job_search.models import Job, Region
 from job_search.state.job_store import JobStore, job_to_store_dict
 
@@ -347,3 +354,242 @@ def test_keys_from_ref_repo_dir_inserts_dash_C(monkeypatch):
     keys = keys_from_ref("HEAD", repo_dir="/tmp/state")
     assert keys == {"k1", "k2"}
     assert captured["cmd"] == ["git", "-C", "/tmp/state", "show", "HEAD:seen_jobs.json"]
+
+
+# ── audit order 4d: structured lifecycle seen-state ───────────────────────────
+
+def _is_short_hex(token):
+    """A 16-char lowercase-hex token, as criteria_version/evaluation_signature emit."""
+    return (
+        isinstance(token, str)
+        and len(token) == 16
+        and set(token) <= set("0123456789abcdef")
+    )
+
+
+def test_criteria_version_is_deterministic_whitespace_insensitive_and_short_hex():
+    token = criteria_version("a  b")
+    assert token == criteria_version("a  b")  # deterministic
+    assert token == criteria_version(" a b ")  # whitespace-insensitive
+    assert _is_short_hex(token)
+
+
+def test_criteria_version_differs_on_change():
+    assert criteria_version("remote only") != criteria_version("onsite only")
+
+
+def test_evaluation_signature_is_deterministic_short_hex_and_colon_free():
+    sig = evaluation_signature("Some job content", "cv1")
+    assert sig == evaluation_signature("Some job content", "cv1")  # deterministic
+    assert _is_short_hex(sig)
+    assert ":" not in sig
+
+
+def test_evaluation_signature_is_whitespace_insensitive_on_content():
+    assert evaluation_signature("a  b", "cv1") == evaluation_signature(" a b ", "cv1")
+
+
+def test_evaluation_signature_differs_on_content_and_on_criteria_version():
+    base = evaluation_signature("content one", "cv1")
+    assert base != evaluation_signature("content two", "cv1")  # content change
+    assert base != evaluation_signature("content one", "cv2")  # criteria change
+
+
+def test_evaluation_signature_empty_content_is_stable_and_nonempty():
+    empty = evaluation_signature("", "")
+    assert empty == evaluation_signature("", "")
+    assert empty  # non-empty, stable
+    assert _is_short_hex(empty)
+
+
+def test_evaluation_signature_ignores_digit_churn_but_not_textual_change():
+    # Cosmetic numeric churn (applicant counts, "reposted N days ago", version
+    # bumps) must NOT flip the signature, else a listed job re-evaluates forever.
+    base = evaluation_signature("Senior iOS role. Over 214 applicants. Reposted 3 days ago.", "cv1")
+    churned = evaluation_signature("Senior iOS role. Over 512 applicants. Reposted 9 days ago.", "cv1")
+    assert base == churned
+    # A substantive textual correction still changes the signature.
+    corrected = evaluation_signature("Senior iOS role. US residents only. Over 214 applicants.", "cv1")
+    assert base != corrected
+
+
+def test_record_evaluation_and_lifecycle_record_round_trip_across_both_identities():
+    seen = set()
+    job = Job(title="iOS Dev", company="Acme", url="https://x/role", location="Tel Aviv")
+    sig = evaluation_signature("cleaned description", criteria_version("criteria"))
+    today = datetime.date(2026, 7, 16)
+
+    record_evaluation(seen, job, sig, "nonfit", today)
+
+    tokens = delivery_identity_tokens("https://x/role", "iOS Dev", "Acme", "Tel Aviv")
+    assert len(tokens) == 2  # a URL identity and a title/company/location identity
+    for token in tokens:
+        assert f"eval:sig:{token}:{sig}" in seen
+        assert f"eval:verdict:{token}:{sig}:nonfit" in seen
+
+    by_url = lifecycle_record(seen, url="https://x/role")
+    by_key = lifecycle_record(seen, title="iOS Dev", company="Acme", location="Tel Aviv")
+    for record in (by_url, by_key):
+        assert record.known is True
+        assert sig in record.signatures
+        assert "nonfit" in record.verdicts
+        assert record.first_seen == today
+        assert record.last_seen == today
+
+
+def test_record_evaluation_is_a_noop_for_identityless_job():
+    seen = set()
+    sig = evaluation_signature("x", "")
+    today = datetime.date(2026, 7, 16)
+
+    record_evaluation(seen, Job(), sig, "nonfit", today)
+    assert seen == set()
+
+    record_evaluation(
+        seen,
+        {"url": "", "title": "", "company": "", "location": ""},
+        sig,
+        "nonfit",
+        today,
+    )
+    assert seen == set()
+
+
+def test_lifecycle_record_empty_when_no_markers():
+    record = lifecycle_record(set(), url="https://x/role")
+    assert record.known is False
+    assert record.signatures == frozenset()
+    assert record.verdicts == frozenset()
+    assert record.first_seen is None
+    assert record.last_seen is None
+
+
+def test_lifecycle_record_first_is_min_last_is_max_ignoring_bad_dates():
+    token = delivery_identity_tokens("https://x/role")[0]
+    sig = evaluation_signature("anything")
+    seen = {
+        f"eval:sig:{token}:{sig}",
+        f"eval:first:{token}:2026-07-10",
+        f"eval:first:{token}:2026-07-05",
+        f"eval:first:{token}:2026-07-20",
+        f"eval:last:{token}:2026-07-10",
+        f"eval:last:{token}:2026-07-25",
+        f"eval:last:{token}:2026-07-01",
+        f"eval:first:{token}:not-a-date",  # malformed date, ignored
+        f"eval:last:{token}:2026-13-99",  # malformed date, ignored
+    }
+
+    record = lifecycle_record(seen, url="https://x/role")
+
+    assert record.first_seen == datetime.date(2026, 7, 5)
+    assert record.last_seen == datetime.date(2026, 7, 25)
+
+
+def test_lifecycle_record_ignores_noise_other_tokens_and_invalid_verdicts():
+    tokens = delivery_identity_tokens("https://x/role", "iOS", "Acme", "")
+    url_token = tokens[0]
+    other_token = delivery_identity_tokens("https://other/role")[0]
+    sig = evaluation_signature("content", criteria_version("crit"))
+    seen = {
+        12345,  # non-string member (union merges can carry anything)
+        None,  # non-string member
+        "https://x/role",  # plain identity string, not an eval marker
+        "ios|acme",  # plain identity string
+        f"delivery:notified:{url_token}",  # unrelated delivery marker
+        f"eval:sig:{url_token}:{sig}",  # valid, this identity
+        f"eval:verdict:{url_token}:{sig}:nonfit",  # valid verdict word
+        f"eval:verdict:{url_token}:{sig}:maybe",  # invalid verdict word -> ignored
+        f"eval:sig:{other_token}:{sig}",  # different token -> ignored
+        f"eval:verdict:{other_token}:{sig}:fit",  # different token -> ignored
+        "eval:garbage",  # malformed marker -> ignored
+    }
+
+    record = lifecycle_record(seen, url="https://x/role", title="iOS", company="Acme")
+
+    assert record.known is True
+    assert record.signatures == frozenset({sig})
+    assert record.verdicts == frozenset({"nonfit"})
+
+
+def test_should_reevaluate_truth_table():
+    job = Job(title="Match", company="Acme", url="https://x/match")
+    crit = criteria_version("criteria")
+    sig_a = evaluation_signature("content A", crit)
+    sig_b = evaluation_signature("content B", crit)
+    today = datetime.date(2026, 7, 16)
+
+    # empty seen -> never force a reopen
+    assert should_reevaluate(set(), job, sig_a) is False
+
+    # legacy: only plain identity strings, no eval markers -> never force a reopen
+    legacy = set(job_identity_keys(job))
+    assert should_reevaluate(legacy, job, sig_a) is False
+
+    # recorded non-fit, SAME signature -> already evaluated this content+criteria
+    nonfit = set()
+    record_evaluation(nonfit, job, sig_a, "nonfit", today)
+    assert should_reevaluate(nonfit, job, sig_a) is False
+    # recorded non-fit, DIFFERENT signature -> reopen
+    assert should_reevaluate(nonfit, job, sig_b) is True
+
+    # recorded fit, DIFFERENT signature -> never re-open a delivered fit
+    fit = set()
+    record_evaluation(fit, job, sig_a, "fit", today)
+    assert should_reevaluate(fit, job, sig_b) is False
+
+    # recorded deferred, DIFFERENT signature -> reopen
+    deferred = set()
+    record_evaluation(deferred, job, sig_a, "deferred", today)
+    assert should_reevaluate(deferred, job, sig_b) is True
+
+
+def test_seen_jobs_roundtrip_preserves_eval_markers_as_sorted_list(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    job = Job(title="Match", company="Acme", url="https://x/match")
+    seen = set(job_identity_keys(job))
+    record_evaluation(
+        seen,
+        job,
+        evaluation_signature("desc", criteria_version("criteria")),
+        "nonfit",
+        datetime.date(2026, 7, 16),
+    )
+
+    save_seen_jobs(seen)
+
+    on_disk = json.loads(path.read_text())
+    assert isinstance(on_disk, list)
+    assert on_disk == sorted(on_disk)  # sorted JSON list of strings, as the merge relies on
+    assert all(isinstance(item, str) for item in on_disk)
+    assert any(item.startswith("eval:") for item in on_disk)
+    assert load_seen_jobs() == seen  # exact round-trip
+
+
+def test_eval_markers_do_not_corrupt_delivery_state_or_identities():
+    job = Job(title="Match", company="Acme", url="https://x/match", location="EU")
+    job_dict = {"url": job.url, "title": job.title, "company": job.company, "location": job.location}
+    today = datetime.date(2026, 7, 16)
+
+    # delivery state built WITHOUT any eval markers, as a baseline
+    baseline = set()
+    mark_delivery_notified(baseline, **job_dict)
+    record_delivery_failure(baseline, job_dict, today, "document")
+    baseline_state = delivery_retry_state(baseline, **job_dict)
+
+    # same delivery calls, now interleaved with eval markers for the same job
+    seen = set()
+    sig = evaluation_signature("desc", criteria_version("criteria"))
+    record_evaluation(seen, job, sig, "nonfit", today)
+    mark_delivery_notified(seen, **job_dict)
+    record_delivery_failure(seen, job_dict, today, "document")
+    record_evaluation(seen, job, sig, "fit", today)
+
+    # eval markers must not perturb delivery parsing
+    assert delivery_retry_state(seen, **job_dict) == baseline_state
+    assert pending_block_alerts(seen) == pending_block_alerts(baseline)
+
+    # eval:* markers must never act as seen identities
+    identities = set(job_identity_keys(job))
+    assert not any(marker.startswith("eval:") for marker in identities)
+    assert any(isinstance(marker, str) and marker.startswith("eval:") for marker in seen)

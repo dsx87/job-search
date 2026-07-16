@@ -16,6 +16,7 @@ from typing import Optional
 
 from ..config import SEEN_JOBS_FILE
 from ..identity import identity_keys_from_fields, normalize_url, title_company_key
+from ..text import collapse_ws
 
 
 _DELIVERY_PREFIX = "delivery:"
@@ -178,6 +179,130 @@ def pending_block_alerts(seen: set):
 def acknowledge_block_alert(seen: set, token: str) -> None:
     if _TOKEN_RE.match(str(token or "")):
         seen.add(f"delivery:block-alerted:{token}")
+
+
+# ── Structured evaluation lifecycle (audit order 4d) ─────────────────────────
+# Like the delivery markers above, evaluation-lifecycle facts are stored as
+# union-safe marker strings keyed by identity token, so they survive the daily
+# set-union merge across the `state` branch. A job keeps its permanent identity
+# keys (= "seen"); these markers add the content/criteria signature, verdict,
+# and first/last-seen dates so a corrected description or a criteria change can
+# reopen a job for re-evaluation instead of suppressing it forever. Legacy
+# string-only seen entries carry no such markers and stay suppressed.
+_EVAL_PREFIX = "eval:"
+_VALID_VERDICTS = frozenset({"fit", "nonfit", "deferred"})
+_DIGIT_RE = re.compile(r"\d+")
+
+
+def _short_hash(*parts: str) -> str:
+    """A short, stable, colon-free hex fingerprint of the joined parts."""
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _normalize_content(content: str) -> str:
+    """Case-fold, drop digit runs, and collapse whitespace.
+
+    Digits are removed so cosmetic listing churn — "Over 214 applicants",
+    "Reposted 3 days ago", "iOS 15" → "iOS 16" — does not flip the signature and
+    force a needless re-evaluation every run. Substantive textual corrections
+    (added requirements, "US residents only", changed platform) still change it.
+    Known tradeoff: a purely numeric-threshold edit ("10+ years" → "3+ years",
+    "$90k" → "$140k") will not reopen a prior non-fit; a criteria-version bump is
+    the escape hatch that forces global re-evaluation.
+    """
+    return collapse_ws(_DIGIT_RE.sub(" ", str(content or "").lower()))
+
+
+def criteria_version(criteria: str) -> str:
+    """Return a short, whitespace-insensitive fingerprint of the fit criteria."""
+    return _short_hash(collapse_ws(criteria))
+
+
+def evaluation_signature(content: str, criteria_version: str = "") -> str:
+    """Return a short signature of a posting's content under a criteria version."""
+    return _short_hash(_normalize_content(content), str(criteria_version or ""))
+
+
+@dataclass(frozen=True)
+class LifecycleRecord:
+    known: bool = False
+    signatures: frozenset = frozenset()
+    verdicts: frozenset = frozenset()
+    first_seen: Optional[datetime.date] = None
+    last_seen: Optional[datetime.date] = None
+
+
+def lifecycle_record(
+    seen: set,
+    url: str = "",
+    title: str = "",
+    company: str = "",
+    location: str = "",
+    **_ignored,
+) -> LifecycleRecord:
+    """Derive the structured evaluation record for one identity from the set."""
+    tokens = set(delivery_identity_tokens(url, title, company, location))
+    if not tokens:
+        return LifecycleRecord()
+    signatures = set()
+    verdicts = set()
+    firsts = []
+    lasts = []
+    known = False
+    for marker in seen:
+        if not isinstance(marker, str) or not marker.startswith(_EVAL_PREFIX):
+            continue
+        parts = marker.split(":")
+        if len(parts) < 4 or parts[2] not in tokens:
+            continue
+        kind = parts[1]
+        if kind == "sig" and len(parts) == 4:
+            known = True
+            signatures.add(parts[3])
+        elif kind == "verdict" and len(parts) == 5:
+            known = True
+            if parts[4] in _VALID_VERDICTS:
+                verdicts.add(parts[4])
+        elif kind in ("first", "last") and len(parts) == 4:
+            try:
+                day = datetime.date.fromisoformat(parts[3])
+            except ValueError:
+                continue
+            known = True
+            (firsts if kind == "first" else lasts).append(day)
+    return LifecycleRecord(
+        known=known,
+        signatures=frozenset(signatures),
+        verdicts=frozenset(verdicts),
+        first_seen=min(firsts) if firsts else None,
+        last_seen=max(lasts) if lasts else None,
+    )
+
+
+def record_evaluation(seen: set, job, signature: str, verdict: str, today: datetime.date) -> None:
+    """Record one evaluation outcome as union-safe lifecycle markers."""
+    tokens = delivery_identity_tokens(**job)
+    if not tokens:
+        return
+    day = today.isoformat()
+    for token in tokens:
+        seen.add(f"eval:sig:{token}:{signature}")
+        seen.add(f"eval:verdict:{token}:{signature}:{verdict}")
+        seen.add(f"eval:first:{token}:{day}")
+        seen.add(f"eval:last:{token}:{day}")
+
+
+def should_reevaluate(seen: set, job, signature: str) -> bool:
+    """True when a seen job should be re-evaluated because its content or the
+    criteria changed since a prior non-fit/deferred verdict (a reopen)."""
+    record = lifecycle_record(seen, **job)
+    if not record.known:
+        return False
+    if signature in record.signatures:
+        return False
+    if "fit" in record.verdicts:
+        return False
+    return True
 
 
 def load_seen_jobs():

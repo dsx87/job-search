@@ -666,3 +666,140 @@ def test_three_attempt_lifecycle_runs_on_days_zero_one_and_three(monkeypatch):
     ]
     assert any(marker.startswith("delivery:blocked:") for marker in saved[-1])
     assert "will retry next run" not in telegram.messages[-1]
+
+
+# ── audit order 4d: structured lifecycle seen-state (reopen wiring) ────────────
+
+def test_reopen_on_description_change_reevaluates(monkeypatch):
+    jobs = [Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)]
+    _telegram, _saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    evaluations = []
+
+    def counting_nonfit(_client, _criteria, job):
+        evaluations.append(job["title"])
+        return {"fit": False, "reason": "no", "timezone_note": None}
+
+    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+
+    run.run_daily(make_config())
+    # Same identity (url/title/company), different sufficient description.
+    jobs[:] = [Job(title="Match", company="Acme", url="https://x/match", description="y" * 250)]
+    run.run_daily(make_config())
+
+    assert len(evaluations) == 2  # the content change reopens the prior non-fit
+
+
+def test_same_description_is_not_reevaluated(monkeypatch):
+    jobs = [Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)]
+    _telegram, saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    evaluations = []
+
+    def counting_nonfit(_client, _criteria, job):
+        evaluations.append(job["title"])
+        return {"fit": False, "reason": "no", "timezone_note": None}
+
+    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+
+    run.run_daily(make_config())
+    run.run_daily(make_config())
+
+    assert len(evaluations) == 1  # unchanged content is skipped on the second run
+    assert "https://x/match" in saved[-1]
+    assert "match|acme" in saved[-1]
+
+
+def test_delivered_fit_is_not_reopened_on_change(monkeypatch):
+    jobs = [Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)]
+    _telegram, saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
+    _install_fit(
+        monkeypatch,
+        DeliveryOutcome(notification_sent=True, notification_satisfied=True, cv_sent=True),
+    )
+    evaluations = []
+
+    def counting_fit(_client, _criteria, job):
+        evaluations.append(job["title"])
+        return {"fit": True, "reason": "great", "timezone_note": None}
+
+    monkeypatch.setattr(run, "evaluate_job", counting_fit)
+
+    run.run_daily(make_config())
+    # Change the description; a delivered fit must never be re-opened.
+    jobs[:] = [Job(title="Match", company="Acme", url="https://x/match", description="z" * 300)]
+    run.run_daily(make_config())
+
+    assert len(evaluations) == 1
+    assert any(
+        marker.startswith("eval:verdict:") and marker.endswith(":fit")
+        for marker in saved[-1]
+    )
+
+
+def test_legacy_seen_job_without_lifecycle_markers_stays_skipped(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    _telegram, _saved = install_daily_fakes(
+        monkeypatch, [job], initial_seen={"https://x/match", "match|acme"},
+    )
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("legacy job must stay skipped")),
+    )
+
+    assert run.run_daily(make_config()) == 0  # skipped, evaluate never called
+
+
+def test_criteria_change_reopens_prior_nonfit(monkeypatch):
+    jobs = [Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)]
+    _telegram, _saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    evaluations = []
+
+    def counting_nonfit(_client, _criteria, job):
+        evaluations.append(job["title"])
+        return {"fit": False, "reason": "no", "timezone_note": None}
+
+    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+
+    run.run_daily(make_config())  # criteria == "criteria" (harness default)
+    monkeypatch.setattr(run, "load_criteria", lambda: "totally different criteria")
+    run.run_daily(make_config())
+
+    assert len(evaluations) == 2  # a criteria change reopens the prior non-fit
+
+
+def test_reopened_job_that_defers_records_signature_and_stops_reopening(monkeypatch):
+    # A job that reopens (criteria change) but whose description is now
+    # insufficient must record a 'deferred' signature so it does not reopen and
+    # re-defer every run. Without that record, ensure_job_description would run
+    # every run forever.
+    jobs = [Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)]
+    _telegram, _saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
+    ensure_calls = []
+    sufficiency = iter([True, False, False])
+
+    def ensure(_job):
+        ensure_calls.append(1)
+        return next(sufficiency)
+
+    monkeypatch.setattr(run, "ensure_job_description", ensure)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: {"fit": False, "reason": "no", "timezone_note": None},
+    )
+
+    run.run_daily(make_config())  # run 1: evaluated, non-fit
+    monkeypatch.setattr(run, "load_criteria", lambda: "different criteria")
+    run.run_daily(make_config())  # run 2: reopened, description now insufficient -> deferred
+    run.run_daily(make_config())  # run 3: same content+criteria -> must NOT reopen
+
+    assert len(ensure_calls) == 2  # run 3 was skipped thanks to the deferred signature
