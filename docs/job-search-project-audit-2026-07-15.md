@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 **Scope:** Read-only architecture, logic, search-quality, AI, cost, performance, state, TUI, workflow, and test review
-**Implementation status:** Remediation in progress; orders 1–3 and 4a–4d complete; 5 next
+**Implementation status:** Remediation in progress; orders 1–3, 4a–4d, and 5 complete; 6 next
 
 ## Remediation progress
 
@@ -15,8 +15,8 @@
 | 4b | Completed in this change | Canonical job identities shared across filtering, state, delivery, sources, and TUI; commits `b65f2d8`, `211bfa7` |
 | 4c | Completed in this change | End-to-end source-health reporting, fatal-outage safeguards, and partial-refresh retention; commit `fb2554b` |
 | 4d | Completed in this change | Union-safe evaluation-lifecycle markers (content/criteria signature, verdict, first/last seen) enable reopening changed/reopened postings while preserving legacy suppression; commit `9591a11` |
-| 5 | **Next** | Description enrichment and duplicate merging before AI |
-| 6 | Pending | Structured fact extraction, deterministic policy, and selective verification |
+| 5 | Completed in this change | Duplicate records merged to keep the richest description/URL/date/region, and section-aware excerpting keeps late eligibility restrictions before AI; commit `5bc3e8b` |
+| 6 | **Next** | Structured fact extraction, deterministic policy, and selective verification |
 | 7 | Pending | Structured CV edits and deterministic rendering |
 | 8 | Pending | JobSpy queries, worker limits, caching, batching, and token telemetry |
 
@@ -306,8 +306,8 @@ The package layout is good, but internal structure is not yet consistent:
 4b. Centralize canonical job identities across filtering, state, delivery, sources, and TUI.
 4c. ~~Introduce source-health results that distinguish empty success from source failure.~~ Completed in `fb2554b`.
 4d. ~~Replace permanent string-only seen state with structured lifecycle state.~~ Completed in `9591a11`.
-5. **Next:** Add description enrichment and duplicate merging before AI.
-6. Move evaluation to structured fact extraction plus deterministic policy and selective verification.
+5. ~~Add description enrichment and duplicate merging before AI.~~ Completed in `5bc3e8b`.
+6. **Next:** Move evaluation to structured fact extraction plus deterministic policy and selective verification.
 7. Replace generated full LaTeX with structured CV edits and deterministic rendering.
 8. Optimize JobSpy queries, worker limits, caching, batching, and token telemetry.
 
