@@ -22,11 +22,14 @@ class WeWorkRemotelySource(BaseSource):
             try:
                 status, text = http_request(feed_url)
                 if status != 200:
+                    self._attempt_failed("HTTP {}".format(status))
                     if verbose:
                         print("[weworkremotely] HTTP {} for {}".format(status, feed_url))
                     continue
                 root = ET.fromstring(text)
+                self._attempt_succeeded()
             except Exception as exc:
+                self._attempt_failed(exc)
                 if verbose:
                     print("[weworkremotely] Error fetching {}: {}".format(feed_url, exc))
                 continue
@@ -68,11 +71,14 @@ class RemoteFirstJobsSource(BaseSource):
         try:
             status, text = http_request(self.RSS_URL)
             if status != 200:
+                self._attempt_failed("HTTP {}".format(status))
                 if verbose:
                     print("[remotefirstjobs] HTTP {}".format(status))
                 return []
             jobs = parse_rss_jobs(text, source=self.name, default_location="Remote")
+            self._attempt_succeeded()
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return []
         if verbose:
@@ -89,11 +95,14 @@ class RemoteVibeSource(BaseSource):
         try:
             status, text = http_request(self.RSS_URL)
             if status != 200:
+                self._attempt_failed("HTTP {}".format(status))
                 if verbose:
                     print("[remotevibe] HTTP {}".format(status))
                 return []
             jobs = parse_rss_jobs(text, source=self.name, default_location="Remote")
+            self._attempt_succeeded()
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return []
         if verbose:
@@ -111,11 +120,14 @@ class SwissDevJobsSource(BaseSource):
         try:
             status, text = http_request(self.RSS_URL)
             if status != 200:
+                self._attempt_failed("HTTP {}".format(status))
                 if verbose:
                     print("[swissdevjobs] HTTP {}".format(status))
                 return jobs
             root = ET.fromstring(text)
+            self._attempt_succeeded()
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 

@@ -5,7 +5,7 @@ Light, lazy re-exports of the most-used names. Imports are deferred via
 graph (and never triggers the lazy optional jobspy/playwright imports).
 """
 
-__all__ = ["Job", "Region", "fetch_jobs"]
+__all__ = ["Job", "Region", "fetch_jobs", "fetch_jobs_with_health"]
 
 
 def __getattr__(name):
@@ -13,8 +13,8 @@ def __getattr__(name):
         from . import models
 
         return getattr(models, name)
-    if name == "fetch_jobs":
-        from .sources.fetch import fetch_jobs
+    if name in ("fetch_jobs", "fetch_jobs_with_health"):
+        from .sources import fetch
 
-        return fetch_jobs
+        return getattr(fetch, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -62,6 +62,7 @@ class JobSpySource(BaseSource):
         try:
             from jobspy import scrape_jobs
         except ImportError:
+            self._skip("optional package 'python-jobspy' is not installed")
             if verbose:
                 print("[jobspy] Skipped: optional package 'python-jobspy' is not installed")
             return []
@@ -77,7 +78,9 @@ class JobSpySource(BaseSource):
                         hours_old=720,
                         **country
                     )
+                    self._attempt_succeeded()
                 except Exception as exc:
+                    self._attempt_failed(exc)
                     if verbose:
                         print("[jobspy] Search error for {!r} {}: {}".format(query, country, exc))
                     continue
@@ -139,6 +142,7 @@ class LinkedInGlobalSource(BaseSource):
         try:
             from jobspy import scrape_jobs
         except ImportError:
+            self._skip("optional package 'python-jobspy' is not installed")
             if verbose:
                 print("[linkedin-global] Skipped: python-jobspy not installed")
             return []
@@ -161,7 +165,9 @@ class LinkedInGlobalSource(BaseSource):
                         hours_old=48,
                         linkedin_fetch_description=True,
                     )
+                    self._attempt_succeeded()
                 except Exception as exc:
+                    self._attempt_failed(exc)
                     failures += 1
                     print("[linkedin-global] Error for {!r} {!r}: {}".format(query, location, exc), file=sys.stderr)
                     continue
@@ -205,6 +211,7 @@ class LinkedInIsraelSource(BaseSource):
         try:
             from jobspy import scrape_jobs
         except ImportError:
+            self._skip("optional package 'python-jobspy' is not installed")
             if verbose:
                 print("[linkedin-israel] Skipped: python-jobspy not installed")
             return []
@@ -224,7 +231,9 @@ class LinkedInIsraelSource(BaseSource):
                     hours_old=48,
                     linkedin_fetch_description=True,
                 )
+                self._attempt_succeeded()
             except Exception as exc:
+                self._attempt_failed(exc)
                 failures += 1
                 print("[linkedin-israel] Error for {!r}: {}".format(query, exc), file=sys.stderr)
                 continue

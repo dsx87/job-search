@@ -16,7 +16,8 @@ from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
-from ..sources.fetch import fetch_jobs, select_sources
+from ..sources.fetch import fetch_jobs_with_health, select_sources
+from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
     acknowledge_block_alert,
@@ -57,7 +58,7 @@ class RunStats:
     failure_details: list = field(default_factory=list)
 
 
-def _format_run_summary(stats: RunStats) -> str:
+def _format_run_summary(stats: RunStats, source_warning="") -> str:
     lines = [
         "✅ <b>Job search complete</b>",
         f"New candidates: {stats.new_jobs}",
@@ -87,6 +88,8 @@ def _format_run_summary(stats: RunStats) -> str:
     if stats.failure_details:
         lines.extend(("", "<b>Fit delivery failures</b>"))
         lines.extend(stats.failure_details[:10])
+    if source_warning:
+        lines.extend(("", "⚠️ <b>Source health</b>", html.escape(source_warning)))
     return "\n".join(lines)
 
 
@@ -192,9 +195,23 @@ def _deferred_markers(job) -> set[str]:
     return markers
 
 
-def run_seed(cfg) -> None:
+def _fetch_for_pipeline(cfg):
+    report = fetch_jobs_with_health(
+        source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True,
+    )
+    summary = format_source_health(report)
+    if summary:
+        print(summary, file=sys.stderr)
+    return report
+
+
+def run_seed(cfg) -> int:
     """Mark all currently fetched jobs as seen without evaluating."""
-    raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
+    report = _fetch_for_pipeline(cfg)
+    if not report.has_usable_source:
+        print("No usable job source completed; seed aborted.", file=sys.stderr)
+        return 1
+    raw_jobs = report.jobs
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
     added = 0
@@ -206,11 +223,16 @@ def run_seed(cfg) -> None:
         seen.update(keys)
     save_seen_jobs(seen)
     print(f"Seed complete — {len(raw_jobs)} job(s) marked seen ({added} new URL entries added).")
+    return 0
 
 
-def run_list(cfg) -> None:
+def run_list(cfg) -> int:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
-    raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
+    report = _fetch_for_pipeline(cfg)
+    if not report.has_usable_source:
+        print("No usable job source completed; list aborted.", file=sys.stderr)
+        return 1
+    raw_jobs = report.jobs
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
     new_jobs = [j for j in raw_jobs if seen.isdisjoint(job_identity_keys(j))]
@@ -221,9 +243,10 @@ def run_list(cfg) -> None:
         print(f"  {j.company} | {j.location or 'n/a'} | {j.source} | {date_str}")
         print(f"  {j.url}")
         print()
+    return 0
 
 
-def run_daily(cfg, test: bool = False) -> None:
+def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
     if cfg.state_sync:
         # Pull the shared dedup baseline FIRST: linkedin-guest peeks at
@@ -235,6 +258,7 @@ def run_daily(cfg, test: bool = False) -> None:
         sys.exit(1)
 
     telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    state_mutation_allowed = False
     try:
         gemini = LLMClient(
             cfg.gemini_api_key,
@@ -251,12 +275,23 @@ def run_daily(cfg, test: bool = False) -> None:
         base_tex = load_base_tex()
 
         print("Fetching jobs...", flush=True)
-        raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
+        report = _fetch_for_pipeline(cfg)
+        if not report.has_usable_source:
+            message = "🚨 <b>Job source outage</b>\nNo selected source completed successfully; evaluation and state updates were aborted."
+            print("No usable job source completed; daily run aborted.", file=sys.stderr)
+            try:
+                telegram.send_message(message)
+            except Exception as exc:
+                print(f"Telegram source-outage notification error: {exc}", file=sys.stderr)
+            return 1
+        state_mutation_allowed = True
+        raw_jobs = report.jobs
+        source_warning = format_source_health(report, unhealthy_only=True)
 
         if test:
             if not raw_jobs:
                 print("No jobs found — nothing to test.")
-                return
+                return 0
             j = raw_jobs[0]
             d = coerce_job(j)
             print("Test mode: processing one job without touching seen_jobs.json.")
@@ -273,10 +308,10 @@ def run_daily(cfg, test: bool = False) -> None:
                         file=sys.stderr,
                     )
                 print("Done.", flush=True)
-                return
+                return 0
             process_job(gemini, criteria, tailoring_instructions, base_tex, d, telegram)
             print("Done.", flush=True)
-            return
+            return 0
 
         seen_raw = load_seen_jobs()
         first_run = seen_raw is None
@@ -491,19 +526,20 @@ def run_daily(cfg, test: bool = False) -> None:
                 )
 
         try:
-            telegram.send_message(_format_run_summary(stats))
+            telegram.send_message(_format_run_summary(stats, source_warning))
         except Exception as exc:
             print(f"Telegram notification error: {exc}", file=sys.stderr)
 
         print(gemini.usage_summary(), flush=True)
         print("Done.", flush=True)
+        return 0
 
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
         _send_error_notification(exc, telegram)
         raise
     finally:
-        if cfg.state_sync and not test:
+        if cfg.state_sync and not test and state_mutation_allowed:
             # Push even on error: ordinary keys represent handled/silenced jobs,
             # while namespaced deferral markers only suppress duplicate notices.
             # Both are set-union-safe to share after a partial run.

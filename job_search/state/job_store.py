@@ -52,7 +52,7 @@ class JobStore:
         except OSError:
             pass
 
-    def merge(self, new_jobs):
+    def merge(self, new_jobs, incomplete_sources=()):
         """Merge new jobs into the store. New jobs are unseen by default.
         Existing jobs keep their seen status. Missing jobs are removed."""
         url_index, fallback_index, url_less_fallback_index = self._identity_indexes()
@@ -80,6 +80,11 @@ class JobStore:
             if previous is not None:
                 data["seen"] = previous.get("seen", False)
             merged[key] = data
+
+        incomplete_sources = set(incomplete_sources or ())
+        for key, value in self.jobs.items():
+            if key not in merged and value.get("source") in incomplete_sources:
+                merged[key] = value
 
         self.jobs = merged
 

@@ -188,6 +188,19 @@ def test_jobstore_merge_sort_and_toggle(tmp_path):
     assert set(store.jobs.keys()) == {"u2"}
 
 
+def test_jobstore_merge_retains_missing_jobs_from_incomplete_sources(tmp_path):
+    store = JobStore(path=str(tmp_path / "store.json"))
+    store.merge([
+        Job(title="Keep", url="u1", source="partial"),
+        Job(title="Drop", url="u2", source="healthy"),
+    ])
+
+    store.merge([], incomplete_sources={"partial"})
+
+    assert set(store.jobs) == {"u1"}
+    assert store.jobs["u1"]["source"] == "partial"
+
+
 def test_jobstore_persists(tmp_path):
     path = str(tmp_path / "store.json")
     store = JobStore(path=path)

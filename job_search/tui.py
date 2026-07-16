@@ -6,7 +6,8 @@ import curses
 import threading
 import webbrowser
 
-from .sources.fetch import fetch_jobs
+from .sources.fetch import fetch_jobs_with_health
+from .sources.health import format_source_health
 from .state.job_store import JobStore
 
 
@@ -20,6 +21,7 @@ class JobTUI:
         self.loading_message = ""
         self.refresh_done = False
         self.refresh_error = None
+        self.refresh_warning = None
         self.width = 0
         self.height = 0
         self.table_height = 0
@@ -56,6 +58,8 @@ class JobTUI:
                 self.loading = False
                 if self.refresh_error:
                     self.loading_message = "Error: {}".format(self.refresh_error)
+                elif self.refresh_warning:
+                    self.loading_message = "Warning: {}".format(self.refresh_warning)
                 else:
                     self.loading_message = "Refreshed!"
                 self._reload_jobs()
@@ -148,11 +152,15 @@ class JobTUI:
 
         def worker():
             try:
-                jobs = fetch_jobs(verbose=False)
-                self.store.merge(jobs)
+                report = fetch_jobs_with_health(verbose=False)
+                if not report.has_usable_source:
+                    raise RuntimeError("No usable job source completed")
+                self.store.merge(report.jobs, incomplete_sources=report.incomplete_sources)
                 self.refresh_error = None
+                self.refresh_warning = format_source_health(report, unhealthy_only=True) or None
             except Exception as exc:
                 self.refresh_error = str(exc)
+                self.refresh_warning = None
             self.refresh_done = True
 
         thread = threading.Thread(target=worker, daemon=True)
@@ -246,7 +254,7 @@ class JobTUI:
         status = left + " " * padding + right
         status = status[: self.width - 1]
 
-        if self.loading:
+        if self.loading_message:
             status = " {} ".format(self.loading_message) + status[len(self.loading_message) + 3 :]
 
         try:

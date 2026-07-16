@@ -97,15 +97,13 @@ def main():
         return
 
     if args.seed:
-        run_seed(cfg)
-        return
+        return run_seed(cfg)
 
     if args.list:
-        run_list(cfg)
-        return
+        return run_list(cfg)
 
-    run_daily(cfg, test=args.test)
+    return run_daily(cfg, test=args.test)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

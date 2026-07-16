@@ -6,6 +6,7 @@ from job_search.models import Job
 from job_search.pipeline import run
 from job_search.pipeline import stages
 from job_search.pipeline.stages import DeliveryOutcome
+from job_search.sources.health import FetchReport, SourceHealth, SourceStatus
 from job_search.state.seen_jobs import (
     delivery_identity_tokens,
     mark_delivery_notified,
@@ -77,10 +78,47 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
     monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
     monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
     monkeypatch.setattr(run, "load_base_tex", lambda: "base")
-    monkeypatch.setattr(run, "fetch_jobs", lambda **_kwargs: list(jobs))
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_kwargs: FetchReport(
+            tuple(jobs), (SourceHealth("fake", SourceStatus.SUCCESS, len(jobs), 1),),
+        ),
+    )
     monkeypatch.setattr(run, "load_seen_jobs", lambda: set(state))
     monkeypatch.setattr(run, "save_seen_jobs", save)
     return telegram, saved
+
+
+def test_total_source_outage_aborts_without_evaluation_or_state_save(monkeypatch):
+    telegram, saved = install_daily_fakes(monkeypatch, [])
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_kwargs: FetchReport((), (
+            SourceHealth("down", SourceStatus.FAILED, failure_detail="offline"),
+        )),
+    )
+    monkeypatch.setattr(run, "load_seen_jobs", lambda: (_ for _ in ()).throw(AssertionError("no state load")))
+
+    assert run.run_daily(make_config()) == 1
+    assert saved == []
+    assert any("source outage" in message.lower() for message in telegram.messages)
+
+
+def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):
+    telegram, _saved = install_daily_fakes(monkeypatch, [])
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_kwargs: FetchReport((), (
+            SourceHealth("healthy", SourceStatus.SUCCESS, 0, 1),
+            SourceHealth("flaky", SourceStatus.PARTIAL, 0, 2, "page two failed"),
+        )),
+    )
+
+    assert run.run_daily(make_config()) == 0
+    assert any("flaky: partial" in message for message in telegram.messages)
 
 
 def test_run_daily_forwards_provider_configuration(monkeypatch):
@@ -103,7 +141,14 @@ def test_deferred_markers_ignore_semantically_empty_job_identity():
 
 def test_run_seed_does_not_persist_empty_identity_keys(monkeypatch):
     saved = []
-    monkeypatch.setattr(run, "fetch_jobs", lambda **_kwargs: [Job(), Job(title="iOS", company="Acme")])
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_kwargs: FetchReport(
+            (Job(), Job(title="iOS", company="Acme")),
+            (SourceHealth("fake", SourceStatus.SUCCESS, 2, 1),),
+        ),
+    )
     monkeypatch.setattr(run, "load_seen_jobs", lambda: set())
     monkeypatch.setattr(run, "save_seen_jobs", lambda seen: saved.append(set(seen)))
 

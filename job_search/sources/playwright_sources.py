@@ -32,6 +32,7 @@ class SecretTelAvivSource(BaseSource):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
+            self._skip("optional package 'playwright' is not installed")
             if verbose:
                 print("[secrettelaviv] Skipped: Playwright not installed")
             return []
@@ -58,7 +59,9 @@ class SecretTelAvivSource(BaseSource):
                                     default_remote=False,
                                 )
                             )
+                            self._attempt_succeeded()
                         except Exception as exc:
+                            self._attempt_failed(exc)
                             if verbose:
                                 print("[secrettelaviv] Error for query={!r}: {}".format(query, exc))
                         finally:
@@ -66,6 +69,8 @@ class SecretTelAvivSource(BaseSource):
                 finally:
                     browser.close()
         except Exception as exc:
+            if not self._attempts:
+                self._attempt_failed(exc)
             if verbose:
                 print("[secrettelaviv] Playwright error: {}".format(exc))
             return dedup(jobs)

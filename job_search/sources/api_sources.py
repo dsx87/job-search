@@ -14,11 +14,13 @@ class RemotiveSource(BaseSource):
         jobs = []
         try:
             status, data = http_json(self.API_URL, params={"limit": "100"})
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[remotive] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 
@@ -55,11 +57,13 @@ class RemoteOKSource(BaseSource):
         jobs = []
         try:
             status, data = http_json(self.API_URL)
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[remoteok] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 
@@ -99,11 +103,13 @@ class JobicySource(BaseSource):
         jobs = []
         try:
             status, data = http_json(self.API_URL, params={"count": "50"})
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[jobicy] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 
@@ -135,11 +141,13 @@ class ArbeitnowSource(BaseSource):
         jobs = []
         try:
             status, data = http_json(self.API_URL, params={"visa_sponsorship": "true"})
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[arbeitnow] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 
@@ -176,11 +184,13 @@ class TheMuseSource(BaseSource):
                     self.API_URL,
                     params={"page": str(page), "location": "Remote"},
                 )
+                self._attempt_http(status)
                 if status != 200:
                     if verbose:
                         print("[themuse] HTTP {} for page={}".format(status, page))
                     continue
             except Exception as exc:
+                self._attempt_failed(exc)
                 verbose_source_error(self.name, verbose, exc)
                 return jobs
 
@@ -247,11 +257,13 @@ class HimalayasSource(BaseSource):
         jobs = []
         try:
             status, data = http_json(self.API_URL, params={"limit": "50"})
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[himalayas] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 
@@ -331,11 +343,13 @@ class WorkingNomadsSource(BaseSource):
                 method="POST",
                 json_body=self.payload(),
             )
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[workingnomads] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 

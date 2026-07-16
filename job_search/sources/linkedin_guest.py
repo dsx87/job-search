@@ -143,11 +143,14 @@ class LinkedInGuestSource(BaseSource):
                             {"keywords": query, "location": location, "start": start},
                             timeout, verbose,
                         )
+                        self._attempt_http(status)
                     except _RateLimited:
+                        self._attempt_failed("HTTP 429 rate limit")
                         if verbose:
                             print("[{}] rate-limited on search — stopping this location".format(NAME), flush=True)
                         break
                     except Exception as exc:
+                        self._attempt_failed(exc)
                         if verbose:
                             print("[{}] search error ({} start={}): {}".format(NAME, location, start, exc), flush=True)
                         break

@@ -16,6 +16,7 @@ from job_search.sources import base
 from job_search.sources import api_sources, html_sources, rss_sources
 from job_search.sources import fetch as fetch_mod
 from job_search.sources import linkedin_guest
+from job_search.sources.health import SourceStatus
 from job_search.state.seen_jobs import normalize_url
 from job_search.sources.api_sources import (
     ArbeitnowSource,
@@ -409,6 +410,135 @@ def test_fetch_jobs_abandons_source_exceeding_budget(monkeypatch, capsys):
     assert [j.company for j in jobs] == ["FastCo"]
     # The truncation is surfaced (names the abandoned source) rather than silent.
     assert "slow" in capsys.readouterr().err
+
+
+def test_fetch_jobs_with_health_reports_empty_success(monkeypatch):
+    class Empty(base.BaseSource):
+        name = "empty"
+
+        def fetch(self, verbose=False):
+            self._attempt_succeeded()
+            return []
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"empty": Empty})
+    report = fetch_mod.fetch_jobs_with_health(source_names=["empty"])
+
+    assert report.jobs == ()
+    assert report.has_usable_source is True
+    assert report.outcomes[0].status is SourceStatus.SUCCESS
+    assert report.outcomes[0].raw_job_count == 0
+    assert report.outcomes[0].attempt_count == 1
+
+
+def test_fetch_jobs_with_health_reports_failed_and_partial_sources_in_order(monkeypatch):
+    today = dt.date.today()
+
+    class Failed(base.BaseSource):
+        name = "failed"
+
+        def fetch(self, verbose=False):
+            self._attempt_failed(RuntimeError("service unavailable"))
+            return []
+
+    class Partial(base.BaseSource):
+        name = "partial"
+
+        def fetch(self, verbose=False):
+            self._attempt_succeeded()
+            self._attempt_failed(RuntimeError("second page failed"))
+            return [Job(title="iOS Engineer", company="Acme", location="Berlin, Germany",
+                        url="https://x/partial", description="Swift UIKit fully remote",
+                        is_remote=True, date_posted=today, source=self.name)]
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", OrderedDict([
+        ("failed", Failed), ("partial", Partial),
+    ]))
+    report = fetch_mod.fetch_jobs_with_health(source_names=["failed", "partial"])
+
+    assert [outcome.source for outcome in report.outcomes] == ["failed", "partial"]
+    assert [outcome.status for outcome in report.outcomes] == [
+        SourceStatus.FAILED, SourceStatus.PARTIAL,
+    ]
+    assert report.outcomes[1].attempt_count == 2
+    assert report.outcomes[1].failure_detail == "second page failed"
+    assert [job.company for job in report.jobs] == ["Acme"]
+    assert report.has_usable_source is True
+
+
+def test_fetch_jobs_with_health_reports_skip_exception_and_timeout(monkeypatch):
+    import time
+
+    class Skipped(base.BaseSource):
+        name = "skipped"
+
+        def fetch(self, verbose=False):
+            self._skip("optional dependency missing")
+            return []
+
+    class Boom(base.BaseSource):
+        name = "boom"
+
+        def fetch(self, verbose=False):
+            raise RuntimeError("kaboom")
+
+    class Slow(base.BaseSource):
+        name = "slow"
+
+        def fetch(self, verbose=False):
+            time.sleep(1)
+            return []
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", OrderedDict([
+        ("skipped", Skipped), ("boom", Boom), ("slow", Slow),
+    ]))
+    report = fetch_mod.fetch_jobs_with_health(
+        source_names=["skipped", "boom", "slow"], budget_seconds=0.05,
+    )
+
+    assert [outcome.status for outcome in report.outcomes] == [
+        SourceStatus.SKIPPED, SourceStatus.FAILED, SourceStatus.TIMED_OUT,
+    ]
+    assert report.outcomes[0].failure_detail == "optional dependency missing"
+    assert report.outcomes[1].failure_detail == "kaboom"
+    assert report.has_usable_source is False
+
+
+def test_fetch_jobs_compatibility_wrapper_returns_list(monkeypatch):
+    class Empty(base.BaseSource):
+        name = "empty"
+
+        def fetch(self, verbose=False):
+            return []
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"empty": Empty})
+    assert fetch_mod.fetch_jobs(source_names=["empty"]) == []
+    assert isinstance(fetch_mod.fetch_jobs(source_names=["empty"]), list)
+
+
+def test_run_scraper_keeps_json_stdout_pure_and_reports_health(monkeypatch, capsys):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"empty": object})
+    report = fetch_mod.FetchReport((), (
+        fetch_mod.SourceHealth("empty", SourceStatus.SUCCESS, 0, 1),
+    ))
+    monkeypatch.setattr(fetch_mod, "fetch_jobs_with_health", lambda **_kwargs: report)
+
+    assert fetch_mod.run_scraper(source_names=["empty"], as_json=True) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "[]"
+    assert "empty: success" in captured.err
+
+
+def test_run_scraper_returns_nonzero_when_every_source_is_unusable(monkeypatch, capsys):
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"down": object})
+    report = fetch_mod.FetchReport((), (
+        fetch_mod.SourceHealth("down", SourceStatus.FAILED, failure_detail="offline"),
+    ))
+    monkeypatch.setattr(fetch_mod, "fetch_jobs_with_health", lambda **_kwargs: report)
+
+    assert fetch_mod.run_scraper(source_names=["down"], as_json=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "No usable job source" in captured.err
 
 
 # ── linkedin-guest offline parse (Part 3) ─────────────────────────────────────

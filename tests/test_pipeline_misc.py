@@ -187,11 +187,12 @@ def _stub_daily(monkeypatch, calls):
     """Neutralize run_daily's external work, recording pull/fetch/push order."""
     def fake_fetch(*a, **k):
         calls.append("fetch")
-        return []
+        from job_search.sources.health import FetchReport, SourceHealth, SourceStatus
+        return FetchReport((), (SourceHealth("fake", SourceStatus.SUCCESS, 0, 1),))
 
     monkeypatch.setattr(run_mod, "pull_state", lambda *a, **k: calls.append("pull"))
     monkeypatch.setattr(run_mod, "push_state", lambda *a, **k: calls.append("push"))
-    monkeypatch.setattr(run_mod, "fetch_jobs", fake_fetch)
+    monkeypatch.setattr(run_mod, "fetch_jobs_with_health", fake_fetch)
     monkeypatch.setattr(run_mod, "load_criteria", lambda: "criteria")
     monkeypatch.setattr(run_mod, "load_tailoring_instructions", lambda: "instr")
     monkeypatch.setattr(run_mod, "load_base_tex", lambda: "tex")
