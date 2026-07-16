@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 **Scope:** Read-only architecture, logic, search-quality, AI, cost, performance, state, TUI, workflow, and test review
-**Implementation status:** Remediation in progress; orders 1–3 completed, order 4a next
+**Implementation status:** Remediation in progress; orders 1–3 and 4a completed, order 4b next
 
 ## Remediation progress
 
@@ -11,8 +11,8 @@
 | 1 | Completed before this change | Findings 1–2; commits `4109cab`, `ac7d314`, `ccae58a`, with follow-ups `80374ca`, `a2dd063`, `fe4fe77`, `60dc777` |
 | 2 | Completed before this change | Findings 3–5; commits `30b75e2`, `ceb37d3`, `b0f8d9f`, `43f884a`, `2218938`, `4306581`, with documentation in `a9cf42f` |
 | 3 | Completed in this change | Configurable provider model/API-base plumbing and Gemini 3.5 Flash migration, including Gemini 3's recommended default temperature. Benchmark explicitly waived by user; offline request-contract coverage used. |
-| 4a | **Next** | Canonical `Job` contract used end to end |
-| 4b | Pending | Canonical job identities shared across filtering, state, delivery, sources, and TUI |
+| 4a | Completed in this change | Canonical `Job` contract used end to end; commit `ef8e276` |
+| 4b | **Next** | Canonical job identities shared across filtering, state, delivery, sources, and TUI |
 | 4c | Pending | Source-health results that distinguish empty success from source failure |
 | 4d | Pending | Structured state for content changes, reopening, verdicts, and delivery lifecycle |
 | 5 | Pending | Description enrichment and duplicate merging before AI |
