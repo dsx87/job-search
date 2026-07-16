@@ -1,9 +1,12 @@
 """LLM job evaluation against the fit criteria."""
 import json
 
+from ..models import coerce_job
+
 
 def evaluate_job(client, criteria: str, job: dict) -> dict:
     """Returns {"fit": bool, "reason": str, "timezone_note": str|None}."""
+    job = coerce_job(job)
     prompt = f"""You are evaluating a job posting for Igor Pivnyk, an iOS/macOS developer based in Israel (UTC+3).
 
 ## Fit Criteria

@@ -128,6 +128,7 @@ def test_mixed_run_evaluates_only_sufficient_job(monkeypatch):
     evaluated = []
 
     def fake_evaluate(_client, _criteria, job):
+        assert isinstance(job, Job)
         evaluated.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 

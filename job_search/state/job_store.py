@@ -6,23 +6,16 @@ never committed. This is independent of the pipeline's seen_jobs.json dedup set.
 import json
 import os
 
+from ..models import coerce_job
+
 STATE_PATH = "job_state.json"
 
 
 def job_to_store_dict(job):
     """Convert a scraper Job object to a storable dict."""
-    return {
-        "title": job.title,
-        "company": job.company,
-        "location": job.location,
-        "url": job.url,
-        "source": job.source,
-        "date_posted": job.date_posted.isoformat() if job.date_posted else None,
-        "is_remote": job.is_remote,
-        "region": job.region.value if job.region else "UNKNOWN",
-        "matched_skills": job.matched_skills,
-        "seen": False,
-    }
+    data = coerce_job(job).to_dict()
+    data["seen"] = False
+    return data
 
 
 class JobStore:

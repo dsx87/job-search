@@ -140,10 +140,32 @@ def test_pending_block_alerts_ignore_malformed_payloads():
 
 
 def test_job_to_store_dict():
-    d = job_to_store_dict(Job(title="iOS", url="u1", region=Region.EU))
+    d = job_to_store_dict(Job(title="iOS", url="u1", region=Region.EU, description="Full text"))
     assert d["seen"] is False
     assert d["region"] == "EU"
     assert d["url"] == "u1"
+    assert d["description"] == "Full text"
+
+
+def test_jobstore_loads_old_tui_state_and_retains_seen_status(tmp_path):
+    path = tmp_path / "store.json"
+    path.write_text(json.dumps({
+        "jobs": {
+            "u1": {
+                "title": "Old job",
+                "company": "Acme",
+                "url": "u1",
+                "region": "EU",
+                "seen": True,
+            }
+        },
+        "show_seen": True,
+    }))
+
+    store = JobStore(path=str(path))
+
+    assert store.jobs["u1"]["seen"] is True
+    assert store.show_seen is True
 
 
 def test_jobstore_merge_sort_and_toggle(tmp_path):

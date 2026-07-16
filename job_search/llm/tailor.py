@@ -1,6 +1,7 @@
 """LLM CV tailoring with a deterministic content guard + one corrective retry."""
 
 from ..latex.compile import _strip_latex_fences
+from ..models import coerce_job
 from ..profile import EXPECTED_JOB_ORDER, validate_tailored_cv
 
 
@@ -21,6 +22,7 @@ def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict)
     it regenerates once with a corrective instruction; if the second pass still
     fails, it raises CVValidationError so invalid content cannot reach delivery.
     """
+    job = coerce_job(job)
     job_text = (
         f"Title: {job.get('title', '')}\n"
         f"Company: {job.get('company', '')}\n"

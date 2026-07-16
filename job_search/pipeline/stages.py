@@ -10,6 +10,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from typing import Optional
 
@@ -17,6 +18,7 @@ from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instruction
 from ..latex.compile import compile_with_fixes
 from ..llm.eval import evaluate_job
 from ..llm.tailor import tailor_resume
+from ..models import Job, coerce_job
 from ..profile import validate_tailored_cv
 from ..text import collapse_ws, strip_html
 
@@ -74,13 +76,17 @@ def _is_http_job_url(url):
 
 def ensure_job_description(job, fetcher=None, min_length=MIN_JOB_TEXT_LEN):
     """Keep the richest cleaned description and report whether it is sufficient."""
-    current = clean_job_description(job.get("description", ""))
-    job["description"] = current
+    legacy = job if isinstance(job, MutableMapping) and not isinstance(job, Job) else None
+    job = coerce_job(job)
+    current = clean_job_description(job.description)
+    job.description = current
+    if legacy is not None:
+        legacy["description"] = current
 
     if len(current) >= min_length:
         return True
 
-    url = str(job.get("url", "") or "").strip()
+    url = job.url
     if not _is_http_job_url(url):
         return False
 
@@ -95,9 +101,11 @@ def ensure_job_description(job, fetcher=None, min_length=MIN_JOB_TEXT_LEN):
         fetched = ""
 
     if len(fetched) > len(current):
-        job["description"] = fetched
+        job.description = fetched
+        if legacy is not None:
+            legacy["description"] = fetched
 
-    return len(job["description"]) >= min_length
+    return len(job.description) >= min_length
 
 
 def _company_slug(company: str) -> str:
@@ -170,6 +178,7 @@ def _format_deferred_notification(jobs, limit=10):
 
 
 def _format_notification(job: dict, evaluation: dict) -> str:
+    job = coerce_job(job)
     title = job.get("title", "Unknown Title")
     company = job.get("company", "Unknown Company")
     location = job.get("location", "")
@@ -193,6 +202,7 @@ def _format_notification(job: dict, evaluation: dict) -> str:
 
 def _prepare_verified_pdf(client, instructions: str, base_tex: str, job: dict) -> bytes:
     """Tailor and compile a job-specific CV, failing unless a verified PDF exists."""
+    job = coerce_job(job)
     try:
         tex_source = tailor_resume(client, instructions, base_tex, job)
     except Exception as exc:
@@ -224,6 +234,7 @@ def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, e
 
     Returns a payload dict consumed by send_fit().
     """
+    job = coerce_job(job)
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"    Fit! Tailoring resume: {title} at {company}", flush=True)
@@ -242,6 +253,7 @@ def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, e
 
 def prepare_retry_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict) -> dict:
     """Prepare a verified CV for a known fit without creating another fit message."""
+    job = coerce_job(job)
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"    Retrying verified PDF: {title} at {company}...", flush=True)
@@ -300,6 +312,7 @@ def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: st
 
     Thin wrapper over evaluate_job/prepare_fit/send_fit, kept for --test mode.
     """
+    job = coerce_job(job)
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"  Evaluating: {title} at {company}", flush=True)
@@ -325,6 +338,7 @@ def tailor_single_job(client, job: dict, telegram) -> None:
     pipeline (see process_job). Does NOT touch seen_jobs.json — this is an
     on-demand action, not part of dedup state.
     """
+    job = coerce_job(job)
     title = job.get("title", "iOS Developer")
     company = job.get("company", "the role")
 

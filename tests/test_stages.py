@@ -6,6 +6,7 @@ TelegramClient-shaped object instead of reading module globals.
 import pytest
 
 # --- modules under test (repoint on migration) ---
+from job_search.models import Job
 from job_search.pipeline import stages
 from job_search.pipeline.stages import (
     CVDeliveryError,
@@ -46,6 +47,35 @@ class FakeTelegram:
 
 def _payload(pdf_bytes=b"PDF"):
     return {"title": "iOS", "company": "Acme", "message": "hi", "pdf_bytes": pdf_bytes}
+
+
+def test_description_enrichment_updates_legacy_mapping():
+    legacy = {"url": "https://x/job", "description": "tiny"}
+
+    assert stages.ensure_job_description(
+        legacy, fetcher=lambda _url: "complete text", min_length=10
+    ) is True
+    assert legacy["description"] == "complete text"
+
+
+def test_prepare_fit_passes_canonical_job_to_llm_stage(monkeypatch, fake_llm):
+    received = []
+    monkeypatch.setattr(
+        stages,
+        "tailor_resume",
+        lambda _client, _instructions, _base, job: received.append(job) or CLEAN_CV,
+    )
+    monkeypatch.setattr(stages, "compile_with_fixes", lambda _client, tex: (True, b"PDF", tex))
+
+    prepare_fit(
+        fake_llm([]),
+        "instr",
+        "base",
+        {"title": "iOS", "company": "Acme"},
+        {"fit": True, "reason": "great"},
+    )
+
+    assert isinstance(received[0], Job)
 
 
 def test_send_fit_complete_delivery():

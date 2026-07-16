@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from job_search.models import Job
 from job_search.pipeline import cli, stages
 
 
@@ -72,9 +73,10 @@ def test_short_pasted_description_is_enriched_and_cleaned(monkeypatch):
 
     assert received[0][0] is client
     assert received[0][2] is telegram
-    assert len(received[0][1]["description"]) >= 200
-    assert "<main>" not in received[0][1]["description"]
-    assert "&amp;" not in received[0][1]["description"]
+    assert isinstance(received[0][1], Job)
+    assert len(received[0][1].description) >= 200
+    assert "<main>" not in received[0][1].description
+    assert "&amp;" not in received[0][1].description
 
 
 def test_sufficient_pasted_description_does_not_fetch(monkeypatch):
@@ -89,7 +91,8 @@ def test_sufficient_pasted_description_does_not_fetch(monkeypatch):
 
     cli.run_tailor(make_args("x" * 200), make_config())
 
-    assert received[0]["description"] == "x" * 200
+    assert isinstance(received[0], Job)
+    assert received[0].description == "x" * 200
 
 
 def test_unresolved_manual_job_exits_before_constructing_clients(monkeypatch):

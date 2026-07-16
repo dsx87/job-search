@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
 from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
-from ..models import job_to_dict
+from ..models import coerce_job
 from ..notify.telegram import TelegramClient
 from ..sources.fetch import fetch_jobs, select_sources
 from ..state.git_sync import pull_state, push_state
@@ -261,8 +261,7 @@ def run_daily(cfg, test: bool = False) -> None:
                 print("No jobs found — nothing to test.")
                 return
             j = raw_jobs[0]
-            d = job_to_dict(j)
-            d["description"] = j.description
+            d = coerce_job(j)
             print("Test mode: processing one job without touching seen_jobs.json.")
             if not ensure_job_description(d):
                 print(
@@ -291,7 +290,7 @@ def run_daily(cfg, test: bool = False) -> None:
         cutoff = today - datetime.timedelta(days=7)
 
         stats = RunStats()
-        # evaluation_jobs: list of (url_key, tc_key, job_dict, retry_state)
+        # evaluation_jobs: list of (url_key, tc_key, Job, retry_state)
         # Keys are NOT added to seen yet — added only after successful processing.
         evaluation_jobs = []
         fits = []
@@ -310,8 +309,7 @@ def run_daily(cfg, test: bool = False) -> None:
                     seen.add(key)
                     seen.add(tc_key)
                     continue
-            d = job_to_dict(j)
-            d["description"] = j.description
+            d = coerce_job(j)
             retry_state = delivery_retry_state(seen, **d)
             if retry_state.blocked:
                 continue
