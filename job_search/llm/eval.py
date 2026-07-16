@@ -2,6 +2,7 @@
 import json
 
 from ..models import coerce_job
+from ..text import section_aware_excerpt
 
 
 def evaluate_job(client, criteria: str, job: dict) -> dict:
@@ -23,7 +24,7 @@ Source: {job.get("source", "")}
 URL: {job.get("url", "")}
 
 Description:
-{job.get("description", "")[:5000]}
+{section_aware_excerpt(job.get("description", ""), 5000)}
 
 ## Your Task
 

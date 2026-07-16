@@ -234,3 +234,80 @@ def test_run_pipeline_keeps_onsite_eu_member_role_without_blocker():
     )
 
     assert run_pipeline([job], max_age_days=30) == [job]
+
+
+# --- audit order 5: dedup now MERGES duplicates instead of dropping them ---
+def test_dedup_merges_richer_description_from_later_duplicate():
+    # Same url; the SECOND posting carries the richer description -> richness, not first-wins.
+    jobs = [
+        Job(url="https://x/1", title="iOS", company="Acme", description="short"),
+        Job(
+            url="https://x/1",
+            title="iOS",
+            company="Acme",
+            description="a much longer and richer description with detail",
+        ),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].description == "a much longer and richer description with detail"
+
+
+def test_dedup_merges_url_and_description_into_url_less_first_record():
+    # First record has no url but the same title|company key as the second.
+    jobs = [
+        Job(title="iOS", company="Acme"),
+        Job(title="iOS", company="Acme", url="https://x/1", description="fuller"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].url == "https://x/1"
+    assert out[0].description == "fuller"
+
+
+def test_dedup_merges_remote_date_and_region_across_duplicates():
+    jobs = [
+        Job(
+            url="https://x/1",
+            title="iOS",
+            company="Acme",
+            is_remote=False,
+            date_posted=dt.date(2024, 1, 1),
+            region=Region.UNKNOWN,
+        ),
+        Job(
+            url="https://x/1",
+            title="iOS",
+            company="Acme",
+            is_remote=True,
+            date_posted=dt.date(2024, 3, 1),
+            region=Region.EU,
+        ),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].is_remote is True
+    assert out[0].date_posted == dt.date(2024, 3, 1)
+    assert out[0].region == Region.EU
+
+
+def test_dedup_chains_third_duplicate_into_same_record():
+    # After the first two merge, the merged record's keys (incl. the url) must be
+    # registered so a third duplicate sharing the url merges into the same record.
+    jobs = [
+        Job(title="iOS", company="Acme"),
+        Job(title="iOS", company="Acme", url="https://x/1"),
+        Job(url="https://x/1", title="iOS Dev", company="Acme", description="third"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].url == "https://x/1"
+    assert out[0].description == "third"
+
+
+def test_dedup_keeps_all_empty_jobs():
+    # An all-empty Job() has no identity keys and is never merged.
+    jobs = [Job(), Job(), Job()]
+    out = dedup(jobs)
+    assert len(out) == 3
+    assert out == jobs

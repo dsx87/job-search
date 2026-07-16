@@ -300,3 +300,39 @@ def test_tailor_resume_raises_when_violations_persist(fake_llm):
     assert len(client.prompts) == 2
     assert isinstance(raised.value.violations, tuple)
     assert any("missing job" in violation for violation in raised.value.violations)
+
+
+# --- audit order 5: eval/tailor prompts use section_aware_excerpt (Finding 11) ---
+def test_evaluate_job_prompt_surfaces_late_restriction(fake_llm):
+    long_desc = (
+        "Overview of the role. "
+        + ("iOS Swift work. " * 400)
+        + " Eligibility: US residents only, no visa sponsorship."
+    )
+    # the restriction sits beyond the naive 5000-char prefix cut
+    assert len(long_desc) > 5000
+    assert "US residents only" not in long_desc[:5000]
+
+    client = fake_llm(['{"fit": "false", "reason": "US only", "timezone_note": null}'])
+    evaluate_job(client, "CRIT", {"title": "iOS", "company": "Acme", "description": long_desc})
+
+    assert "US residents only" in client.prompts[0]
+
+
+def test_tailor_resume_prompt_surfaces_late_restriction(fake_llm):
+    long_desc = (
+        "Overview of the role. "
+        + ("iOS Swift work. " * 550)
+        + " Eligibility: US residents only, no visa sponsorship."
+    )
+    # the restriction sits beyond the naive 7000-char prefix cut
+    assert len(long_desc) > 7000
+    assert "US residents only" not in long_desc[:7000]
+
+    cv = ("\\documentclass{x}\\begin{document}"
+          "\\jobheader{Check Point}\\jobheader{Applitools}"
+          "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}")
+    client = fake_llm([cv])
+    tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme", "description": long_desc})
+
+    assert "US residents only" in client.prompts[0]

@@ -6,6 +6,7 @@ from job_search.text import (
     unescape2,
     clean_fragment_text,
     extract_attr,
+    section_aware_excerpt,
 )
 
 
@@ -40,3 +41,51 @@ def test_extract_attr():
     assert extract_attr('HREF="/y"', "href") == "/y"  # case-insensitive
     assert extract_attr("", "href") == ""
     assert extract_attr('class="z"', "href") == ""
+
+
+# --- audit order 5: section_aware_excerpt (Finding 11) ---
+def test_section_aware_excerpt_returns_short_text_unchanged():
+    assert section_aware_excerpt("short text", 100) == "short text"
+
+
+def test_section_aware_excerpt_non_positive_limit_returns_empty():
+    assert section_aware_excerpt("anything at all", 0) == ""
+    assert section_aware_excerpt("anything at all", -5) == ""
+
+
+def test_section_aware_excerpt_respects_limit_when_truncating():
+    text = "word " * 1000  # 5000 chars, no eligibility/location keywords
+    result = section_aware_excerpt(text, 200)
+    assert len(result) <= 200
+
+
+def test_section_aware_excerpt_preserves_head_prefix():
+    head = "SUMMARY: this is the head portion of the posting. "
+    text = head + ("more text here. " * 500)
+    result = section_aware_excerpt(text, 500)
+    assert result.startswith(text[:50])
+    assert len(result) <= 500
+
+
+def test_section_aware_excerpt_surfaces_late_restriction():
+    text = (
+        "SUMMARY. "
+        + ("filler words here. " * 400)
+        + " Eligibility: US residents only; visa sponsorship is not available."
+    )
+    limit = 1500
+    # precondition: a naive text[:limit] prefix cut would drop the late restriction
+    assert "residents only" not in text[:limit]
+    result = section_aware_excerpt(text, limit)
+    assert ("residents only" in result) or ("sponsorship" in result)
+    assert "SUMMARY" in result
+    assert len(result) <= limit
+
+
+def test_section_aware_excerpt_is_deterministic():
+    text = (
+        "SUMMARY. "
+        + ("filler words here. " * 400)
+        + " visa sponsorship is not available."
+    )
+    assert section_aware_excerpt(text, 1500) == section_aware_excerpt(text, 1500)

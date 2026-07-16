@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from .text import collapse_ws
+
 
 class Region(enum.Enum):
     EU = "EU"
@@ -162,3 +164,48 @@ def job_to_dict(job):
     data = coerce_job(job).to_dict()
     data.pop("description")
     return data
+
+
+def _richer(a, b):
+    """Return whichever string carries more non-whitespace content (a wins ties)."""
+    a, b = str(a or ""), str(b or "")
+    return a if len(collapse_ws(a)) >= len(collapse_ws(b)) else b
+
+
+def _best_date(a, b):
+    """Prefer a known date; when both are known keep the more recent one."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    da = a.date() if isinstance(a, datetime.datetime) else a
+    db = b.date() if isinstance(b, datetime.datetime) else b
+    try:
+        return a if da >= db else b
+    except TypeError:
+        return a
+
+
+def merge_jobs(base, other):
+    """Combine two duplicate postings, preserving the richest available fields.
+
+    ``base`` wins ties. Used by the filter dedup to replace first-finisher-wins
+    with a merge that keeps the longest description, best URL/location, most
+    recent known date, and the union of remote/region/skill signals so the AI
+    evaluates the fullest version of a posting seen across sources.
+    """
+    base = coerce_job(base)
+    other = coerce_job(other)
+    skills = list(dict.fromkeys([*base.matched_skills, *other.matched_skills]))
+    return Job(
+        title=base.title or other.title,
+        company=base.company or other.company,
+        location=_richer(base.location, other.location),
+        url=base.url or other.url,
+        source=base.source or other.source,
+        date_posted=_best_date(base.date_posted, other.date_posted),
+        description=_richer(base.description, other.description),
+        is_remote=bool(base.is_remote or other.is_remote),
+        region=base.region if base.region != Region.UNKNOWN else other.region,
+        matched_skills=skills,
+    )

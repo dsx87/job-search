@@ -3,6 +3,7 @@
 from ..latex.compile import _strip_latex_fences
 from ..models import coerce_job
 from ..profile import EXPECTED_JOB_ORDER, validate_tailored_cv
+from ..text import section_aware_excerpt
 
 
 class CVValidationError(ValueError):
@@ -28,7 +29,7 @@ def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict)
         f"Company: {job.get('company', '')}\n"
         f"Location: {job.get('location', '')}\n"
         f"URL: {job.get('url', '')}\n\n"
-        f"{job.get('description', '')[:7000]}"
+        f"{section_aware_excerpt(job.get('description', ''), 7000)}"
     )
     prompt = f"""You are a professional resume writer. Tailor Igor Pivnyk's CV for the job posting below.
 

@@ -4,7 +4,7 @@ import re
 
 from ..identity import job_identity_keys
 from ..location.classify import classify_region, is_eu_member_job, is_israel_job
-from ..models import Region
+from ..models import Region, merge_jobs
 from ..text import strip_html
 from .keywords import SKILL_KEYWORDS, match_keywords
 
@@ -271,14 +271,32 @@ def opportunity_filter(job, relocation_regions=None):
 
 
 def dedup(jobs):
-    seen = set()
+    """Collapse duplicate postings, MERGING richer fields into the kept record.
+
+    Rather than dropping whichever duplicate arrives later (which could discard
+    the fuller description, a better URL, or a known date), a duplicate is merged
+    into the first record it shares an identity key with. Identity-less jobs are
+    kept as-is; first-appearance order of distinct identities is preserved.
+    """
     result = []
+    key_to_index = {}
     for job in jobs:
         keys = job_identity_keys(job)
-        if keys and not seen.isdisjoint(keys):
+        if not keys:
+            result.append(job)
             continue
-        seen.update(keys)
-        result.append(job)
+        idx = None
+        for key in keys:
+            if key in key_to_index:
+                idx = key_to_index[key]
+                break
+        if idx is None:
+            result.append(job)
+            idx = len(result) - 1
+        else:
+            result[idx] = merge_jobs(result[idx], job)
+        for key in set(keys) | set(job_identity_keys(result[idx])):
+            key_to_index.setdefault(key, idx)
     return result
 
 
