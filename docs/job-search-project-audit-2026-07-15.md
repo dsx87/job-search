@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 **Scope:** Read-only architecture, logic, search-quality, AI, cost, performance, state, TUI, workflow, and test review
-**Implementation status:** Remediation in progress; orders 1–3, 4a–4d, and 5–7 complete; 8 next
+**Implementation status:** Remediation complete; orders 1–8 done
 
 ## Remediation progress
 
@@ -18,7 +18,7 @@
 | 5 | Completed in this change | Duplicate records merged to keep the richest description/URL/date/region, and section-aware excerpting keeps late eligibility restrictions before AI; commit `5bc3e8b` |
 | 6 | Completed in this change | Schema-constrained fact extraction + deterministic policy (executable criteria.md) with evidence grounding; low-confidence cases routed to an `uncertain` review section; commit `c1f66bb`. Confident-reject sampling deferred as observability. |
 | 7 | Completed in this change | Model selects existing base bullets; deterministic renderer rebuilds the CV from the trusted base (verbatim, fabrication-free, always a compilable subset); commit `4d7b1fd`. Rephrasing/skill-reorder scoped out to preserve the no-fabrication guarantee. |
-| 8 | **Next** | JobSpy queries, worker limits, caching, batching, and token telemetry |
+| 8 | Completed in this change | Token telemetry (input/output/thinking/cached), a XeLaTeX concurrency cap, and reduced JobSpy queries; commit `6722e95`. Micro-batching, context caching, and scrape checkpoints deferred as live-only (see below). |
 
 > **Historical context:** The findings below preserve the project state and
 > present-tense wording recorded during the original audit. Orders 1 and 2 have
@@ -309,13 +309,16 @@ The package layout is good, but internal structure is not yet consistent:
 5. ~~Add description enrichment and duplicate merging before AI.~~ Completed in `5bc3e8b`.
 6. ~~Move evaluation to structured fact extraction plus deterministic policy and selective verification.~~ Completed in `c1f66bb`.
 7. ~~Replace generated full LaTeX with structured CV edits and deterministic rendering.~~ Completed in `4d7b1fd`.
-8. **Next:** Optimize JobSpy queries, worker limits, caching, batching, and token telemetry.
+8. ~~Optimize JobSpy queries, worker limits, caching, batching, and token telemetry.~~ Token telemetry, XeLaTeX worker cap, and JobSpy query reduction completed in `6722e95`; batching/caching/scrape-checkpoints deferred as live-only.
 
 ## Verification and limitations
 
-- Existing offline suite: **123 tests passed**.
-- Post-remediation offline suite: **348 tests passed**.
-- Additional audit verification: **nine currently uncovered behaviors reproduced with in-memory assertions**.
+- Existing offline suite at audit time: **123 tests passed**.
+- Offline suite after orders 1–3/4a–4c: **348 tests passed**.
+- Offline suite after completing orders 4d–8: **472 tests passed**.
+- Additional audit verification: **nine originally uncovered behaviors reproduced with in-memory assertions**.
 - The original exploration was read-only; remediation changes are tracked in the table above.
-- Real XeLaTeX integration was not run because `xelatex` was unavailable locally.
-- No live scraping or paid Gemini/Qwen calls were made.
+- Every order was verified offline only, per the constraints below — no live behavior was exercised:
+  - Real XeLaTeX integration was not run because `xelatex` was unavailable locally (the CV renderer and one-page guard are verified structurally).
+  - No live scraping or paid Gemini/Qwen calls were made; new LLM behavior (structured fact extraction, schema-constrained output, CV bullet selection, token telemetry) is verified with request-contract and in-memory tests. The deterministic policy in `policy.py` is exhaustively unit-tested against `criteria.md`, but the model's real-world fact-extraction accuracy is not measured here.
+- Deferred as live-only follow-ups (order 8): micro-batch / delayed-batch evaluation, provider context caching, and incremental scrape checkpoints / metadata-first fetching — each needs the live provider batch/cache API or live scraping to validate.
