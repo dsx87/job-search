@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 **Scope:** Read-only architecture, logic, search-quality, AI, cost, performance, state, TUI, workflow, and test review
-**Implementation status:** Remediation in progress; orders 1–3, 4a–4d, 5, and 6 complete; 7 next
+**Implementation status:** Remediation in progress; orders 1–3, 4a–4d, and 5–7 complete; 8 next
 
 ## Remediation progress
 
@@ -17,8 +17,8 @@
 | 4d | Completed in this change | Union-safe evaluation-lifecycle markers (content/criteria signature, verdict, first/last seen) enable reopening changed/reopened postings while preserving legacy suppression; commit `9591a11` |
 | 5 | Completed in this change | Duplicate records merged to keep the richest description/URL/date/region, and section-aware excerpting keeps late eligibility restrictions before AI; commit `5bc3e8b` |
 | 6 | Completed in this change | Schema-constrained fact extraction + deterministic policy (executable criteria.md) with evidence grounding; low-confidence cases routed to an `uncertain` review section; commit `c1f66bb`. Confident-reject sampling deferred as observability. |
-| 7 | **Next** | Structured CV edits and deterministic rendering |
-| 8 | Pending | JobSpy queries, worker limits, caching, batching, and token telemetry |
+| 7 | Completed in this change | Model selects existing base bullets; deterministic renderer rebuilds the CV from the trusted base (verbatim, fabrication-free, always a compilable subset); commit `4d7b1fd`. Rephrasing/skill-reorder scoped out to preserve the no-fabrication guarantee. |
+| 8 | **Next** | JobSpy queries, worker limits, caching, batching, and token telemetry |
 
 > **Historical context:** The findings below preserve the project state and
 > present-tense wording recorded during the original audit. Orders 1 and 2 have
@@ -308,8 +308,8 @@ The package layout is good, but internal structure is not yet consistent:
 4d. ~~Replace permanent string-only seen state with structured lifecycle state.~~ Completed in `9591a11`.
 5. ~~Add description enrichment and duplicate merging before AI.~~ Completed in `5bc3e8b`.
 6. ~~Move evaluation to structured fact extraction plus deterministic policy and selective verification.~~ Completed in `c1f66bb`.
-7. **Next:** Replace generated full LaTeX with structured CV edits and deterministic rendering.
-8. Optimize JobSpy queries, worker limits, caching, batching, and token telemetry.
+7. ~~Replace generated full LaTeX with structured CV edits and deterministic rendering.~~ Completed in `4d7b1fd`.
+8. **Next:** Optimize JobSpy queries, worker limits, caching, batching, and token telemetry.
 
 ## Verification and limitations
 
