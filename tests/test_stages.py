@@ -216,8 +216,15 @@ def test_prepare_fit_revalidates_compiler_repair_output(monkeypatch):
     assert "banking" in str(raised.value)
 
 
+# Facts the deterministic policy resolves without grounding in the (empty)
+# description: ungrounded on-site -> "uncertain" (not a fit → process_job sends
+# nothing); remote+worldwide -> "fit".
+_NONFIT_FACTS = '{"work_arrangement": "onsite"}'
+_FIT_FACTS = '{"work_arrangement": "remote", "remote_geo_scope": "worldwide"}'
+
+
 def test_process_job_not_fit(fake_llm):
-    gemini = fake_llm(['{"fit": false, "reason": "no apple work", "timezone_note": null}'])
+    gemini = fake_llm([_NONFIT_FACTS])
     tg = FakeTelegram()
     result = process_job(gemini, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
     assert result is False
@@ -227,7 +234,7 @@ def test_process_job_not_fit(fake_llm):
 
 def test_process_job_fit_sends(monkeypatch, fake_llm):
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
-    gemini = fake_llm(['{"fit": true, "reason": "great", "timezone_note": null}', CLEAN_CV])
+    gemini = fake_llm([_FIT_FACTS, CLEAN_CV])
     tg = FakeTelegram()
     result = process_job(gemini, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
     assert result is True
@@ -237,7 +244,7 @@ def test_process_job_fit_sends(monkeypatch, fake_llm):
 
 def test_process_job_raises_for_incomplete_delivery(monkeypatch, fake_llm):
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
-    gemini = fake_llm(['{"fit": true, "reason": "great", "timezone_note": null}', CLEAN_CV])
+    gemini = fake_llm([_FIT_FACTS, CLEAN_CV])
     tg = FakeTelegram(raise_on_document=True)
 
     with pytest.raises(CVDeliveryError) as raised:
@@ -284,3 +291,20 @@ def test_send_error_notification_swallows_failure():
     tg2 = FakeTelegram()
     _send_error_notification(RuntimeError("boom"), tg2)
     assert "Pipeline error" in tg2.messages[0]
+
+
+def test_format_uncertain_notification_escapes_and_includes_reason():
+    from job_search.pipeline.stages import _format_uncertain_notification
+
+    items = [
+        (
+            Job(title="R&D iOS", company="A<B>", url="https://x/1", description="d"),
+            {"reason": "unclear <arrangement>"},
+        ),
+    ]
+    msg = _format_uncertain_notification(items)
+    assert "flagged for review" in msg
+    assert "R&amp;D iOS" in msg
+    assert "A&lt;B&gt;" in msg
+    assert "unclear &lt;arrangement&gt;" in msg
+    assert 'href="https://x/1"' in msg

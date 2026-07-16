@@ -190,7 +190,7 @@ def acknowledge_block_alert(seen: set, token: str) -> None:
 # reopen a job for re-evaluation instead of suppressing it forever. Legacy
 # string-only seen entries carry no such markers and stay suppressed.
 _EVAL_PREFIX = "eval:"
-_VALID_VERDICTS = frozenset({"fit", "nonfit", "deferred"})
+_VALID_VERDICTS = frozenset({"fit", "nonfit", "deferred", "uncertain"})
 _DIGIT_RE = re.compile(r"\d+")
 
 

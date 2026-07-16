@@ -32,7 +32,7 @@ class GeminiClient:
         self.model = model
         self.api_base = api_base.rstrip("/")
 
-    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
         generation_config = {}
         if self.model.startswith("gemini-3"):
             generation_config["thinkingConfig"] = {"thinkingLevel": "low"}
@@ -44,8 +44,10 @@ class GeminiClient:
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": generation_config,
         }
-        if json_mode:
+        if json_mode or response_schema is not None:
             payload["generationConfig"]["responseMimeType"] = "application/json"
+        if response_schema is not None:
+            payload["generationConfig"]["responseSchema"] = response_schema
 
         url = f"{self.api_base}/{self.model}:generateContent"
         data = json.dumps(payload).encode()
@@ -93,13 +95,13 @@ class QwenClient:
         self.model = model
         self.api_base = api_base.rstrip("/")
 
-    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
         }
-        if json_mode:
+        if json_mode or response_schema is not None:
             payload["response_format"] = {"type": "json_object"}
 
         url = f"{self.api_base}/chat/completions"
@@ -167,41 +169,41 @@ class LLMClient:
         self._gemini_calls = 0   # successful Gemini responses
         self._qwen_calls = 0     # requests served by Qwen
 
-    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False) -> str:
+    def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
         with self._lock:
             disabled = self._gemini_disabled
         if disabled:
-            return self._use_qwen(prompt, temperature, json_mode)
+            return self._use_qwen(prompt, temperature, json_mode, response_schema)
 
         try:
-            result = self.gemini.generate(prompt, temperature=temperature, json_mode=json_mode)
+            result = self.gemini.generate(prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema)
             with self._lock:
                 self._gemini_calls += 1
             return result
         except urllib.error.HTTPError as exc:
             if exc.code in GEMINI_CIRCUIT_BREAK_STATUS:
                 self._disable_gemini(exc.code)
-                return self._use_qwen(prompt, temperature, json_mode)
+                return self._use_qwen(prompt, temperature, json_mode, response_schema)
             # Other HTTP errors: per-request fallback, Gemini stays enabled.
             if self.qwen is None:
                 raise
             print(f"    Gemini ({self.gemini_model}) HTTP {exc.code} — falling back to Qwen ({self.qwen_model}) for this request...", flush=True)
-            return self._use_qwen(prompt, temperature, json_mode)
+            return self._use_qwen(prompt, temperature, json_mode, response_schema)
         except Exception as exc:
             # Non-HTTP error (timeout, connection reset, malformed body): per-request fallback.
             if self.qwen is None:
                 raise
             print(f"    Gemini ({self.gemini_model}) error ({type(exc).__name__}) — falling back to Qwen ({self.qwen_model}) for this request...", flush=True)
-            return self._use_qwen(prompt, temperature, json_mode)
+            return self._use_qwen(prompt, temperature, json_mode, response_schema)
 
-    def _use_qwen(self, prompt: str, temperature: float, json_mode: bool) -> str:
+    def _use_qwen(self, prompt: str, temperature: float, json_mode: bool, response_schema=None) -> str:
         if self.qwen is None:
             raise RuntimeError(
                 f"Gemini ({self.gemini_model}) unavailable ({self._gemini_disabled_reason or 'error'}) and no Qwen ({self.qwen_model}) fallback configured."
             )
         with self._lock:
             self._qwen_calls += 1
-        return self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode)
+        return self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema)
 
     def _disable_gemini(self, code: int) -> None:
         label = {

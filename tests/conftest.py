@@ -22,7 +22,7 @@ class FakeLLM:
         self._responses = list(responses or [])
         self.prompts = []
 
-    def generate(self, prompt, temperature=0.0, json_mode=False):
+    def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
         self.prompts.append(prompt)
         if not self._responses:
             raise AssertionError("FakeLLM ran out of canned responses")

@@ -34,6 +34,7 @@ from ..state.seen_jobs import (
 )
 from .stages import (
     _format_deferred_notification,
+    _format_uncertain_notification,
     _send_error_notification,
     clean_job_description,
     ensure_job_description,
@@ -50,6 +51,7 @@ class RunStats:
     evaluated: int = 0
     non_fit: int = 0
     fits: int = 0
+    uncertain: int = 0
     deferred: int = 0
     evaluation_failed: int = 0
     preparation_failed: int = 0
@@ -68,6 +70,7 @@ def _format_run_summary(stats: RunStats, source_warning="") -> str:
         "✅ <b>Job search complete</b>",
         f"New candidates: {stats.new_jobs}",
         f"Evaluated: {stats.evaluated} (non-fit: {stats.non_fit}, fit: {stats.fits})",
+        f"Needs review (uncertain): {stats.uncertain}",
         f"Deferred: {stats.deferred}",
         f"Fit notifications sent: {stats.notification_sent}",
         f"Verified CVs delivered: {stats.cv_sent}",
@@ -332,6 +335,7 @@ def run_daily(cfg, test: bool = False) -> int:
         # Keys are NOT added to seen yet — added only after successful processing.
         evaluation_jobs = []
         fits = []
+        uncertain = []
         newly_deferred = []
         candidate_count = 0
         # Content/criteria signature per identity, captured from the RAW scraped
@@ -434,6 +438,18 @@ def run_daily(cfg, test: bool = False) -> int:
                     if evaluation.get("fit"):
                         stats.fits += 1
                         fits.append((job, evaluation, retry_state))
+                    elif evaluation.get("verdict") == "uncertain":
+                        # Policy could not confidently decide: surface for review
+                        # rather than discard. Marked seen so it notifies once;
+                        # the structured lifecycle reopens it if content/criteria
+                        # later change.
+                        stats.uncertain += 1
+                        print(f"    Review '{job.get('title')}' — {evaluation.get('reason', '')}")
+                        uncertain.append((job, evaluation))
+                        seen.update(job_identity_keys(job))
+                        signature = _signature_for(job)
+                        if signature is not None:
+                            record_evaluation(seen, job, signature, "uncertain", today)
                     else:
                         # Not a fit: mark seen so it won't be reprocessed.
                         stats.non_fit += 1
@@ -455,7 +471,15 @@ def run_daily(cfg, test: bool = False) -> int:
                     f"Telegram deferred-job notification error: {exc}",
                     file=sys.stderr,
                 )
-        # Persist the non-fits captured above in one write.
+        if uncertain:
+            try:
+                telegram.send_message(_format_uncertain_notification(uncertain))
+            except Exception as exc:
+                print(
+                    f"Telegram uncertain-job notification error: {exc}",
+                    file=sys.stderr,
+                )
+        # Persist the non-fits and uncertain jobs captured above in one write.
         save_seen_jobs(seen)
         print(f"{len(fits)} fit(s) to tailor.", flush=True)
 

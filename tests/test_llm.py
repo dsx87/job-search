@@ -7,6 +7,7 @@ import pytest
 # --- modules under test (repoint on migration) ---
 from job_search.llm.clients import GeminiClient, LLMClient, QwenClient
 from job_search.llm.eval import evaluate_job
+from job_search.llm.facts import FACT_SCHEMA, _normalize_facts, extract_facts
 from job_search.llm.tailor import CVValidationError, tailor_resume
 
 
@@ -22,7 +23,7 @@ class _FakeModel:
         self.items = list(items)
         self.calls = 0
 
-    def generate(self, prompt, temperature=0.0, json_mode=False):
+    def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
         self.calls += 1
         item = self.items.pop(0)
         if isinstance(item, Exception):
@@ -151,7 +152,7 @@ def test_qwen_fallback_keeps_requested_temperature():
     calls = []
 
     class RecordingQwen:
-        def generate(self, prompt, temperature=0.0, json_mode=False):
+        def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
             calls.append((prompt, temperature, json_mode))
             return "Q"
 
@@ -245,17 +246,6 @@ def test_no_qwen_reraises_on_disable():
         c.generate("p")
 
 
-def test_evaluate_job_parses_and_coerces_fit(fake_llm):
-    client = fake_llm(['{"fit": "true", "reason": "good match", "timezone_note": null}'])
-    result = evaluate_job(client, "MY CRITERIA", {"title": "iOS Engineer", "company": "Acme"})
-    assert result["fit"] is True
-    assert result["reason"] == "good match"
-    assert result["timezone_note"] is None
-    # the prompt carried the criteria and job fields
-    assert "MY CRITERIA" in client.prompts[0]
-    assert "iOS Engineer" in client.prompts[0]
-
-
 def test_tailor_resume_returns_clean_first_pass(fake_llm):
     cv = ("\\documentclass[9.5pt]{article}\\begin{document}"
           "\\jobheader{Check Point}\\jobheader{Applitools}"
@@ -303,7 +293,7 @@ def test_tailor_resume_raises_when_violations_persist(fake_llm):
 
 
 # --- audit order 5: eval/tailor prompts use section_aware_excerpt (Finding 11) ---
-def test_evaluate_job_prompt_surfaces_late_restriction(fake_llm):
+def test_extract_facts_prompt_surfaces_late_restriction():
     long_desc = (
         "Overview of the role. "
         + ("iOS Swift work. " * 400)
@@ -313,8 +303,8 @@ def test_evaluate_job_prompt_surfaces_late_restriction(fake_llm):
     assert len(long_desc) > 5000
     assert "US residents only" not in long_desc[:5000]
 
-    client = fake_llm(['{"fit": "false", "reason": "US only", "timezone_note": null}'])
-    evaluate_job(client, "CRIT", {"title": "iOS", "company": "Acme", "description": long_desc})
+    client = _RecordingClient([json.dumps(_VALID_FACTS)])
+    extract_facts(client, {"title": "iOS", "company": "Acme", "description": long_desc})
 
     assert "US residents only" in client.prompts[0]
 
@@ -336,3 +326,276 @@ def test_tailor_resume_prompt_surfaces_late_restriction(fake_llm):
     tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme", "description": long_desc})
 
     assert "US residents only" in client.prompts[0]
+
+
+# =====================================================================
+# audit order 6, part 1 — schema-constrained clients + structured facts
+# =====================================================================
+
+
+class _RecordingClient:
+    """Fake client that records prompts and every generate() kwarg.
+
+    Unlike conftest's ``FakeLLM``, this accepts (and captures) the new
+    ``response_schema`` keyword, so facts/eval tests can assert that
+    ``extract_facts`` threads ``FACT_SCHEMA`` through to the model.
+    """
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.prompts = []
+        self.kwargs = []
+
+    def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+        self.prompts.append(prompt)
+        self.kwargs.append(
+            {
+                "temperature": temperature,
+                "json_mode": json_mode,
+                "response_schema": response_schema,
+            }
+        )
+        if not self._responses:
+            raise AssertionError("_RecordingClient ran out of canned responses")
+        return self._responses.pop(0)
+
+
+# A complete, valid facts payload the model might return (evidence in array form).
+_VALID_FACTS = {
+    "platform_focus": "ios_macos",
+    "seniority": "senior",
+    "employment_type": "full_time",
+    "work_arrangement": "remote",
+    "remote_geo_scope": "worldwide",
+    "restricted_to_countries": [],
+    "offers_sponsorship": "no",
+    "authorization_blocker": "no",
+    "office_days_4plus": "no",
+    "industry_crypto_web3": "no",
+    "requires_us_hours": "no",
+    "evidence": [{"field": "platform_focus", "snippet": "iOS and Swift"}],
+}
+
+_ENUM_FIELDS = (
+    "platform_focus",
+    "seniority",
+    "employment_type",
+    "work_arrangement",
+    "remote_geo_scope",
+    "offers_sponsorship",
+    "authorization_blocker",
+    "office_days_4plus",
+    "industry_crypto_web3",
+    "requires_us_hours",
+)
+
+_ALL_FACT_FIELDS = _ENUM_FIELDS + ("restricted_to_countries", "evidence")
+
+
+# --- A) schema-constrained clients ------------------------------------
+
+def test_gemini_request_sets_response_schema_and_json_mime(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return _Response({"candidates": [{"content": {"parts": [{"text": "ok"}]}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    # json_mode intentionally left False: a schema implies JSON output.
+    GeminiClient("key", model="gemini-3.5-flash").generate(
+        "p", response_schema={"type": "object"}
+    )
+
+    gen_cfg = captured["payload"]["generationConfig"]
+    assert gen_cfg["responseSchema"] == {"type": "object"}
+    assert gen_cfg["responseMimeType"] == "application/json"
+
+
+def test_qwen_request_response_schema_forces_json_object(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return _Response({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    QwenClient("key", model="qwen-custom").generate(
+        "p", response_schema={"type": "object"}
+    )
+
+    payload = captured["payload"]
+    assert payload["response_format"] == {"type": "json_object"}
+    # The schema itself is not part of the Qwen wire payload.
+    assert "responseSchema" not in payload
+    assert "response_schema" not in payload
+
+
+def test_llm_client_threads_response_schema_to_gemini():
+    seen = []
+
+    class RecordingGemini:
+        def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+            seen.append(response_schema)
+            return "G"
+
+    client = LLMClient("g", "q")
+    client.gemini = RecordingGemini()
+    schema = {"type": "object"}
+
+    assert client.generate("p", response_schema=schema) == "G"
+    assert seen == [schema]
+
+
+def test_llm_client_threads_response_schema_to_qwen_on_fallback():
+    seen = []
+
+    class Boom:
+        def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+            raise _http_error(429)
+
+    class RecordingQwen:
+        def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+            seen.append(response_schema)
+            return "Q"
+
+    client = LLMClient("g", "q", gemini_model="gemini-3.5-flash")
+    client.gemini = Boom()
+    client.qwen = RecordingQwen()
+    schema = {"type": "object"}
+
+    assert client.generate("p", response_schema=schema) == "Q"
+    assert seen == [schema]
+
+
+# --- B) FACT_SCHEMA / extract_facts / _normalize_facts ----------------
+
+def test_fact_schema_declares_all_expected_properties():
+    props = FACT_SCHEMA["properties"]
+    for field_name in _ALL_FACT_FIELDS:
+        assert field_name in props
+
+
+def test_extract_facts_returns_normalized_dict_and_prompts_job():
+    client = _RecordingClient([json.dumps(_VALID_FACTS)])
+
+    facts = extract_facts(
+        client,
+        {
+            "title": "iOS Engineer",
+            "company": "Acme",
+            "description": "We build iOS apps in Swift.",
+        },
+    )
+
+    # every schema field is present after normalization
+    for field_name in _ALL_FACT_FIELDS:
+        assert field_name in facts
+
+    assert facts["platform_focus"] == "ios_macos"
+    assert facts["restricted_to_countries"] == []
+    # evidence normalized from array form into a field->snippet mapping
+    assert facts["evidence"] == {"platform_focus": "iOS and Swift"}
+
+    # the prompt carries the job title + description
+    assert "iOS Engineer" in client.prompts[0]
+    assert "We build iOS apps in Swift." in client.prompts[0]
+
+
+def test_extract_facts_passes_fact_schema_to_generate():
+    client = _RecordingClient([json.dumps(_VALID_FACTS)])
+    extract_facts(client, {"title": "iOS", "company": "Acme", "description": "desc"})
+    assert client.kwargs[0]["response_schema"] == FACT_SCHEMA
+
+
+def test_normalize_facts_missing_fields_default_to_unknown():
+    out = _normalize_facts({})
+    for field_name in _ENUM_FIELDS:
+        assert out[field_name] == "unknown"
+    assert out["restricted_to_countries"] == []
+    assert out["evidence"] == {}
+
+
+def test_normalize_facts_invalid_enum_becomes_unknown():
+    out = _normalize_facts(
+        {"platform_focus": "banana", "seniority": 123, "work_arrangement": None}
+    )
+    assert out["platform_focus"] == "unknown"
+    assert out["seniority"] == "unknown"
+    assert out["work_arrangement"] == "unknown"
+
+
+def test_normalize_facts_valid_enum_preserved():
+    out = _normalize_facts({"platform_focus": "ios_macos", "work_arrangement": "remote"})
+    assert out["platform_focus"] == "ios_macos"
+    assert out["work_arrangement"] == "remote"
+
+
+def test_normalize_facts_evidence_array_becomes_dict():
+    out = _normalize_facts(
+        {"evidence": [{"field": "seniority", "snippet": "Senior iOS Engineer"}]}
+    )
+    assert out["evidence"] == {"seniority": "Senior iOS Engineer"}
+
+
+def test_normalize_facts_evidence_dict_passthrough():
+    out = _normalize_facts({"evidence": {"seniority": "Senior iOS Engineer"}})
+    assert out["evidence"] == {"seniority": "Senior iOS Engineer"}
+
+
+def test_normalize_facts_restricted_countries_uppercased():
+    out = _normalize_facts({"restricted_to_countries": ["us", "Canada"]})
+    assert out["restricted_to_countries"] == ["US", "CANADA"]
+
+
+def test_normalize_facts_garbage_input_is_all_unknown():
+    for junk in (None, "nope", 42, ["a", "b"]):
+        out = _normalize_facts(junk)
+        for field_name in _ENUM_FIELDS:
+            assert out[field_name] == "unknown"
+        assert out["restricted_to_countries"] == []
+        assert out["evidence"] == {}
+
+
+# --- D) evaluate_job rewired to facts + policy -------------------------
+
+def test_evaluate_job_fit_case_end_to_end():
+    client = _RecordingClient([json.dumps(_VALID_FACTS)])
+
+    result = evaluate_job(
+        client,
+        "CRIT",
+        {"title": "iOS", "company": "Acme", "description": "Fully remote, worldwide."},
+    )
+
+    assert set(result.keys()) == {"fit", "reason", "timezone_note", "verdict", "facts"}
+    assert result["fit"] is True
+    assert result["verdict"] == "fit"
+    assert isinstance(result["reason"], str) and result["reason"]
+    assert result["timezone_note"] is None
+    assert result["facts"]["work_arrangement"] == "remote"
+
+
+def test_evaluate_job_nonfit_case_end_to_end():
+    facts_payload = {
+        **_VALID_FACTS,
+        "industry_crypto_web3": "yes",
+        "evidence": [{"field": "industry_crypto_web3", "snippet": "web3 startup"}],
+    }
+    client = _RecordingClient([json.dumps(facts_payload)])
+
+    result = evaluate_job(
+        client,
+        "CRIT",
+        {
+            "title": "iOS",
+            "company": "Acme",
+            "description": "We are a web3 startup building wallets.",
+        },
+    )
+
+    assert result["fit"] is False
+    assert result["verdict"] == "nonfit"
+    assert result["facts"]["industry_crypto_web3"] == "yes"

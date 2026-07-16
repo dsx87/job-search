@@ -167,6 +167,41 @@ def _format_deferred_notification(jobs, limit=10):
     return "\n".join(lines)
 
 
+def _format_uncertain_notification(items, limit=10):
+    """One bounded, HTML-safe Telegram summary for jobs needing human review.
+
+    `items` is a list of (job, evaluation) pairs whose deterministic verdict was
+    "uncertain" — the policy could not confidently decide, so they are surfaced
+    for review rather than silently dropped (audit Finding 18).
+    """
+    count = len(items)
+    noun = "posting" if count == 1 else "postings"
+    lines = [
+        f"🔍 <b>{count} job {noun} flagged for review</b>",
+        "The policy could not confidently decide these. Review and use /tailor if a fit.",
+        "",
+    ]
+    for job, evaluation in items[:limit]:
+        job = coerce_job(job)
+        title = collapse_ws(job.get("title", ""))
+        company = collapse_ws(job.get("company", ""))
+        label = " — ".join(part for part in (title, company) if part) or "Unknown job"
+        if len(label) > 180:
+            label = label[:179] + "…"
+        safe_label = html.escape(label)
+        reason = html.escape(collapse_ws(str((evaluation or {}).get("reason", "")))[:300])
+        url = str(job.get("url", "") or "").strip()
+        if _is_http_job_url(url):
+            head = f'• <a href="{html.escape(url, quote=True)}">{safe_label}</a>'
+        else:
+            head = f"• {safe_label}"
+        lines.append(head + (f"\n  <i>{reason}</i>" if reason else ""))
+    omitted = count - min(count, limit)
+    if omitted:
+        lines.append(f"• … and {omitted} more")
+    return "\n".join(lines)
+
+
 def _format_notification(job: dict, evaluation: dict) -> str:
     job = coerce_job(job)
     title = job.get("title", "Unknown Title")

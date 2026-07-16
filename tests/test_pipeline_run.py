@@ -803,3 +803,36 @@ def test_reopened_job_that_defers_records_signature_and_stops_reopening(monkeypa
     run.run_daily(make_config())  # run 3: same content+criteria -> must NOT reopen
 
     assert len(ensure_calls) == 2  # run 3 was skipped thanks to the deferred signature
+
+
+def test_uncertain_verdict_is_surfaced_for_review_and_marked_seen(monkeypatch):
+    job = Job(title="Maybe", company="Acme", url="https://x/maybe", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_args: {
+            "fit": False,
+            "verdict": "uncertain",
+            "reason": "policy could not decide",
+            "timezone_note": None,
+        },
+    )
+    monkeypatch.setattr(run, "prepare_fit", lambda *_a: (_ for _ in ()).throw(AssertionError("no tailoring")))
+
+    run.run_daily(make_config())
+
+    review = [m for m in telegram.messages if "flagged for review" in m]
+    assert len(review) == 1
+    assert "Maybe" in review[0]
+    assert "policy could not decide" in review[0]
+    # surfaced in the run summary, not counted as a non-fit
+    assert "Needs review (uncertain): 1" in telegram.messages[-1]
+    # marked seen (notified once) and recorded as an uncertain verdict
+    assert "https://x/maybe" in saved[-1]
+    assert any(m.startswith("eval:verdict:") and m.endswith(":uncertain") for m in saved[-1])
+
+    # a second run does NOT re-surface it (marked seen)
+    run.run_daily(make_config())
+    assert len([m for m in telegram.messages if "flagged for review" in m]) == 1
