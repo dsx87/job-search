@@ -163,6 +163,7 @@ def test_prepare_fit_requires_verified_pdf(monkeypatch, fake_llm):
 
 
 def test_prepare_fit_payload_contains_only_delivery_fields(monkeypatch, fake_llm):
+    monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
     client = fake_llm([CLEAN_CV])
 
@@ -179,6 +180,7 @@ def test_prepare_fit_payload_contains_only_delivery_fields(monkeypatch, fake_llm
 
 
 def test_prepare_retry_fit_builds_verified_pdf_without_evaluation_message(monkeypatch, fake_llm):
+    monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
     client = fake_llm([CLEAN_CV])
 
@@ -233,6 +235,7 @@ def test_process_job_not_fit(fake_llm):
 
 
 def test_process_job_fit_sends(monkeypatch, fake_llm):
+    monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
     gemini = fake_llm([_FIT_FACTS, CLEAN_CV])
     tg = FakeTelegram()
@@ -243,6 +246,7 @@ def test_process_job_fit_sends(monkeypatch, fake_llm):
 
 
 def test_process_job_raises_for_incomplete_delivery(monkeypatch, fake_llm):
+    monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
     gemini = fake_llm([_FIT_FACTS, CLEAN_CV])
     tg = FakeTelegram(raise_on_document=True)
@@ -255,6 +259,7 @@ def test_process_job_raises_for_incomplete_delivery(monkeypatch, fake_llm):
 
 
 def test_tailor_single_job(monkeypatch, fake_llm):
+    monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
     monkeypatch.setattr(stages, "load_tailoring_instructions", lambda: "instr")
     monkeypatch.setattr(stages, "load_base_tex", lambda: "base")

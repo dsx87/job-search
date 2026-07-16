@@ -5,10 +5,14 @@ import urllib.error
 import pytest
 
 # --- modules under test (repoint on migration) ---
+from job_search.config import load_base_tex
+from job_search.latex.tailor_render import extract_job_bullets
 from job_search.llm.clients import GeminiClient, LLMClient, QwenClient
+from job_search.llm.cv_edits import CV_EDIT_SCHEMA, select_cv_bullets
 from job_search.llm.eval import evaluate_job
 from job_search.llm.facts import FACT_SCHEMA, _normalize_facts, extract_facts
 from job_search.llm.tailor import CVValidationError, tailor_resume
+from job_search.profile import EXPECTED_JOB_ORDER, validate_tailored_cv
 
 
 def _http_error(code):
@@ -246,52 +250,6 @@ def test_no_qwen_reraises_on_disable():
         c.generate("p")
 
 
-def test_tailor_resume_returns_clean_first_pass(fake_llm):
-    cv = ("\\documentclass[9.5pt]{article}\\begin{document}"
-          "\\jobheader{Check Point}\\jobheader{Applitools}"
-          "\\jobheader{Shutterfly}\\jobheader{CNOGA}"
-          "\\end{document}")
-    client = fake_llm([cv])
-    out = tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme"})
-    assert out == cv
-    assert len(client.prompts) == 1
-
-
-def test_tailor_resume_regenerates_on_violation(fake_llm):
-    bad = ("\\documentclass{x}\\begin{document}"
-           "\\jobheader{Applitools}\\jobheader{Check Point}"
-           "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}")
-    good = ("\\documentclass{x}\\begin{document}"
-            "\\jobheader{Check Point}\\jobheader{Applitools}"
-            "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}")
-    client = fake_llm([bad, good])
-    out = tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme"})
-    assert out == good
-    assert len(client.prompts) == 2
-    assert "CORRECTION REQUIRED" in client.prompts[1]
-
-
-def test_tailor_resume_raises_when_violations_persist(fake_llm):
-    bad_first = (
-        "\\documentclass{x}\\begin{document}"
-        "\\jobheader{Applitools}\\jobheader{Check Point}"
-        "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}"
-    )
-    bad_second = (
-        "\\documentclass{x}\\begin{document}"
-        "\\jobheader{Check Point}\\jobheader{Applitools}"
-        "\\jobheader{Shutterfly}\\end{document}"
-    )
-    client = fake_llm([bad_first, bad_second])
-
-    with pytest.raises(CVValidationError) as raised:
-        tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme"})
-
-    assert len(client.prompts) == 2
-    assert isinstance(raised.value.violations, tuple)
-    assert any("missing job" in violation for violation in raised.value.violations)
-
-
 # --- audit order 5: eval/tailor prompts use section_aware_excerpt (Finding 11) ---
 def test_extract_facts_prompt_surfaces_late_restriction():
     long_desc = (
@@ -309,23 +267,6 @@ def test_extract_facts_prompt_surfaces_late_restriction():
     assert "US residents only" in client.prompts[0]
 
 
-def test_tailor_resume_prompt_surfaces_late_restriction(fake_llm):
-    long_desc = (
-        "Overview of the role. "
-        + ("iOS Swift work. " * 550)
-        + " Eligibility: US residents only, no visa sponsorship."
-    )
-    # the restriction sits beyond the naive 7000-char prefix cut
-    assert len(long_desc) > 7000
-    assert "US residents only" not in long_desc[:7000]
-
-    cv = ("\\documentclass{x}\\begin{document}"
-          "\\jobheader{Check Point}\\jobheader{Applitools}"
-          "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}")
-    client = fake_llm([cv])
-    tailor_resume(client, "INSTRUCTIONS", "BASE", {"title": "iOS", "company": "Acme", "description": long_desc})
-
-    assert "US residents only" in client.prompts[0]
 
 
 # =====================================================================
@@ -599,3 +540,106 @@ def test_evaluate_job_nonfit_case_end_to_end():
     assert result["fit"] is False
     assert result["verdict"] == "nonfit"
     assert result["facts"]["industry_crypto_web3"] == "yes"
+
+
+# =====================================================================
+# audit order 7 — structured CV edits (select_cv_bullets) + tailor rewire
+# =====================================================================
+
+
+def test_select_cv_bullets_request_contract_and_selection():
+    client = _RecordingClient(['{"jobs":[{"company":"Check Point","keep_bullets":[0,1]}]}'])
+
+    selection = select_cv_bullets(
+        client,
+        load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "We build iOS apps."},
+    )
+
+    # the CV-edit schema is threaded through to the model
+    assert client.kwargs[0]["response_schema"] == CV_EDIT_SCHEMA
+    # the prompt enumerates the company and at least one of its bullets
+    assert "Check Point" in client.prompts[0]
+    assert "Trusted Network Detection" in client.prompts[0]
+    # the parsed selection maps the company to its kept bullet indices
+    assert selection["Check Point"] == [0, 1]
+
+
+def test_select_cv_bullets_non_json_returns_empty_selection():
+    client = _RecordingClient(["not json"])
+
+    selection = select_cv_bullets(
+        client,
+        load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "desc"},
+    )
+
+    assert selection == {}
+
+
+def test_select_cv_bullets_prompt_surfaces_late_restriction():
+    long_desc = (
+        "Overview of the role. "
+        + ("iOS Swift work. " * 550)
+        + " Eligibility: US residents only, no visa sponsorship."
+    )
+    # the restriction sits beyond the naive 7000-char prefix cut
+    assert len(long_desc) > 7000
+    assert "US residents only" not in long_desc[:7000]
+
+    client = _RecordingClient(['{"jobs":[{"company":"Check Point","keep_bullets":[0]}]}'])
+    select_cv_bullets(
+        client,
+        load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": long_desc},
+    )
+
+    assert "US residents only" in client.prompts[0]
+
+
+def test_tailor_resume_renders_selected_bullets():
+    client = _RecordingClient(['{"jobs":[{"company":"Check Point","keep_bullets":[0]}]}'])
+
+    out = tailor_resume(
+        client,
+        "instr",
+        load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "d"},
+    )
+
+    assert validate_tailored_cv(out) == []
+    for company in EXPECTED_JOB_ORDER:
+        assert company in out
+    rendered = {job["company"]: job for job in extract_job_bullets(out)}
+    assert len(rendered["Check Point"]["bullets"]) == 1
+    assert "((PHONE))" in out
+
+
+def test_tailor_resume_falls_back_on_bad_selection():
+    client = _RecordingClient(["garbage"])
+
+    out = tailor_resume(
+        client,
+        "instr",
+        load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "d"},
+    )
+
+    assert validate_tailored_cv(out) == []
+    jobs = extract_job_bullets(out)
+    assert [job["company"] for job in jobs] == EXPECTED_JOB_ORDER
+    assert [len(job["bullets"]) for job in jobs] == [6, 3, 3, 4]
+
+
+def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
+    # Qwen fallback is schema-unconstrained: a scalar where a list is expected
+    # must degrade to an empty selection, never raise (renderer then keeps all).
+    from job_search.llm.cv_edits import _parse_selection
+
+    assert _parse_selection('{"jobs": 5}') == {}
+    assert _parse_selection('{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}') == {
+        "Check Point": []
+    }
+    client = _RecordingClient(['{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}'])
+    out = tailor_resume(client, "instr", load_base_tex(), {"title": "iOS", "company": "Acme", "description": "d"})
+    assert validate_tailored_cv(out) == []
