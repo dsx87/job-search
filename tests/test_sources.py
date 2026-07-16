@@ -516,3 +516,15 @@ def test_linkedin_guest_skips_description_for_seen_job(monkeypatch):
         "We are hiring an iOS engineer. Swift, UIKit, fully remote."
     )
     assert any("jobPosting/222" in u for u in calls)
+
+
+def test_linkedin_guest_recognizes_seen_fallback_alias(monkeypatch):
+    calls = []
+    seen = {"ios engineer & developer|acme corp|berlin, germany"}
+    _lg_patch(monkeypatch, calls, seen)
+
+    jobs = linkedin_guest.LinkedInGuestSource().fetch(verbose=False)
+
+    by_url = {job.url: job for job in jobs}
+    assert by_url["https://www.linkedin.com/jobs/view/111"].description == ""
+    assert not any("jobPosting/111" in url for url in calls)

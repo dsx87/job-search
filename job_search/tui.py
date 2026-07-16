@@ -126,7 +126,7 @@ class JobTUI:
     def _toggle_seen(self):
         if 0 <= self.cursor < len(self.jobs):
             job = self.jobs[self.cursor]
-            self.store.toggle_seen(job["url"])
+            self.store.toggle_seen(job)
             self._reload_jobs()
             self.needs_redraw = True
 

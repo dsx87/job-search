@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass, field
 
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
+from ..identity import job_identity_keys, normalize_url, title_company_key
 from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
 from ..models import coerce_job
@@ -22,11 +23,9 @@ from ..state.seen_jobs import (
     delivery_retry_state,
     load_seen_jobs,
     mark_delivery_notified,
-    normalize_url,
     pending_block_alerts,
     record_delivery_failure,
     save_seen_jobs,
-    title_company_key,
 )
 from .stages import (
     _format_deferred_notification,
@@ -200,13 +199,11 @@ def run_seed(cfg) -> None:
     seen = seen_raw if seen_raw is not None else set()
     added = 0
     for j in raw_jobs:
-        key = normalize_url(j.url)
-        tc_key = title_company_key(j.title, j.company, j.location)
-        if key not in seen:
-            seen.add(key)
+        keys = job_identity_keys(j)
+        url_key = normalize_url(j.url)
+        if url_key and url_key not in seen:
             added += 1
-        if tc_key not in seen:
-            seen.add(tc_key)
+        seen.update(keys)
     save_seen_jobs(seen)
     print(f"Seed complete — {len(raw_jobs)} job(s) marked seen ({added} new URL entries added).")
 
@@ -216,7 +213,7 @@ def run_list(cfg) -> None:
     raw_jobs = fetch_jobs(source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True)
     seen_raw = load_seen_jobs()
     seen = seen_raw if seen_raw is not None else set()
-    new_jobs = [j for j in raw_jobs if normalize_url(j.url) not in seen and title_company_key(j.title, j.company, j.location) not in seen]
+    new_jobs = [j for j in raw_jobs if seen.isdisjoint(job_identity_keys(j))]
     print(f"{len(new_jobs)} new job(s):\n")
     for j in new_jobs:
         date_str = j.date_posted.strftime("%Y-%m-%d") if j.date_posted else "n/a"
@@ -297,17 +294,17 @@ def run_daily(cfg, test: bool = False) -> None:
         newly_deferred = []
         candidate_count = 0
         for j in raw_jobs:
+            keys = job_identity_keys(j)
             key = normalize_url(j.url)
             tc_key = title_company_key(j.title, j.company, j.location)
-            if key in seen or tc_key in seen:
+            if not seen.isdisjoint(keys):
                 continue
             if first_run:
                 # On first run, silently mark jobs older than 7 days as seen without evaluating.
                 dp = j.date_posted
                 posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
                 if posted is not None and posted < cutoff:
-                    seen.add(key)
-                    seen.add(tc_key)
+                    seen.update(keys)
                     continue
             d = coerce_job(j)
             retry_state = delivery_retry_state(seen, **d)
@@ -382,8 +379,7 @@ def run_daily(cfg, test: bool = False) -> None:
                         # Not a fit: mark seen so it won't be reprocessed.
                         stats.non_fit += 1
                         print(f"    Skip '{job.get('title')}' — {evaluation.get('reason', '')}")
-                        seen.add(key)
-                        seen.add(tc_key)
+                        seen.update(job_identity_keys(job))
         if stats.deferred:
             print(
                 f"Deferred {stats.deferred} job(s) with insufficient description text.",
@@ -489,8 +485,7 @@ def run_daily(cfg, test: bool = False) -> None:
                 mark_delivery_notified(seen, **job)
                 save_seen_jobs(seen)
             if outcome.complete:
-                seen.add(key)
-                seen.add(tc_key)
+                seen.update(job_identity_keys(job))
                 save_seen_jobs(seen)
             else:
                 stats.delivery_failed += 1

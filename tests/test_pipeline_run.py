@@ -104,6 +104,17 @@ def test_deferred_markers_ignore_semantically_empty_job_identity():
     assert run._deferred_markers("", tc_key) == set()
 
 
+def test_run_seed_does_not_persist_empty_identity_keys(monkeypatch):
+    saved = []
+    monkeypatch.setattr(run, "fetch_jobs", lambda **_kwargs: [Job(), Job(title="iOS", company="Acme")])
+    monkeypatch.setattr(run, "load_seen_jobs", lambda: set())
+    monkeypatch.setattr(run, "save_seen_jobs", lambda seen: saved.append(set(seen)))
+
+    run.run_seed(make_config())
+
+    assert saved == [{"ios|acme"}]
+
+
 def test_all_deferred_stays_unseen_and_summary_reports_zero_matches(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, saved = install_daily_fakes(monkeypatch, [job])

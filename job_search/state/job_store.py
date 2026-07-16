@@ -6,6 +6,7 @@ never committed. This is independent of the pipeline's seen_jobs.json dedup set.
 import json
 import os
 
+from ..identity import canonical_job_key, job_identity_keys, normalize_url
 from ..models import coerce_job
 
 STATE_PATH = "job_state.json"
@@ -54,24 +55,43 @@ class JobStore:
     def merge(self, new_jobs):
         """Merge new jobs into the store. New jobs are unseen by default.
         Existing jobs keep their seen status. Missing jobs are removed."""
-        new_urls = set()
-        for job in new_jobs:
-            url = job.url
-            if not url:
+        new_keys = set()
+        for value in new_jobs:
+            job = coerce_job(value)
+            key = canonical_job_key(job)
+            if key is None:
                 continue
-            new_urls.add(url)
-            if url not in self.jobs:
-                self.jobs[url] = job_to_store_dict(job)
+            new_keys.add(key)
+            identities = set(job_identity_keys(job))
+            existing_key = next(
+                (
+                    stored_key
+                    for stored_key, stored_job in self.jobs.items()
+                    if not identities.isdisjoint(job_identity_keys(stored_job))
+                ),
+                None,
+            )
+            if existing_key is None:
+                self.jobs[key] = job_to_store_dict(job)
+            elif existing_key != key:
+                self.jobs[key] = self.jobs.pop(existing_key)
 
         # Remove jobs that are no longer present
-        for url in list(self.jobs.keys()):
-            if url not in new_urls:
-                del self.jobs[url]
+        for key in list(self.jobs.keys()):
+            if key not in new_keys:
+                del self.jobs[key]
 
         self.save()
 
-    def toggle_seen(self, url):
-        job = self.jobs.get(url)
+    def toggle_seen(self, identity):
+        key = identity if isinstance(identity, str) and identity in self.jobs else None
+        if key is None and isinstance(identity, str):
+            normalized = normalize_url(identity)
+            if normalized in self.jobs:
+                key = normalized
+        if key is None and not isinstance(identity, str):
+            key = canonical_job_key(identity)
+        job = self.jobs.get(key)
         if job:
             job["seen"] = not job.get("seen", False)
             self.save()

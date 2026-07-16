@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import SEEN_JOBS_FILE
+from ..identity import job_identity_keys, normalize_url, title_company_key
 
 
 _DELIVERY_PREFIX = "delivery:"
@@ -29,18 +30,6 @@ class DeliveryRetryState:
     blocked: bool = False
 
 
-def normalize_url(url: str) -> str:
-    return url.rstrip("/").lower()
-
-
-def title_company_key(title: str, company: str, location: str = "") -> str:
-    key = "{}|{}".format(title.lower().strip(), company.lower().strip())
-    norm_location = " ".join(location.lower().split())
-    if norm_location:
-        key = "{}|{}".format(key, norm_location)
-    return key
-
-
 def _identity_token(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -53,13 +42,12 @@ def delivery_identity_tokens(
     **_ignored,
 ):
     """Return stable, union-safe identities for a posting's URL and job key."""
-    values = []
-    normalized = normalize_url(str(url or "").strip())
-    if normalized:
-        values.append(normalized)
-    job_key = title_company_key(str(title or ""), str(company or ""), str(location or ""))
-    if job_key != "|" and job_key not in values:
-        values.append(job_key)
+    values = job_identity_keys({
+        "url": url,
+        "title": title,
+        "company": company,
+        "location": location,
+    })
     return tuple(_identity_token(value) for value in values)
 
 

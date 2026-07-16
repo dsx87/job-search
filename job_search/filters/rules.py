@@ -2,9 +2,10 @@
 import datetime as dt
 import re
 
+from ..identity import job_identity_keys
 from ..location.classify import classify_region, is_eu_member_job, is_israel_job
 from ..models import Region
-from ..text import collapse_ws, strip_html
+from ..text import strip_html
 from .keywords import SKILL_KEYWORDS, match_keywords
 
 RELOCATION_KEYWORDS = [
@@ -273,15 +274,10 @@ def dedup(jobs):
     seen = set()
     result = []
     for job in jobs:
-        key = job.url.rstrip("/").lower()
-        alt_key = "{}|{}".format(job.title.lower().strip(), job.company.lower().strip())
-        location = collapse_ws(job.location).lower()
-        if location:
-            alt_key = "{}|{}".format(alt_key, location)
-        if key in seen or alt_key in seen:
+        keys = job_identity_keys(job)
+        if keys and not seen.isdisjoint(keys):
             continue
-        seen.add(key)
-        seen.add(alt_key)
+        seen.update(keys)
         result.append(job)
     return result
 

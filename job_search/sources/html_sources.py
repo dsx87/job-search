@@ -6,6 +6,7 @@ import re
 from ..dates import parse_epoch_date
 from ..filters.rules import dedup
 from ..http import http_request, verbose_source_error
+from ..identity import job_identity_keys
 from ..location.db import COUNTRY_NAMES
 from ..models import Job
 from .base import BaseSource, register
@@ -49,10 +50,10 @@ class ArcSource(BaseSource):
                 continue
 
             for job in self.parse_html(text):
-                key = job.url or "{}|{}".format(job.title, job.company)
-                if key in seen:
+                keys = job_identity_keys(job)
+                if keys and not seen.isdisjoint(keys):
                     continue
-                seen.add(key)
+                seen.update(keys)
                 jobs.append(job)
 
         if verbose:

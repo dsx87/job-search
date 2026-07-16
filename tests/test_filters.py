@@ -167,6 +167,18 @@ def test_dedup_url_and_title_company_location():
     assert [j.url for j in out] == ["https://x.com/a/", "https://x.com/1"]
 
 
+def test_dedup_keeps_unrelated_url_less_jobs_distinct():
+    jobs = [
+        Job(title="iOS Engineer", company="Acme"),
+        Job(title="macOS Engineer", company="Beta"),
+        Job(title=" iOS Engineer ", company="ACME"),
+        Job(),
+        Job(),
+    ]
+
+    assert dedup(jobs) == [jobs[0], jobs[1], jobs[3], jobs[4]]
+
+
 def test_filter_by_age():
     today = dt.date.today()
     jobs = [

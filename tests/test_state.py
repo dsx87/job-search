@@ -196,6 +196,20 @@ def test_jobstore_persists(tmp_path):
     assert "u1" in reopened.jobs
 
 
+def test_jobstore_uses_canonical_keys_for_url_less_and_equivalent_jobs(tmp_path):
+    store = JobStore(path=str(tmp_path / "store.json"))
+    first = Job(title="iOS", company="Acme")
+    second = Job(title="macOS", company="Beta")
+    store.merge([first, second])
+
+    assert set(store.jobs) == {"ios|acme", "macos|beta"}
+    assert store.toggle_seen(first) is True
+
+    store.merge([Job(title=" IOS ", company="ACME"), second])
+
+    assert store.jobs["ios|acme"]["seen"] is True
+
+
 # ── seen_merge: the workflow's set-union merge (extracted from inline YAML) ────
 
 class _FakeProc:
