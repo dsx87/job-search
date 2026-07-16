@@ -254,3 +254,74 @@ def test_shrink_to_one_page_uses_verified_compile_result(monkeypatch):
     assert pdf == b"ONE"
     assert final_tex != source
     assert pages == 1
+
+
+# =====================================================================
+# audit order 8 — XeLaTeX worker limit (module-level semaphore)
+# =====================================================================
+
+
+class _RecordingSemaphore:
+    """Context-manager stand-in for compile._XELATEX_SEMAPHORE.
+
+    Records enters/exits and the current hold depth so a test can prove
+    _compile_latex holds it (exactly once) around BOTH xelatex passes.
+    Deterministic: no real threads, blocking, or sleeps involved.
+    """
+
+    def __init__(self):
+        self.enters = 0
+        self.exits = 0
+        self.depth = 0
+        self.max_depth = 0
+
+    def __enter__(self):
+        self.enters += 1
+        self.depth += 1
+        self.max_depth = max(self.max_depth, self.depth)
+        return self
+
+    def __exit__(self, *_exc):
+        self.exits += 1
+        self.depth -= 1
+        return False
+
+
+def test_compile_latex_holds_xelatex_semaphore_around_both_passes(monkeypatch):
+    sem = _RecordingSemaphore()
+    # raising=True (default): fails until compile.py grows _XELATEX_SEMAPHORE.
+    monkeypatch.setattr(compile_mod, "_XELATEX_SEMAPHORE", sem)
+
+    depth_at_each_run = []
+
+    def run(cmd, capture_output, timeout):
+        # both xelatex passes must observe the semaphore held (depth == 1)
+        depth_at_each_run.append(sem.depth)
+        tmpdir = Path(cmd[cmd.index("-output-directory") + 1])
+        (tmpdir / "cv.pdf").write_bytes(b"PDF")
+        (tmpdir / "cv.log").write_text(
+            "Output written on cv.pdf (1 page, 3 bytes).", encoding="utf-8"
+        )
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(compile_mod.subprocess, "run", run)
+
+    result = _compile_latex(
+        "\\documentclass{x}\\begin{document}x\\end{document}", cv_phone=""
+    )
+
+    assert result.ok is True
+    # entered exactly once, wrapping BOTH passes, and released afterward
+    assert sem.enters == 1
+    assert sem.exits == 1
+    assert depth_at_each_run == [1, 1]
+    assert sem.max_depth == 1
+    assert sem.depth == 0
+
+
+def test_xelatex_semaphore_exists_and_is_a_real_semaphore():
+    import threading
+
+    sem = compile_mod._XELATEX_SEMAPHORE
+    # a real threading.Semaphore at module scope bounds concurrent xelatex runs
+    assert isinstance(sem, threading.Semaphore)

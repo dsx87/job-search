@@ -119,3 +119,22 @@ def test_loaders_read_repo_files():
     instr = config.load_tailoring_instructions()
     assert instr  # STEP 3 slice is non-empty
     assert "## BASE LaTeX TEMPLATE" not in instr  # sliced out
+
+
+# ── audit order 8 — XeLaTeX worker limit constant ─────────────────────────────
+def test_xelatex_max_workers_default():
+    assert config.XELATEX_MAX_WORKERS == 2
+
+
+def test_xelatex_max_workers_env_override(monkeypatch):
+    """The constant is read from the XELATEX_MAX_WORKERS env var at import time."""
+    import importlib
+
+    monkeypatch.setenv("XELATEX_MAX_WORKERS", "4")
+    try:
+        reloaded = importlib.reload(config)
+        assert reloaded.XELATEX_MAX_WORKERS == 4
+    finally:
+        # restore the module to its default state for any later tests
+        monkeypatch.delenv("XELATEX_MAX_WORKERS", raising=False)
+        importlib.reload(config)

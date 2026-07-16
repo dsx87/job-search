@@ -26,12 +26,14 @@ def _row_is_remote(row):
     return bool(value)
 
 
+# Two broad queries replace the previous five near-duplicates (all "iOS/Apple +
+# relocation/visa"). Indeed/Google full-text search already matches Swift/SwiftUI/
+# Objective-C/macOS within these, so the extra permutations mostly re-fetched the
+# same postings — cutting per-run JobSpy calls from 5×12×2 to 2×12×2 (audit
+# Finding 12).
 SEARCH_QUERIES = [
-    "iOS developer relocation",
-    "macOS engineer relocation",
-    "SwiftUI iOS engineer visa sponsorship",
-    "Apple platform engineer relocation",
-    "Objective-C iOS developer visa sponsorship",
+    "iOS developer relocation visa sponsorship",
+    "macOS Swift engineer relocation",
 ]
 
 JOBSPY_SITES = ["indeed", "google"]

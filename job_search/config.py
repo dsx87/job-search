@@ -47,6 +47,17 @@ GEMINI_CIRCUIT_BREAK_STATUS = {429, 503}
 EVAL_WORKERS = 12
 TAILOR_WORKERS = 8
 
+# XeLaTeX is CPU/IO-heavy; cap concurrent compilations independently of the
+# tailor pool so a large TAILOR_WORKERS can't spawn many parallel xelatex runs
+# and starve a small runner. Read at import so compile.py's module-level
+# semaphore honors it; a malformed/non-positive value falls back to the default.
+try:
+    XELATEX_MAX_WORKERS = int(os.environ.get("XELATEX_MAX_WORKERS", "2"))
+except ValueError:
+    XELATEX_MAX_WORKERS = 2
+if XELATEX_MAX_WORKERS < 1:
+    XELATEX_MAX_WORKERS = 2
+
 # Minimum job-description length before we trust it for evaluation or tailoring.
 MIN_JOB_TEXT_LEN = 200
 

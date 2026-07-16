@@ -643,3 +643,134 @@ def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
     client = _RecordingClient(['{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}'])
     out = tailor_resume(client, "instr", load_base_tex(), {"title": "iOS", "company": "Acme", "description": "d"})
     assert validate_tailored_cv(out) == []
+
+
+# =====================================================================
+# audit order 8 — token telemetry (client last_usage + LLMClient totals)
+# =====================================================================
+
+
+def test_gemini_records_last_usage_from_usage_metadata(monkeypatch):
+    def urlopen(_request, timeout):
+        return _Response({
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 20,
+                "thoughtsTokenCount": 7,
+                "cachedContentTokenCount": 3,
+            },
+        })
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    client = GeminiClient("key", model="gemini-3.5-flash")
+
+    # zero-initialized in __init__
+    assert client.last_usage == {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+    assert client.generate("p") == "ok"
+    assert client.last_usage == {"input": 100, "output": 20, "thinking": 7, "cached": 3}
+
+
+def test_gemini_last_usage_zero_without_usage_metadata(monkeypatch):
+    def urlopen(_request, timeout):
+        return _Response({"candidates": [{"content": {"parts": [{"text": "ok"}]}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    client = GeminiClient("key", model="gemini-3.5-flash")
+
+    client.generate("p")
+    assert client.last_usage == {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+
+
+def test_qwen_records_last_usage_from_usage(monkeypatch):
+    def urlopen(_request, timeout):
+        return _Response({
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 4},
+            },
+        })
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    client = QwenClient("key", model="qwen-custom")
+
+    assert client.last_usage == {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+    assert client.generate("p") == "ok"
+    # thinking is always 0 for Qwen; cached comes from prompt_tokens_details.
+    assert client.last_usage == {"input": 10, "output": 5, "thinking": 0, "cached": 4}
+
+
+def test_qwen_last_usage_without_usage_or_cached_details(monkeypatch):
+    responses = iter([
+        {"choices": [{"message": {"content": "ok"}}]},  # no usage block at all
+        {  # usage present, but no prompt_tokens_details → cached defaults to 0
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2},
+        },
+    ])
+
+    def urlopen(_request, timeout):
+        return _Response(next(responses))
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    client = QwenClient("key")
+
+    client.generate("p")
+    assert client.last_usage == {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+
+    client.generate("p")
+    assert client.last_usage == {"input": 8, "output": 2, "thinking": 0, "cached": 0}
+
+
+def test_llm_client_token_usage_starts_zero_and_tolerates_missing_last_usage():
+    # _FakeModel has no last_usage attribute — accumulation must skip it, not crash.
+    c = _client(["G"], ["Q"])
+    assert c.token_usage() == {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+    assert c.generate("p") == "G"
+    assert c.token_usage() == {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+
+
+def test_llm_client_accumulates_gemini_last_usage_across_calls():
+    c = _client(["G1", "G2"], [])
+    c.gemini.last_usage = {"input": 100, "output": 20, "thinking": 5, "cached": 3}
+    assert c.generate("p1") == "G1"
+    assert c.token_usage() == {"input": 100, "output": 20, "thinking": 5, "cached": 3}
+
+    # a second successful call sums into the running totals
+    c.gemini.last_usage = {"input": 10, "output": 2, "thinking": 1, "cached": 0}
+    assert c.generate("p2") == "G2"
+    assert c.token_usage() == {"input": 110, "output": 22, "thinking": 6, "cached": 3}
+
+
+def test_llm_client_accumulates_served_qwen_usage_on_fallback():
+    c = _client([_http_error(429)], ["Q"])
+    c.qwen.last_usage = {"input": 7, "output": 3, "thinking": 0, "cached": 2}
+    assert c.generate("p") == "Q"
+    # the served client (Qwen) is the one whose usage is accumulated
+    assert c.token_usage() == {"input": 7, "output": 3, "thinking": 0, "cached": 2}
+
+
+def test_token_usage_returns_a_copy():
+    c = _client(["G"], [])
+    c.gemini.last_usage = {"input": 1, "output": 2, "thinking": 3, "cached": 4}
+    c.generate("p")
+
+    snapshot = c.token_usage()
+    snapshot["input"] = 999
+    # mutating the returned dict must not corrupt the client's running totals
+    assert c.token_usage() == {"input": 1, "output": 2, "thinking": 3, "cached": 4}
+
+
+def test_usage_summary_reports_token_totals_without_dumping_dict():
+    c = _client(["G"], [])
+    c.gemini.last_usage = {"input": 12345, "output": 6789, "thinking": 321, "cached": 44}
+    c.generate("p")
+
+    summary = c.usage_summary()
+    assert "Tokens" in summary
+    for number in ("12345", "6789", "321", "44"):
+        assert number in summary
+    # reports a human-readable line, not the raw dict repr / internal keys
+    assert "{'input'" not in summary

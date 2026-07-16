@@ -10,7 +10,15 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass
+
+from ..config import XELATEX_MAX_WORKERS
+
+# Bound concurrent xelatex processes across the whole process (the tailor thread
+# pool may call _compile_latex from many workers at once). Independent of
+# TAILOR_WORKERS so a large pool can't spawn many parallel compilations.
+_XELATEX_SEMAPHORE = threading.Semaphore(XELATEX_MAX_WORKERS)
 
 
 @dataclass(frozen=True)
@@ -118,10 +126,12 @@ def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
                 f.write(tex_source)
 
             cmd = ["xelatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
-            # Run twice so cross-references resolve.
+            # Run twice so cross-references resolve. Hold the shared xelatex
+            # semaphore across both passes to cap concurrent compilations.
             completed = []
-            for _ in range(2):
-                completed.append(subprocess.run(cmd, capture_output=True, timeout=120))
+            with _XELATEX_SEMAPHORE:
+                for _ in range(2):
+                    completed.append(subprocess.run(cmd, capture_output=True, timeout=120))
 
             pages = pdf_pages_from_log(log_path)
             error_excerpt = _compiler_error_excerpt(log_path, completed)

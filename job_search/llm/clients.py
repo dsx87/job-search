@@ -19,6 +19,36 @@ from ..config import (
     RETRYABLE_STATUS,
 )
 
+_ZERO_USAGE = {"input": 0, "output": 0, "thinking": 0, "cached": 0}
+
+
+def _int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _gemini_usage(result):
+    meta = result.get("usageMetadata") or {}
+    return {
+        "input": _int(meta.get("promptTokenCount")),
+        "output": _int(meta.get("candidatesTokenCount")),
+        "thinking": _int(meta.get("thoughtsTokenCount")),
+        "cached": _int(meta.get("cachedContentTokenCount")),
+    }
+
+
+def _qwen_usage(result):
+    usage = result.get("usage") or {}
+    details = usage.get("prompt_tokens_details") or {}
+    return {
+        "input": _int(usage.get("prompt_tokens")),
+        "output": _int(usage.get("completion_tokens")),
+        "thinking": 0,
+        "cached": _int(details.get("cached_tokens")),
+    }
+
 
 class GeminiClient:
     def __init__(
@@ -31,6 +61,7 @@ class GeminiClient:
         self.api_key = api_key
         self.model = model
         self.api_base = api_base.rstrip("/")
+        self.last_usage = dict(_ZERO_USAGE)
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
         generation_config = {}
@@ -65,6 +96,7 @@ class GeminiClient:
         )
         with urllib.request.urlopen(req, timeout=90) as resp:
             result = json.loads(resp.read())
+        self.last_usage = _gemini_usage(result)
         candidate = result["candidates"][0]
         finish_reason = candidate.get("finishReason", "UNKNOWN")
         parts = candidate.get("content", {}).get("parts")
@@ -94,6 +126,7 @@ class QwenClient:
         self.api_key = api_key
         self.model = model
         self.api_base = api_base.rstrip("/")
+        self.last_usage = dict(_ZERO_USAGE)
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
         payload = {
@@ -117,6 +150,7 @@ class QwenClient:
             try:
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     result = json.loads(resp.read())
+                self.last_usage = _qwen_usage(result)
                 choice = result["choices"][0]
                 content = choice.get("message", {}).get("content")
                 if not content:
@@ -168,6 +202,24 @@ class LLMClient:
         self._gemini_disabled_reason = ""
         self._gemini_calls = 0   # successful Gemini responses
         self._qwen_calls = 0     # requests served by Qwen
+        self._tokens = dict(_ZERO_USAGE)  # accumulated input/output/thinking/cached
+
+    def _accumulate(self, usage) -> None:
+        """Add one call's token usage to the running totals (call under lock).
+
+        Totals are best-effort: the per-client ``last_usage`` is shared across
+        worker threads, so under heavy concurrency a snapshot can occasionally be
+        attributed to the wrong call. The totals themselves never corrupt (the
+        add is lock-guarded); this only affects the end-of-run telemetry line.
+        """
+        if not usage:
+            return
+        for key in self._tokens:
+            self._tokens[key] += _int(usage.get(key))
+
+    def token_usage(self) -> dict:
+        with self._lock:
+            return dict(self._tokens)
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
         with self._lock:
@@ -179,6 +231,7 @@ class LLMClient:
             result = self.gemini.generate(prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema)
             with self._lock:
                 self._gemini_calls += 1
+                self._accumulate(getattr(self.gemini, "last_usage", None))
             return result
         except urllib.error.HTTPError as exc:
             if exc.code in GEMINI_CIRCUIT_BREAK_STATUS:
@@ -203,7 +256,10 @@ class LLMClient:
             )
         with self._lock:
             self._qwen_calls += 1
-        return self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema)
+        result = self.qwen.generate(prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema)
+        with self._lock:
+            self._accumulate(getattr(self.qwen, "last_usage", None))
+        return result
 
     def _disable_gemini(self, code: int) -> None:
         label = {
@@ -228,10 +284,15 @@ class LLMClient:
         with self._lock:
             gemini, qwen = self._gemini_calls, self._qwen_calls
             reason = self._gemini_disabled_reason
+            tokens = dict(self._tokens)
         line = (
             f"[LLM] Usage this run — Gemini ({self.gemini_model}): {gemini}, "
             f"Qwen ({self.qwen_model}): {qwen}."
         )
         if reason:
             line += f" Gemini was disabled mid-run ({reason}) — consider adjusting limits."
+        line += (
+            f" Tokens — input: {tokens['input']}, output: {tokens['output']}, "
+            f"thinking: {tokens['thinking']}, cached: {tokens['cached']}."
+        )
         return line
