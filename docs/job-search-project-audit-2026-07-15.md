@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 **Scope:** Read-only architecture, logic, search-quality, AI, cost, performance, state, TUI, workflow, and test review
-**Implementation status:** Remediation in progress; orders 1–3 and 4a–4b complete; 4c next
+**Implementation status:** Remediation in progress; orders 1–3 and 4a–4c complete; 4d next
 
 ## Remediation progress
 
@@ -13,8 +13,8 @@
 | 3 | Completed in this change | Configurable provider model/API-base plumbing and Gemini 3.5 Flash migration, including Gemini 3's recommended default temperature. Benchmark explicitly waived by user; offline request-contract coverage used. |
 | 4a | Completed in this change | Canonical `Job` contract used end to end; commit `ef8e276` |
 | 4b | Completed in this change | Canonical job identities shared across filtering, state, delivery, sources, and TUI; commits `b65f2d8`, `211bfa7` |
-| 4c | **Next** | Source-health results that distinguish empty success from source failure |
-| 4d | Pending | Structured state for content changes, reopening, verdicts, and delivery lifecycle |
+| 4c | Completed in this change | End-to-end source-health reporting, fatal-outage safeguards, and partial-refresh retention; commit `fb2554b` |
+| 4d | **Next** | Structured state for content changes, reopening, verdicts, and delivery lifecycle |
 | 5 | Pending | Description enrichment and duplicate merging before AI |
 | 6 | Pending | Structured fact extraction, deterministic policy, and selective verification |
 | 7 | Pending | Structured CV edits and deterministic rendering |
@@ -304,8 +304,8 @@ The package layout is good, but internal structure is not yet consistent:
 3. Make model selection genuinely configurable and migrate from Gemini 2.5 Flash.
 4a. Introduce one canonical job model and use it end to end.
 4b. Centralize canonical job identities across filtering, state, delivery, sources, and TUI.
-4c. Introduce source-health results that distinguish empty success from source failure.
-4d. Replace permanent string-only seen state with structured lifecycle state.
+4c. ~~Introduce source-health results that distinguish empty success from source failure.~~ Completed in `fb2554b`.
+4d. **Next:** Replace permanent string-only seen state with structured lifecycle state.
 5. Add description enrichment and duplicate merging before AI.
 6. Move evaluation to structured fact extraction plus deterministic policy and selective verification.
 7. Replace generated full LaTeX with structured CV edits and deterministic rendering.
@@ -314,7 +314,7 @@ The package layout is good, but internal structure is not yet consistent:
 ## Verification and limitations
 
 - Existing offline suite: **123 tests passed**.
-- Post-remediation offline suite: **312 tests passed**.
+- Post-remediation offline suite: **345 tests passed**.
 - Additional audit verification: **nine currently uncovered behaviors reproduced with in-memory assertions**.
 - The original exploration was read-only; remediation changes are tracked in the table above.
 - Real XeLaTeX integration was not run because `xelatex` was unavailable locally.
