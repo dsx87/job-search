@@ -305,6 +305,65 @@ def test_dedup_chains_third_duplicate_into_same_record():
     assert out[0].description == "third"
 
 
+def test_dedup_unions_two_prior_records_bridged_by_a_later_job():
+    # A posting carries up to two identity aliases (url and title|company|location).
+    # Records A and B share NO key, so they start distinct. C shares A's url and
+    # B's title|company key, bridging them -- all three must collapse into ONE
+    # record. (The pre-union code merged C into A but left B stranded.)
+    jobs = [
+        Job(url="https://x/1", title="iOS Engineer", company="Acme"),      # A
+        Job(url="https://x/2", title="Senior iOS", company="Acme"),        # B
+        Job(url="https://x/1", title="Senior iOS", company="Acme",         # C bridges A+B
+            description="fullest description across all three"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].description == "fullest description across all three"
+    # The bridged record's keys are all remapped, so a 4th duplicate arriving via
+    # B's url still folds into the same record instead of spawning a new one.
+    out2 = dedup(jobs + [Job(url="https://x/2", title="ignored", company="ignored")])
+    assert len(out2) == 1
+
+
+def test_dedup_registers_identity_alias_synthesized_by_a_merge():
+    # A carries a title but no company; B (same url) carries the company but no
+    # title. Merging them SYNTHESIZES a title|company alias that neither input
+    # had. A later duplicate C matching only that synthesized alias must still
+    # fold into the merged record instead of surviving as a separate job.
+    jobs = [
+        Job(url="https://x/1", title="iOS Engineer"),                 # A: {url, "ios engineer|"}
+        Job(url="https://x/1", company="Acme"),                       # B: {url, "|acme"}
+        Job(url="https://x/2", title="iOS Engineer", company="Acme",  # C: {url2, "ios engineer|acme"}
+            description="third"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].title == "iOS Engineer"
+    assert out[0].company == "Acme"
+    assert out[0].description == "third"
+
+
+def test_dedup_absorbs_group_a_synthesized_alias_collides_with():
+    # G is a distinct record whose title|company key is "ios engineer|acme".
+    # A (title only) and B (company only) share a url, so they merge into a record
+    # that SYNTHESIZES that very same title|company key. The synthesized alias
+    # therefore collides with G's existing key: all three must collapse into one
+    # record, not leave G stranded alongside the merged A+B.
+    jobs = [
+        Job(url="https://x/9", title="iOS Engineer", company="Acme", description="G"),  # G
+        Job(url="https://x/1", title="iOS Engineer"),                                   # A
+        Job(url="https://x/1", company="Acme", description="a much fuller posting"),    # B
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].title == "iOS Engineer"
+    assert out[0].company == "Acme"
+    assert out[0].description == "a much fuller posting"
+    # Order-independence: G arriving last must give the same single-record result.
+    reordered = dedup([jobs[1], jobs[2], jobs[0]])
+    assert len(reordered) == 1
+
+
 def test_dedup_keeps_all_empty_jobs():
     # An all-empty Job() has no identity keys and is never merged.
     jobs = [Job(), Job(), Job()]
