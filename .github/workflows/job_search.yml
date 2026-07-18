@@ -51,14 +51,20 @@ jobs:
       - name: Run pipeline
         env:
           PYTHONUNBUFFERED: "1"
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Generic scheme-based LLM providers. Primary key reuses the existing
+          # GEMINI_API_KEY secret; the optional fallback uses OPENAI_API_KEY.
+          LLM_PRIMARY_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_FALLBACK_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
-          QWEN_MODEL: ${{ vars.QWEN_MODEL }}
-          QWEN_API_BASE: ${{ vars.QWEN_API_BASE }}
+          # Optional provider overrides (defaults live in code — leave the repo
+          # variables unset to use them).
+          LLM_PRIMARY_SCHEME: ${{ vars.LLM_PRIMARY_SCHEME }}
+          LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+          LLM_PRIMARY_API_BASE: ${{ vars.LLM_PRIMARY_API_BASE }}
+          LLM_FALLBACK_SCHEME: ${{ vars.LLM_FALLBACK_SCHEME }}
+          LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
+          LLM_FALLBACK_API_BASE: ${{ vars.LLM_FALLBACK_API_BASE }}
           CV_PHONE: ${{ secrets.CV_PHONE }}
         run: python3 -u -m job_search.pipeline
 

@@ -12,8 +12,9 @@ instead of (or alongside) the GitHub Actions cron.
 
 ## Will it run on my Pi?
 
-The whole application is **pure Python standard library** — the LLM calls
-(Gemini/Qwen) and Telegram delivery are raw `urllib` HTTPS requests, and LaTeX is
+The whole application is **pure Python standard library** — every LLM call
+(each provider is a raw wire-protocol scheme) and Telegram delivery is a raw
+`urllib` HTTPS request, and LaTeX is
 a `subprocess` call to `xelatex`. There is **no `grpcio`, no `google-generativeai`
 SDK, no `requests`** — nothing to compile. So the full pipeline needs **zero pip
 packages**; only the optional sources do.
@@ -50,7 +51,7 @@ core bites is the `xelatex` compiles during tailoring.
 |---|---|---|
 | Fetch (16 concurrent sources, capped by `SCRAPE_BUDGET_SECONDS`) | Network | ~2–5 min (hard ceiling 10 min) |
 | Dedupe | trivial | seconds |
-| Filter — **1 Gemini call per _new_ job**, `EVAL_WORKERS` at a time | Gemini latency | ~1–4 min typical |
+| Filter — **1 LLM call per _new_ job**, `EVAL_WORKERS` at a time | LLM latency | ~1–4 min typical |
 | Tailor — per **match**: 1 long LLM call + `xelatex` ×2 per attempt (≤3 attempts, 120 s each) | xelatex on ARMv6 + LLM | **~1.5–2.5 min per match** |
 | Notify | Network | seconds |
 
@@ -96,22 +97,26 @@ secrets and enabling the timer — finish those two steps below.
    ```
    | Variable | Required | Purpose |
    |---|---|---|
-   | `GEMINI_API_KEY` | ✅ | LLM filtering & tailoring |
+   | `LLM_PRIMARY_API_KEY` | ✅ | primary provider key (also read as `GEMINI_API_KEY` for back-compat) |
    | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
    | `TELEGRAM_CHAT_ID` | ✅ | delivery |
-   | `QWEN_API_KEY` | optional | fallback model |
-   | `GEMINI_MODEL` | optional | Gemini model override (default `gemini-3.5-flash`) |
-   | `GEMINI_API_BASE` | optional | Gemini models API base override |
-   | `QWEN_MODEL` | optional | Qwen model override (default `qwen-plus`) |
-   | `QWEN_API_BASE` | optional | Qwen OpenAI-compatible API base override |
+   | `LLM_FALLBACK_API_KEY` | optional | fallback provider key (e.g. a prepaid OpenAI key) |
+   | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `gemini`) + model (default `gemini-2.5-flash`) |
+   | `LLM_PRIMARY_API_BASE` | optional | primary API base override |
+   | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-5.4-mini`) |
+   | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`) |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
    | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | comma lists forcing sources on/off; the Pi ships `linkedin-guest` on and the jobspy LinkedIn sources off |
    | `STATE_SYNC` | sync | `1` to sync `seen_jobs.json` with the `state` branch (see below); default `0` |
 
-   Leave provider overrides unset, empty, or whitespace-only to use the defaults.
-   API-base overrides may include a trailing slash; the client normalizes it.
+   A provider is a **scheme** (`gemini` \| `openai` \| `anthropic`) + model + key
+   (+ optional base) — switching providers is a config edit, no code change. The
+   `openai` scheme covers any OpenAI-compatible endpoint (Groq, xAI Grok,
+   DeepSeek, …) via its `*_API_BASE`. Leave provider overrides unset, empty, or
+   whitespace-only to use the defaults; API-base overrides may include a trailing
+   slash (the client normalizes it).
 
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
    ```bash

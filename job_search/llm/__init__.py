@@ -1,1 +1,1 @@
-"""LLM clients (Gemini primary, Qwen fallback) and the eval/tailor tasks."""
+"""Generic scheme-based LLM providers (primary + fallback) and the eval/tailor tasks."""

@@ -250,7 +250,7 @@ def _prepare_verified_pdf(client, instructions: str, base_tex: str, job: dict) -
     return pdf_bytes
 
 
-def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
+def prepare_fit(llm, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
     """
     Tailor + compile the CV for a job already judged a fit, and assemble the
     Telegram send-payload. Performs NO Telegram I/O — pure preparation, so it is
@@ -265,7 +265,7 @@ def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, e
     print(f"    Fit! Tailoring resume: {title} at {company}", flush=True)
 
     print(f"    Preparing verified PDF: {title} at {company}...", flush=True)
-    pdf_bytes = _prepare_verified_pdf(gemini, tailoring_instructions, base_tex, job)
+    pdf_bytes = _prepare_verified_pdf(llm, tailoring_instructions, base_tex, job)
     print(f"    Verified one-page PDF ready: {title} at {company}.", flush=True)
 
     return {
@@ -276,13 +276,13 @@ def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, e
     }
 
 
-def prepare_retry_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict) -> dict:
+def prepare_retry_fit(llm, tailoring_instructions: str, base_tex: str, job: dict) -> dict:
     """Prepare a verified CV for a known fit without creating another fit message."""
     job = coerce_job(job)
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"    Retrying verified PDF: {title} at {company}...", flush=True)
-    pdf_bytes = _prepare_verified_pdf(gemini, tailoring_instructions, base_tex, job)
+    pdf_bytes = _prepare_verified_pdf(llm, tailoring_instructions, base_tex, job)
     return {"title": title, "company": company, "pdf_bytes": pdf_bytes}
 
 
@@ -328,7 +328,7 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
     )
 
 
-def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:
+def process_job(llm, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:
     """
     Evaluate → tailor → compile → send a single job end-to-end.
     Returns True if a notification was sent (job was a fit).
@@ -343,13 +343,13 @@ def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: st
     print(f"  Evaluating: {title} at {company}", flush=True)
 
     # Let evaluation errors propagate — caller will not mark the job as seen.
-    evaluation = evaluate_job(gemini, criteria, job)
+    evaluation = evaluate_job(llm, criteria, job)
 
     if not evaluation.get("fit"):
         print(f"    Skip — {evaluation.get('reason', '')}")
         return False
 
-    payload = prepare_fit(gemini, tailoring_instructions, base_tex, job, evaluation)
+    payload = prepare_fit(llm, tailoring_instructions, base_tex, job, evaluation)
     outcome = send_fit(payload, telegram)
     if not outcome.complete:
         raise CVDeliveryError(outcome)

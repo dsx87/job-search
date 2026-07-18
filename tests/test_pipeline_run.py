@@ -42,12 +42,14 @@ class FakeTelegram:
 
 def make_config():
     return SimpleNamespace(
-        gemini_api_key="gemini",
-        qwen_api_key="qwen",
-        gemini_model="gemini-custom",
-        gemini_api_base="https://gemini.example/models",
-        qwen_model="qwen-custom",
-        qwen_api_base="https://qwen.example/v1",
+        llm_primary_scheme="gemini",
+        llm_primary_model="gemini-custom",
+        llm_primary_api_key="primary-key",
+        llm_primary_api_base="https://gemini.example/models",
+        llm_fallback_scheme="openai",
+        llm_fallback_model="gpt-custom",
+        llm_fallback_api_key="fallback-key",
+        llm_fallback_api_base="https://oai.example/v1",
         telegram_bot_token="token",
         telegram_chat_id="chat",
         eval_workers=2,
@@ -69,12 +71,15 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
         saved.append(set(state))
 
     monkeypatch.setattr(run, "TelegramClient", lambda *_args: telegram)
-    def make_llm(*args, **kwargs):
-        if llm_calls is not None:
-            llm_calls.append((args, kwargs))
-        return FakeLLM()
 
-    monkeypatch.setattr(run, "LLMClient", make_llm)
+    class FakeLLMClient:
+        @staticmethod
+        def from_config(cfg):
+            if llm_calls is not None:
+                llm_calls.append(cfg)
+            return FakeLLM()
+
+    monkeypatch.setattr(run, "LLMClient", FakeLLMClient)
     monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
     monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
     monkeypatch.setattr(run, "load_base_tex", lambda: "base")
@@ -123,16 +128,15 @@ def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):
 
 def test_run_daily_forwards_provider_configuration(monkeypatch):
     llm_calls = []
+    cfg = make_config()
     install_daily_fakes(monkeypatch, [], llm_calls=llm_calls)
 
-    run.run_daily(make_config())
+    run.run_daily(cfg)
 
-    assert llm_calls == [(('gemini', 'qwen'), {
-        "gemini_model": "gemini-custom",
-        "gemini_api_base": "https://gemini.example/models",
-        "qwen_model": "qwen-custom",
-        "qwen_api_base": "https://qwen.example/v1",
-    })]
+    # LLMClient.from_config is handed the whole config, unchanged.
+    assert llm_calls == [cfg]
+    assert llm_calls[0].llm_primary_model == "gemini-custom"
+    assert llm_calls[0].llm_fallback_api_base == "https://oai.example/v1"
 
 
 def test_deferred_markers_ignore_semantically_empty_job_identity():

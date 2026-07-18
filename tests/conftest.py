@@ -12,7 +12,7 @@ import pytest
 
 
 class FakeLLM:
-    """Minimal stand-in for LLMClient / GeminiClient with a .generate method.
+    """Minimal stand-in for LLMClient / a provider with a .generate method.
 
     Either return canned responses in order, or raise queued exceptions. Records
     every prompt it was given so tests can assert on prompt contents.

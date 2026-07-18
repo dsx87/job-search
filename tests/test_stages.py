@@ -226,9 +226,9 @@ _FIT_FACTS = '{"work_arrangement": "remote", "remote_geo_scope": "worldwide"}'
 
 
 def test_process_job_not_fit(fake_llm):
-    gemini = fake_llm([_NONFIT_FACTS])
+    llm = fake_llm([_NONFIT_FACTS])
     tg = FakeTelegram()
-    result = process_job(gemini, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
+    result = process_job(llm, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
     assert result is False
     assert tg.messages == []
     assert tg.documents == []
@@ -237,9 +237,9 @@ def test_process_job_not_fit(fake_llm):
 def test_process_job_fit_sends(monkeypatch, fake_llm):
     monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
-    gemini = fake_llm([_FIT_FACTS, CLEAN_CV])
+    llm = fake_llm([_FIT_FACTS, CLEAN_CV])
     tg = FakeTelegram()
-    result = process_job(gemini, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
+    result = process_job(llm, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
     assert result is True
     assert len(tg.messages) == 1
     assert tg.documents[0][0] == "igor_pivnyk_cv_acme.pdf"
@@ -248,11 +248,11 @@ def test_process_job_fit_sends(monkeypatch, fake_llm):
 def test_process_job_raises_for_incomplete_delivery(monkeypatch, fake_llm):
     monkeypatch.setattr(stages, "tailor_resume", lambda *_a: CLEAN_CV)
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
-    gemini = fake_llm([_FIT_FACTS, CLEAN_CV])
+    llm = fake_llm([_FIT_FACTS, CLEAN_CV])
     tg = FakeTelegram(raise_on_document=True)
 
     with pytest.raises(CVDeliveryError) as raised:
-        process_job(gemini, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
+        process_job(llm, "crit", "instr", "base", {"title": "iOS", "company": "Acme"}, tg)
 
     assert raised.value.outcome.notification_sent is True
     assert raised.value.outcome.cv_sent is False
@@ -263,9 +263,9 @@ def test_tailor_single_job(monkeypatch, fake_llm):
     monkeypatch.setattr(stages, "compile_with_fixes", lambda client, tex: (True, b"PDF", tex))
     monkeypatch.setattr(stages, "load_tailoring_instructions", lambda: "instr")
     monkeypatch.setattr(stages, "load_base_tex", lambda: "base")
-    gemini = fake_llm([CLEAN_CV])
+    llm = fake_llm([CLEAN_CV])
     tg = FakeTelegram()
-    tailor_single_job(gemini, {"title": "iOS Dev", "company": "Acme", "url": "u", "location": "Berlin"}, tg)
+    tailor_single_job(llm, {"title": "iOS Dev", "company": "Acme", "url": "u", "location": "Berlin"}, tg)
     assert len(tg.messages) == 1
     assert "iOS Dev" in tg.messages[0]
     assert tg.documents[0][0] == "igor_pivnyk_cv_acme.pdf"

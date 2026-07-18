@@ -200,8 +200,9 @@ def _stub_daily(monkeypatch, calls):
     monkeypatch.setattr(run_mod, "save_seen_jobs", lambda *a, **k: None)
 
     class FakeLLM:
-        def __init__(self, *a, **k):
-            pass
+        @classmethod
+        def from_config(cls, _cfg):
+            return cls()
 
         def usage_summary(self):
             return ""
@@ -218,7 +219,7 @@ def _stub_daily(monkeypatch, calls):
 
 
 def _daily_cfg(**overrides):
-    base = dict(gemini_api_key="g", telegram_bot_token="t", telegram_chat_id="c")
+    base = dict(llm_primary_api_key="g", telegram_bot_token="t", telegram_chat_id="c")
     base.update(overrides)
     return PipelineConfig(**base)
 

@@ -117,17 +117,27 @@ else
   umask 077
   cat > "$ENV_FILE" <<EOF
 # --- Required ---
-GEMINI_API_KEY=REPLACE_ME
+LLM_PRIMARY_API_KEY=REPLACE_ME        # primary provider key (Gemini by default)
 TELEGRAM_BOT_TOKEN=REPLACE_ME
 TELEGRAM_CHAT_ID=REPLACE_ME
-# --- Optional ---
-QWEN_API_KEY=
+# --- Optional fallback provider (served when the primary trips its breaker) ---
+LLM_FALLBACK_API_KEY=                  # e.g. a prepaid OpenAI key for gpt-5.4-mini
 CV_PHONE=
 # --- Optional provider overrides (blank/unset = application defaults) ---
-# GEMINI_MODEL=gemini-3.5-flash
-# GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta/models
-# QWEN_MODEL=qwen-plus
-# QWEN_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+# A provider = scheme (gemini | openai | anthropic) + model + key (+ optional base).
+# Switching providers is a config edit only — no code change.
+# Primary defaults:  scheme=gemini  model=gemini-2.5-flash
+# LLM_PRIMARY_SCHEME=gemini
+# LLM_PRIMARY_MODEL=gemini-2.5-flash
+# LLM_PRIMARY_API_BASE=
+# Fallback defaults: scheme=openai  model=gpt-5.4-mini
+# LLM_FALLBACK_SCHEME=openai
+# LLM_FALLBACK_MODEL=gpt-5.4-mini
+# LLM_FALLBACK_API_BASE=
+# Worked examples (openai scheme covers any OpenAI-compatible endpoint via api_base):
+#   Groq:      LLM_FALLBACK_SCHEME=openai     LLM_FALLBACK_API_BASE=https://api.groq.com/openai/v1
+#   xAI Grok:  LLM_FALLBACK_SCHEME=openai     LLM_FALLBACK_API_BASE=https://api.x.ai/v1     (e.g. grok-4.3)
+#   Anthropic: LLM_FALLBACK_SCHEME=anthropic  LLM_FALLBACK_MODEL=claude-haiku-4-5
 # --- Pi tuning (single core / 512 MB) ---
 EVAL_WORKERS=${EVAL_WORKERS}
 TAILOR_WORKERS=${TAILOR_WORKERS}

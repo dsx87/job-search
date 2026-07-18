@@ -13,8 +13,12 @@ from .stages import _send_error_notification, ensure_job_description, tailor_sin
 
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
-    if not all([cfg.gemini_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
-        print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
+    if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
+        print(
+            "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
+            "TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     company = (args.company or "").strip()
@@ -42,14 +46,7 @@ def run_tailor(args, cfg) -> None:
 
     telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     try:
-        client = LLMClient(
-            cfg.gemini_api_key,
-            cfg.qwen_api_key,
-            gemini_model=cfg.gemini_model,
-            gemini_api_base=cfg.gemini_api_base,
-            qwen_model=cfg.qwen_model,
-            qwen_api_base=cfg.qwen_api_base,
-        )
+        client = LLMClient.from_config(cfg)
         tailor_single_job(client, job, telegram)
         print("Done.", flush=True)
     except Exception as exc:

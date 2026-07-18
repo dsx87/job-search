@@ -183,11 +183,11 @@ def _record_fit_failure(seen, stats, job, stage, today, telegram):
     return state
 
 
-def _evaluate_candidate(gemini, criteria, job):
+def _evaluate_candidate(llm, criteria, job):
     """Evaluate a candidate only when its cleaned description is sufficient."""
     if not ensure_job_description(job):
         return None
-    return evaluate_job(gemini, criteria, job)
+    return evaluate_job(llm, criteria, job)
 
 
 # Reserved for pipeline metadata; these entries must never act as seen identities.
@@ -261,23 +261,23 @@ def run_daily(cfg, test: bool = False) -> int:
         # seen_jobs.json during fetch to skip description requests for jobs the
         # other runner already delivered. Best-effort; never raises.
         pull_state()
-    if not all([cfg.gemini_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
-        print("Error: GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.", file=sys.stderr)
+    if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
+        print(
+            "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
+            "TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     state_mutation_allowed = False
     try:
-        gemini = LLMClient(
-            cfg.gemini_api_key,
-            cfg.qwen_api_key,
-            gemini_model=cfg.gemini_model,
-            gemini_api_base=cfg.gemini_api_base,
-            qwen_model=cfg.qwen_model,
-            qwen_api_base=cfg.qwen_api_base,
-        )
-        if not cfg.qwen_api_key:
-            print("Note: QWEN_API_KEY not set — no fallback model available.", flush=True)
+        llm = LLMClient.from_config(cfg)
+        if not cfg.llm_fallback_api_key:
+            print(
+                "Note: no LLM fallback configured (LLM_FALLBACK_API_KEY / OPENAI_API_KEY unset).",
+                flush=True,
+            )
         criteria = load_criteria()
         crit_ver = criteria_version(criteria)
         tailoring_instructions = load_tailoring_instructions()
@@ -318,7 +318,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
                 print("Done.", flush=True)
                 return 0
-            process_job(gemini, criteria, tailoring_instructions, base_tex, d, telegram)
+            process_job(llm, criteria, tailoring_instructions, base_tex, d, telegram)
             print("Done.", flush=True)
             return 0
 
@@ -395,14 +395,14 @@ def run_daily(cfg, test: bool = False) -> int:
         print(f"Found {candidate_count} new or retryable job(s).", flush=True)
 
         # ── Stage 2: Evaluate all new jobs concurrently ──────────────────────
-        # Gemini calls are independent and the client is stateless, so we fan out
+        # LLM calls are independent and the client is stateless, so we fan out
         # across a thread pool. seen-set mutation stays on this (main) thread as
         # results arrive — no locks needed.
         if evaluation_jobs:
             print(f"Evaluating {len(evaluation_jobs)} job(s) with {cfg.eval_workers} workers...", flush=True)
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
-                    pool.submit(_evaluate_candidate, gemini, criteria, job): (job, retry_state)
+                    pool.submit(_evaluate_candidate, llm, criteria, job): (job, retry_state)
                     for job, retry_state in evaluation_jobs
                 }
                 for future in concurrent.futures.as_completed(future_to_job):
@@ -484,7 +484,7 @@ def run_daily(cfg, test: bool = False) -> int:
         print(f"{len(fits)} fit(s) to tailor.", flush=True)
 
         # ── Stage 3: Tailor + compile the fits concurrently ──────────────────
-        # Tailoring is Gemini-bound and compilation is CPU-bound; a smaller pool
+        # Tailoring is LLM-bound and compilation is CPU-bound; a smaller pool
         # keeps parallel xelatex runs from starving the runner. No Telegram I/O
         # happens here, so order doesn't matter and failures stay soft.
         prepared = []  # list of (job, payload, retry_state) ready to send
@@ -496,7 +496,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     if retry_state.notified:
                         future = pool.submit(
                             prepare_retry_fit,
-                            gemini,
+                            llm,
                             tailoring_instructions,
                             base_tex,
                             job,
@@ -504,7 +504,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     else:
                         future = pool.submit(
                             prepare_fit,
-                            gemini,
+                            llm,
                             tailoring_instructions,
                             base_tex,
                             job,
@@ -591,7 +591,7 @@ def run_daily(cfg, test: bool = False) -> int:
         except Exception as exc:
             print(f"Telegram notification error: {exc}", file=sys.stderr)
 
-        print(gemini.usage_summary(), flush=True)
+        print(llm.usage_summary(), flush=True)
         print("Done.", flush=True)
         return 0
 

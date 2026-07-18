@@ -202,7 +202,7 @@ def compile_with_fixes(client, tex_source: str, max_attempts: int = 3) -> tuple:
             flush=True,
         )
         if result.repairable and attempt < max_attempts:
-            print(f"    Asking Gemini to fix LaTeX errors...", flush=True)
+            print(f"    Asking the model to fix LaTeX errors...", flush=True)
             try:
                 tex_source = _fix_latex(client, tex_source, result.error_excerpt)
             except Exception as exc:

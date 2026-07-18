@@ -9,12 +9,14 @@ from job_search.pipeline import cli, stages
 
 def make_config():
     return SimpleNamespace(
-        gemini_api_key="gemini",
-        qwen_api_key="qwen",
-        gemini_model="gemini-custom",
-        gemini_api_base="https://gemini.example/models",
-        qwen_model="qwen-custom",
-        qwen_api_base="https://qwen.example/v1",
+        llm_primary_scheme="gemini",
+        llm_primary_model="gemini-custom",
+        llm_primary_api_key="primary-key",
+        llm_primary_api_base="https://gemini.example/models",
+        llm_fallback_scheme="openai",
+        llm_fallback_model="gpt-custom",
+        llm_fallback_api_key="fallback-key",
+        llm_fallback_api_base="https://oai.example/v1",
         telegram_bot_token="token",
         telegram_chat_id="chat",
     )
@@ -34,29 +36,30 @@ def install_clients(monkeypatch, llm_calls=None):
     client = object()
     telegram = object()
 
-    def make_llm(*args, **kwargs):
-        if llm_calls is not None:
-            llm_calls.append((args, kwargs))
-        return client
+    class FakeLLMClient:
+        @staticmethod
+        def from_config(cfg):
+            if llm_calls is not None:
+                llm_calls.append(cfg)
+            return client
 
-    monkeypatch.setattr(cli, "LLMClient", make_llm)
+    monkeypatch.setattr(cli, "LLMClient", FakeLLMClient)
     monkeypatch.setattr(cli, "TelegramClient", lambda *_args: telegram)
     return client, telegram
 
 
 def test_manual_tailor_forwards_provider_configuration(monkeypatch):
     llm_calls = []
+    cfg = make_config()
     install_clients(monkeypatch, llm_calls)
     monkeypatch.setattr(cli, "tailor_single_job", lambda *_args: None)
 
-    cli.run_tailor(make_args("x" * 200), make_config())
+    cli.run_tailor(make_args("x" * 200), cfg)
 
-    assert llm_calls == [(('gemini', 'qwen'), {
-        "gemini_model": "gemini-custom",
-        "gemini_api_base": "https://gemini.example/models",
-        "qwen_model": "qwen-custom",
-        "qwen_api_base": "https://qwen.example/v1",
-    })]
+    # LLMClient.from_config is handed the whole config, unchanged.
+    assert llm_calls == [cfg]
+    assert llm_calls[0].llm_primary_model == "gemini-custom"
+    assert llm_calls[0].llm_fallback_scheme == "openai"
 
 
 def test_short_pasted_description_is_enriched_and_cleaned(monkeypatch):

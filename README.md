@@ -41,7 +41,7 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
                     ┌─────────────────────────────────────────────┐
    GitHub Actions   │  fetch  ─▶  dedupe  ─▶  LLM filter  ─▶ tailor │
    or a Raspberry Pi│  ~20      seen_jobs    criteria.md     résumé │
-   daily            │  sources  .json        (Gemini/Qwen)   (LaTeX)│
+   daily            │  sources  .json     (primary+fallback) (LaTeX)│
                     └─────────────────────────────────────────────┬─┘
                                                                    ▼
                                                     Telegram: match + tailored
@@ -69,10 +69,11 @@ Running an "LLM app" on an ARMv6 Pi is normally a non-starter — the SDKs pull 
 `grpcio`, `pydantic-core` (Rust), and native TLS stacks that have no ARMv6 wheel.
 So the core has **none of them**:
 
-- **LLM calls (Gemini/Qwen) and Telegram delivery are raw `urllib` HTTPS
-  requests** — no `google-generativeai`, no `requests`. LaTeX is a `subprocess`
-  call to `xelatex`. The entire fetch → filter → tailor → notify path needs
-  **zero pip installs**.
+- **Every LLM call is a raw `urllib` HTTPS request**, and so is Telegram delivery
+  — no `google-generativeai`, no `anthropic`, no `openai`, no `requests`. Each
+  provider is a small wire-protocol *scheme* (`gemini`/`openai`/`anthropic`), so
+  the SDKs never enter the tree. LaTeX is a `subprocess` call to `xelatex`. The
+  entire fetch → filter → tailor → notify path needs **zero pip installs**.
 - **Optional sources are lazily imported.** JobSpy (`python-jobspy`) and the
   Chromium/Playwright source are imported *inside* `fetch()`, so when their
   dependencies are absent the registry silently drops just those sources and
@@ -89,8 +90,12 @@ So the core has **none of them**:
   or failed document upload blocks completion and is counted in the daily run
   summary. Automated delivery makes at most three attempts (days 0, 1, and 3),
   then blocks until a manual `/tailor`. Raw `.tex` is never delivered.
-- **Model fallback** — Gemini is primary, with an optional Qwen fallback so a
-  single provider outage doesn't stop the run.
+- **Scheme-based providers with a hardened breaker** — a provider is a
+  wire-protocol scheme (`gemini`, `openai`, `anthropic`) + model + key; switching
+  providers is config only, no code. A primary serves the run; an optional
+  fallback covers outages. Transient 429/503s are retried, and the primary is
+  disabled for the run only after repeated failures — so one blip doesn't dump
+  the whole run onto the fallback.
 - **Concurrency-safe state** — the daily job commits updated `seen_jobs.json`
   back to the repo; on a push race it rebuilds the file as a *set union* of the
   local and remote keys rather than a textual rebase, which would corrupt the
@@ -115,18 +120,34 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | ✅ | LLM filtering & tailoring |
+| `GEMINI_API_KEY` | ✅ | primary LLM key (filtering & tailoring) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
 | `TELEGRAM_CHAT_ID` | ✅ | delivery |
-| `QWEN_API_KEY` | optional | fallback model |
+| `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 
-The default providers are Gemini `gemini-3.5-flash` at Google's v1beta models
-endpoint and Qwen `qwen-plus` at DashScope's international OpenAI-compatible
-endpoint. To override them without changing code, add any of these optional
+The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
+`OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
+scheme at `gemini-2.5-flash`; the default fallback is the `openai` scheme at
+`gpt-5.4-mini` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
+include API access).
+
+A provider is a **scheme** + model + key (+ optional base), so switching
+providers is config only — no code change. Override any of these optional
 **Actions repository variables** (Settings → Secrets and variables → Actions →
-Variables): `GEMINI_MODEL`, `GEMINI_API_BASE`, `QWEN_MODEL`, and
-`QWEN_API_BASE`. Unset or blank variables use the application defaults.
+Variables): `LLM_PRIMARY_SCHEME`, `LLM_PRIMARY_MODEL`, `LLM_PRIMARY_API_BASE`,
+`LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_BASE`. Unset or
+blank variables use the application defaults. Worked examples (the `openai`
+scheme covers any OpenAI-compatible endpoint via `api_base`):
+
+| Provider | Scheme | `…_API_BASE` | Example model |
+|---|---|---|---|
+| Groq | `openai` | `https://api.groq.com/openai/v1` | e.g. `llama-3.3-70b` |
+| xAI Grok | `openai` | `https://api.x.ai/v1` | `grok-4.3` |
+| Anthropic | `anthropic` | *(default)* | `claude-haiku-4-5` |
+
+To make one primary, swap the `LLM_PRIMARY_*` block (and its key) for the
+`LLM_FALLBACK_*` values.
 
 The workflow keeps dedup state on an orphan **`state`** branch (see [layout](#repository-layout)),
 installs a right-sized XeLaTeX + Chromium, runs the pipeline, and commits the
@@ -198,8 +219,8 @@ the daily retry state.
 ## Tech stack
 
 Python (stdlib-only core) · GitHub Actions · Raspberry Pi / systemd · Playwright ·
-Google Gemini / Qwen · XeLaTeX · Telegram Bot API ·
-[python-jobspy](https://github.com/cullenwatson/JobSpy)
+scheme-based LLM providers (Gemini / OpenAI-compatible / Anthropic) · XeLaTeX ·
+Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 
 ## Repository layout
 
@@ -210,7 +231,7 @@ Google Gemini / Qwen · XeLaTeX · Telegram Bot API ·
 | `job_search/pipeline/` | Orchestrates fetch → dedupe → filter → tailor → notify |
 | `job_search/bot/` | The Telegram control bot (`/run`, `/status`, `/tailor`) |
 | `job_search/latex/` | Base-CV render, `xelatex` compile, one-page guard |
-| `job_search/llm/` | Gemini/Qwen clients, criteria evaluation, résumé tailoring |
+| `job_search/llm/` | scheme-based LLM providers, criteria evaluation, résumé tailoring |
 | `scripts/setup-rpi.sh` | One-shot Raspberry Pi provisioning |
 | `scripts/run_pipeline.sh` | The single `flock`'d entry point every run goes through |
 | `tests/` | Offline characterization suite (`pytest`) |
