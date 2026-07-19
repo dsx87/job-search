@@ -6,9 +6,11 @@ criteria.md deterministically in Python (audit Finding 17). The verdict is one
 of "fit", "nonfit", or "uncertain"; the pipeline routes "uncertain" to a review
 section rather than discarding it.
 """
+from ..location.classify import is_israel_job
 from ..models import coerce_job
 from ..policy import apply_policy
-from .facts import extract_facts
+from ..text import is_probably_english
+from .facts import default_facts, extract_facts
 
 
 def evaluate_job(client, criteria: str, job: dict) -> dict:
@@ -18,9 +20,16 @@ def evaluate_job(client, criteria: str, job: dict) -> dict:
     "verdict": "fit"|"nonfit"|"uncertain", "facts": dict}. The `criteria`
     argument is retained for call-site compatibility; the policy now lives in
     job_search/policy.py (the executable form of criteria.md).
+
+    Non-English, non-Israeli postings are rejected by the policy's language gate
+    regardless of their facts, so fact extraction (an LLM call) is skipped for
+    them; apply_policy still runs and returns the identical verdict/reason.
     """
     job = coerce_job(job)
-    facts = extract_facts(client, job)
+    if not is_israel_job(job) and not is_probably_english(job.description):
+        facts = default_facts()
+    else:
+        facts = extract_facts(client, job)
     decision = apply_policy(facts, job)
     return {
         "fit": decision["verdict"] == "fit",

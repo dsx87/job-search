@@ -9,10 +9,16 @@ junior, an authorization blocker, a US/Canada-only restriction) is downgraded to
 "uncertain" unless the claim's evidence snippet is grounded in the posting text,
 so a hallucinated blocker surfaces for review instead of silently dropping a
 good job.
+
+Two gates sit outside that grounding scheme because they are decided directly
+from the posting text (no LLM fact to hallucinate), so they reject hard: the
+description must be written in English, and a non-remote role must explicitly
+state remote work or offer relocation/visa sponsorship. Israeli roles are exempt
+from both (Igor is local; some postings are in Hebrew).
 """
 from .location.classify import is_israel_job
-from .models import Region, coerce_job
-from .text import collapse_ws
+from .models import coerce_job
+from .text import collapse_ws, is_probably_english
 
 _US_CA_GROUP = {"US", "USA", "UNITED STATES", "CA", "CANADA"}
 _TZ_NOTE = "Role requires US working hours (Igor is UTC+3) — review the timezone mismatch."
@@ -35,6 +41,12 @@ def apply_policy(facts, job) -> dict:
     job = coerce_job(job)
     text = job.description
     tz = _TZ_NOTE if facts.get("requires_us_hours") == "yes" else None
+
+    # Language gate — the description must be written in English (Israeli roles
+    # exempt; some are in Hebrew and need no sponsorship). Decided directly from
+    # the posting text, so a hard nonfit is safe: no LLM fact to hallucinate.
+    if not is_israel_job(job) and not is_probably_english(text):
+        return _decision("nonfit", "Job description is not written in English.")
 
     def reject(field, reason, unverified_reason):
         if _grounded(facts, field, text):
@@ -117,19 +129,17 @@ def apply_policy(facts, job) -> dict:
             "Non-remote role with an explicit work-authorization blocker.",
             "A work-authorization blocker may apply, but it is unclear (unverified) — review.",
         )
-    # A grounded sponsorship offer accepts. EU acceptance comes BEFORE the
-    # ungrounded-sponsorship fallback so an unverified sponsorship claim can
-    # never make an otherwise-acceptable EU role worse than if it were absent.
+    # The posting must EXPLICITLY state remote work, or offer relocation/visa
+    # sponsorship. A grounded sponsorship offer accepts; a role that is silent on
+    # all three is no longer auto-accepted (the former EU leniency is removed).
     if facts.get("offers_sponsorship") == "yes" and _grounded(facts, "offers_sponsorship", text):
         return _decision("fit", "On-site/hybrid role offering relocation/visa sponsorship.", tz)
-    if job.region == Region.EU:
-        return _decision("fit", "EU-based role with no authorization blocker (EU employers commonly sponsor).", tz)
     if facts.get("offers_sponsorship") == "yes":
         return _decision("uncertain", "Sponsorship is mentioned but unverified in the posting — review.", tz)
     if arrangement in ("onsite", "hybrid"):
         return reject(
             "work_arrangement",
-            "On-site/hybrid role outside the EU with no remote option or sponsorship.",
+            "On-site/hybrid role with no remote option or stated relocation/visa sponsorship.",
             "On-site/hybrid arrangement not clearly stated (unverified) — review.",
         )
     return _decision("uncertain", "Work arrangement and sponsorship are unclear — verify before applying.", tz)

@@ -32,6 +32,51 @@ def _facts(**overrides):
     return base
 
 
+_GERMAN_DESC = (
+    "Wir suchen einen erfahrenen iOS-Entwickler für unser Team in Berlin. "
+    "Sie entwickeln und pflegen Funktionen für unsere mobilen Anwendungen mit Swift und SwiftUI. "
+    "Der ideale Kandidat hat Erfahrung mit UIKit und arbeitet gerne im Büro vor Ort."
+)
+_HEBREW_DESC = (
+    "אנחנו מחפשים מהנדס iOS בכיר להצטרף לצוות שלנו בתל אביב. "
+    "התפקיד כולל פיתוח ותחזוקה של אפליקציות מובייל עבור לקוחות רבים בארץ ובעולם."
+)
+
+
+# --- language gate: description must be written in English ------------
+
+def test_non_english_german_description_nonfit():
+    # Non-English → nonfit even when the facts would otherwise be a fit (remote).
+    facts = _facts(work_arrangement="remote", remote_geo_scope="worldwide")
+    job = Job(location="Berlin, Germany", region=Region.EU, description=_GERMAN_DESC)
+    decision = apply_policy(facts, job)
+    assert decision["verdict"] == "nonfit"
+    assert "english" in decision["reason"].lower()
+
+
+def test_non_english_hebrew_description_nonfit_when_not_israeli():
+    facts = _facts(work_arrangement="remote", remote_geo_scope="worldwide")
+    job = Job(location="Remote", region=Region.UNKNOWN, description=_HEBREW_DESC)
+    assert apply_policy(facts, job)["verdict"] == "nonfit"
+
+
+def test_israeli_role_exempt_from_english_gate():
+    # A Hebrew Israeli posting is NOT dropped by the English gate.
+    facts = _facts(work_arrangement="onsite")
+    job = Job(location="Tel Aviv", description=_HEBREW_DESC)
+    assert apply_policy(facts, job)["verdict"] == "fit"
+
+
+def test_english_description_passes_language_gate():
+    facts = _facts(work_arrangement="remote", remote_geo_scope="worldwide")
+    desc = (
+        "We are hiring a senior iOS engineer to join our team. You will build "
+        "and maintain our mobile apps with Swift and SwiftUI, and we offer a "
+        "fully remote position for candidates around the world."
+    )
+    assert apply_policy(facts, Job(description=desc))["verdict"] == "fit"
+
+
 def test_apply_policy_result_shape():
     decision = apply_policy(
         _facts(work_arrangement="remote", remote_geo_scope="worldwide"),
@@ -285,12 +330,25 @@ def test_non_remote_sponsorship_ungrounded_uncertain():
     assert "unverif" in decision["reason"].lower()
 
 
-# --- rules 10-12: EU / on-site / fallthrough --------------------------
+# --- rules 10-12: explicit-mobility gate / on-site / fallthrough ------
+# The EU auto-accept was removed: a role that is silent on remote work and
+# states no relocation/visa sponsorship is no longer accepted, even in the EU.
+# The posting must explicitly state remote, or offer relocation/visa sponsorship.
 
-def test_non_remote_eu_region_no_blocker_fit():
+def test_eu_onsite_silent_ungrounded_uncertain():
+    # EU on-site role, silent on sponsorship, arrangement not grounded → review.
     facts = _facts(work_arrangement="onsite")
-    job = Job(location="Berlin, Germany", region=Region.EU, description="Onsite role in Berlin.")
-    assert apply_policy(facts, job)["verdict"] == "fit"
+    job = Job(location="Berlin, Germany", region=Region.EU,
+              description="Join our engineering team at our office in Berlin.")
+    assert apply_policy(facts, job)["verdict"] == "uncertain"
+
+
+def test_eu_onsite_silent_grounded_nonfit():
+    # Same, but the on-site arrangement is grounded in the text → hard nonfit.
+    facts = _facts(work_arrangement="onsite", evidence={"work_arrangement": "fully on-site"})
+    job = Job(location="Berlin, Germany", region=Region.EU,
+              description="A fully on-site role based in our Berlin office.")
+    assert apply_policy(facts, job)["verdict"] == "nonfit"
 
 
 def test_onsite_non_eu_grounded_nonfit():
@@ -305,13 +363,13 @@ def test_onsite_non_eu_ungrounded_uncertain():
     assert apply_policy(facts, job)["verdict"] == "uncertain"
 
 
-def test_eu_role_accepts_despite_ungrounded_sponsorship_claim():
-    # Finding 2: an unverified sponsorship claim must NOT downgrade an
-    # otherwise-acceptable EU role to uncertain — EU acceptance comes first.
+def test_eu_onsite_ungrounded_sponsorship_now_uncertain():
+    # An unverified sponsorship claim no longer gets a free EU pass; without the
+    # EU auto-accept it routes to review (uncertain) instead of fit.
     facts = _facts(work_arrangement="onsite", offers_sponsorship="yes",
                    evidence={"offers_sponsorship": "we help you relocate"})
     job = Job(region=Region.EU, description="Berlin on-site role; no relocation wording here.")
-    assert apply_policy(facts, job)["verdict"] == "fit"
+    assert apply_policy(facts, job)["verdict"] == "uncertain"
 
 
 def test_unknown_arrangement_non_eu_uncertain():

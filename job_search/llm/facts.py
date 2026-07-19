@@ -77,6 +77,15 @@ def _normalize_facts(raw) -> dict:
     return facts
 
 
+def default_facts() -> dict:
+    """A normalized facts dict with every field 'unknown' and no evidence.
+
+    Used when a posting is decided without the LLM (e.g. the language gate
+    short-circuits fact extraction), so the returned shape stays consistent.
+    """
+    return _normalize_facts({})
+
+
 def extract_facts(client, job) -> dict:
     """Ask the model for schema-constrained posting facts; return normalized."""
     job = coerce_job(job)

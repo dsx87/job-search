@@ -871,6 +871,65 @@ def test_evaluate_job_nonfit_case_end_to_end():
     assert result["facts"]["industry_crypto_web3"] == "yes"
 
 
+def test_evaluate_job_skips_llm_for_non_english_posting():
+    # A non-English, non-Israeli posting is rejected WITHOUT any LLM call —
+    # the empty response list would make generate() raise if it were invoked.
+    client = _RecordingClient([])
+    result = evaluate_job(
+        client,
+        "CRIT",
+        {
+            "title": "iOS Entwickler",
+            "company": "Acme",
+            "description": (
+                "Wir suchen einen erfahrenen iOS-Entwickler für unser Team in "
+                "Berlin. Sie entwickeln und pflegen Funktionen für unsere mobilen "
+                "Anwendungen mit Swift und SwiftUI im Büro vor Ort."
+            ),
+        },
+    )
+    assert client.prompts == []  # no fact-extraction call was made
+    assert result["verdict"] == "nonfit"
+    assert "english" in result["reason"].lower()
+    assert set(result.keys()) == {"fit", "reason", "timezone_note", "verdict", "facts"}
+    assert result["facts"]["work_arrangement"] == "unknown"  # well-formed default
+
+
+def test_evaluate_job_calls_llm_for_english_posting():
+    client = _RecordingClient([json.dumps(_VALID_FACTS)])
+    evaluate_job(
+        client,
+        "CRIT",
+        {
+            "title": "iOS",
+            "company": "Acme",
+            "description": (
+                "We are hiring a fully remote iOS engineer to build apps with "
+                "Swift and SwiftUI for our users around the world."
+            ),
+        },
+    )
+    assert len(client.prompts) == 1  # English posting is not short-circuited
+
+
+def test_evaluate_job_extracts_for_israeli_non_english_posting():
+    # Israeli roles are exempt from the language gate, so extraction still runs
+    # (we need the facts to judge office-attendance for a Hebrew Israeli post).
+    client = _RecordingClient([json.dumps(_VALID_FACTS)])
+    result = evaluate_job(
+        client,
+        "CRIT",
+        {
+            "title": "iOS",
+            "company": "Acme",
+            "location": "Tel Aviv",
+            "description": "משרה מלאה למפתח iOS בכיר בתל אביב עם ניסיון רב ב-Swift.",
+        },
+    )
+    assert len(client.prompts) == 1  # extraction ran despite the Hebrew text
+    assert result["verdict"] != "nonfit" or "english" not in result["reason"].lower()
+
+
 # =====================================================================
 # audit order 7 — structured CV edits (select_cv_bullets) + tailor rewire
 # =====================================================================

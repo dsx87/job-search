@@ -4,6 +4,43 @@ import re
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
+# High-frequency English function words whose DENSITY distinguishes English
+# prose from other languages. Deliberately excludes short forms that other
+# European languages share ("in"/"an" German, "a"/"on" French/Spanish) so
+# non-English prose scores near zero. Tech nouns ("iOS", "Swift") are language-
+# neutral and intentionally absent.
+_ENGLISH_FUNCTION_WORDS = frozenset(
+    "the and of to for with you your our we are is be it that this these those "
+    "they them their will would should can could has have had not from what "
+    "which who when where about all more also into over per".split()
+)
+_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)  # any Unicode letter
+_LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
+_WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def is_probably_english(text, min_words=20, min_ratio=0.06) -> bool:
+    """Heuristic language gate — True unless the text is CLEARLY not English.
+
+    Biased toward True so a genuine English posting is never dropped. Returns
+    False only when the text is script-dominated by non-Latin letters
+    (Hebrew/Cyrillic/CJK/Arabic) OR has enough words to judge and almost no
+    English function words (German/French/Spanish/… prose). Deterministic and
+    dependency-free.
+    """
+    text = str(text or "")
+    letters = _LETTER_RE.findall(text)
+    if not letters:
+        return True  # nothing to judge — don't drop
+    latin = _LATIN_LETTER_RE.findall(text)
+    if len(latin) / len(letters) < 0.5:
+        return False  # majority non-Latin script → not English
+    words = [w.lower() for w in _WORD_RE.findall(text)]
+    if len(words) < min_words:
+        return True  # too little Latin text to judge confidently — don't drop
+    hits = sum(1 for w in words if w in _ENGLISH_FUNCTION_WORDS)
+    return hits / len(words) >= min_ratio
+
 
 def collapse_ws(text):
     return re.sub(r"\s+", " ", str(text or "")).strip()
