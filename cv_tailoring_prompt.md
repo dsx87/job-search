@@ -101,15 +101,11 @@ Write the complete, compilable LaTeX source for the tailored CV. Start from the 
 **One-page hard rule:** The compiled PDF MUST be exactly one page. The base template is tuned to fit one page; preserve its density settings (font size, margins, spacing) and do not loosen them. If your tailored content spills onto a second page, omit the lowest-relevance bullets (never an entire job) until it fits on a single page. Never deliver a two-page CV.
 
 ### LaTeX template notes (important for correct compilation):
-- Compile with: `xelatex`
-- Font used: `Carlito` (must be installed — it is a Calibri-compatible free font)
-- Do NOT use `\uppercase` inside `\titleformat` — it breaks color commands. If you want uppercase section titles, use the `\MakeUppercase` macro in the 5th argument position of `\titleformat`, like this:
-  ```
-  \titleformat{\section}{\bfseries\large\color{navy}}{}{0em}{\MakeUppercase}[...]
-  ```
-  Or simply omit uppercase entirely.
+- Compile with: `pdflatex`
+- Font: Helvetica (URW Nimbus Sans) via `\usepackage[scaled=0.95]{helvet}` — ships in `texlive-fonts-recommended`, nothing to install separately.
+- Section titles are the `\cvsection` macro (`\section` is redefined to call it). To uppercase a title, wrap its text in `\MakeUppercase{...}`; otherwise leave it as-is. Do NOT reintroduce `titlesec`/`\titleformat` — it is not installed in the slimmed TeX set.
 - Special characters in LaTeX: `&` must be `\&`, `%` must be `\%`, `#` must be `\#`, `_` must be `\_`
-- Em dashes: use `---` or `—` (the latter works with xelatex + fontspec)
+- Em dashes: use `---` or `—` (the latter renders via `inputenc` utf8 + T1 `fontenc`)
 - The `\jobheader{Company}{Role}{Location}{Dates}` command creates a two-column header row
 - The italic context line after `\jobheader` uses: `{\small\color{midgray}\itshape ...}`
 
@@ -127,8 +123,8 @@ LATEX
 
 # Compile (run twice to resolve cross-references)
 cd /home/claude
-xelatex -interaction=nonstopmode cv_igor_tailored.tex
-xelatex -interaction=nonstopmode cv_igor_tailored.tex
+pdflatex -interaction=nonstopmode cv_igor_tailored.tex
+pdflatex -interaction=nonstopmode cv_igor_tailored.tex
 
 # Copy to output directory
 cp cv_igor_tailored.pdf /mnt/user-data/outputs/igor_pivnyk_cv_tailored.pdf
@@ -325,17 +321,17 @@ Use this as your starting point. Modify only what needs to change for the specif
 
 ```latex
 %% Igor Pivnyk — CV
-%% Compile with: xelatex
+%% Compile with: pdflatex
 %% GUARD: This CV MUST fit on a single page. Keep density settings (font, margins,
 %% spacing) as tuned below; do not loosen them.
 
-\documentclass[9.5pt, a4paper]{article}
+\documentclass[10pt,a4paper]{article}
 
-\usepackage{fontspec}
+%% All packages ship in texlive-latex-recommended + texlive-fonts-recommended.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
 \usepackage{geometry}
 \usepackage{xcolor}
-\usepackage{titlesec}
-\usepackage{enumitem}
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage{hyperref}
@@ -350,7 +346,14 @@ Use this as your starting point. Modify only what needs to change for the specif
   right=1.8cm
 }
 
-\setmainfont{Carlito}
+%% Font: Helvetica (URW Nimbus Sans, ships in texlive-fonts-recommended).
+\usepackage[scaled=0.95]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+
+%% Real body size. article honors only 10/11/12pt as the class option, so the
+%% true size is pinned here and applied at begin-document. Do not loosen it.
+\newcommand{\cvbasefont}{\fontsize{9.5pt}{11pt}\selectfont}
+\AtBeginDocument{\cvbasefont}
 
 \definecolor{navy}{HTML}{1B3A6B}
 \definecolor{midgray}{HTML}{5C5C5C}
@@ -360,11 +363,16 @@ Use this as your starting point. Modify only what needs to change for the specif
 
 \pagestyle{empty}
 
-\titleformat{\section}
-  {\bfseries\large\color{navy}}
-  {}{0em}{}
-  [\vspace{1pt}{\color{navy}\hrule height 0.9pt}\vspace{2pt}]
-\titlespacing*{\section}{0pt}{2pt}{1pt}
+%% Section titles (replaces titlesec). \cvsecbefore/\cvsecafter are tunable lengths.
+\newlength{\cvsecbefore}\setlength{\cvsecbefore}{2pt}
+\newlength{\cvsecafter}\setlength{\cvsecafter}{1pt}
+\newcommand{\cvsection}[1]{%
+  \vspace{\cvsecbefore}%
+  {\bfseries\large\color{navy}#1}\par
+  \vspace{1pt}{\color{navy}\hrule height 0.9pt}%
+  \vspace{\cvsecafter}%
+}
+\renewcommand{\section}[1]{\cvsection{#1}}
 
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0pt}
@@ -380,12 +388,22 @@ Use this as your starting point. Modify only what needs to change for the specif
   \vspace{0pt}%
 }
 
-\setlist[itemize]{
-  leftmargin=1.4em,
-  itemsep=0.5pt,
-  topsep=1pt,
-  parsep=0pt,
-  label={\small\textbullet}
+%% Bullet list style (replaces enumitem). \cvitemsep/\cvtopsep/\cvparsep tunable.
+\newlength{\cvitemsep}\setlength{\cvitemsep}{0.5pt}
+\newlength{\cvtopsep}\setlength{\cvtopsep}{1pt}
+\newlength{\cvparsep}\setlength{\cvparsep}{0pt}
+\renewenvironment{itemize}{%
+  \begin{list}{\small\textbullet}{%
+      \setlength{\leftmargin}{1.4em}%
+      \setlength{\labelwidth}{1em}%
+      \setlength{\labelsep}{0.4em}%
+      \setlength{\itemsep}{\cvitemsep}%
+      \setlength{\topsep}{\cvtopsep}%
+      \setlength{\parsep}{\cvparsep}%
+      \setlength{\partopsep}{0pt}%
+    }%
+}{%
+  \end{list}%
 }
 
 \renewcommand{\arraystretch}{1.0}
@@ -523,14 +541,13 @@ AI Tools     & Claude Code (daily) \textbullet\ GitHub Copilot \textbullet\ Wind
 This prompt is designed to be used in a Claude.ai environment with computer use / bash access.
 
 **Required system setup:**
-- `xelatex` must be available (`which xelatex` to check)
-- `Carlito` font must be installed (`fc-list | grep -i carlito` to check)
-- On Ubuntu/Debian, install with: `apt-get install fonts-crosextra-carlito texlive-xetex texlive-latex-extra`
+- `pdflatex` must be available (`which pdflatex` to check)
+- On Ubuntu/Debian, install with: `apt-get install --no-install-recommends texlive-latex-recommended texlive-fonts-recommended` (Helvetica ships in the latter — no separate font install)
 - Output directory: `/mnt/user-data/outputs/` (Claude.ai computer use standard)
 - Working directory: `/home/claude/`
 
 **If the environment does not support bash/compilation:**
-Output the raw LaTeX source only, clearly labeled, so the user can compile it themselves with `xelatex`.
+Output the raw LaTeX source only, clearly labeled, so the user can compile it themselves with `pdflatex`.
 
 **Job posting URL to process:**
 [PASTE THE JOB URL HERE]

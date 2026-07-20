@@ -1,6 +1,6 @@
 name: Verify CV one-page guard
 
-# Proves the single-page guarantee end-to-end with a real xelatex compile:
+# Proves the single-page guarantee end-to-end with a real pdflatex compile:
 # the base CV is exactly one page, and the pipeline's auto-shrink recovers an
 # overflowing CV back to one page. Runs on changes to the guard's moving parts.
 on:
@@ -30,10 +30,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            texlive-xetex \
-            texlive-latex-extra \
-            texlive-fonts-recommended \
-            fonts-crosextra-carlito
+            texlive-latex-recommended \
+            texlive-fonts-recommended
 
       - name: Run one-page guard self-test
         run: python3 -m job_search.tests.one_page_guard

@@ -1,4 +1,4 @@
-"""Render the base CV (igor_pivnyk_cv_base_updated.tex) to PDF with xelatex.
+"""Render the base CV (igor_pivnyk_cv_base_updated.tex) to PDF with pdflatex.
 
 The ((PHONE)) placeholder is substituted from the CV_PHONE environment variable
 at compile time, mirroring latex.compile._compile_latex. When CV_PHONE is unset
@@ -32,12 +32,12 @@ def main() -> int:
         with open(tex_path, "w", encoding="utf-8") as f:
             f.write(tex_source)
 
-        cmd = ["xelatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
+        cmd = ["pdflatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
         for _ in range(2):  # twice so cross-references resolve
             subprocess.run(cmd, capture_output=True, timeout=120)
 
         if not os.path.exists(pdf_path):
-            print("xelatex did not produce a PDF — see the log above.", file=sys.stderr)
+            print("pdflatex did not produce a PDF — see the log above.", file=sys.stderr)
             return 1
 
         # Hard guard: the base CV must be exactly one page. Fail loudly on a

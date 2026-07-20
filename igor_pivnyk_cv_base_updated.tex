@@ -1,17 +1,16 @@
 %% Igor Pivnyk — Base CV
-%% Compile with: xelatex cv_igor.tex
+%% Compile with: pdflatex igor_pivnyk_cv_base_updated.tex
 %% GUARD: This CV MUST fit on a single page. Keep it to one balanced page —
-%% if edits cause a spill, tighten spacing/margins (or drop font to 9.5pt) before
-%% adding a second page.
+%% if edits cause a spill, tighten spacing/margins (or drop the \cvbasefont size
+%% to 9pt) before adding a second page.
 
-\documentclass[9.5pt, a4paper]{article}
+\documentclass[10pt,a4paper]{article}
 
-% ---- Core packages ----
-\usepackage{fontspec}
+% ---- Core packages (all in texlive-latex-recommended + texlive-fonts-recommended) ----
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
 \usepackage{geometry}
 \usepackage{xcolor}
-\usepackage{titlesec}
-\usepackage{enumitem}
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage{hyperref}
@@ -27,8 +26,15 @@
   right=1.8cm
 }
 
-% ---- Font ----
-\setmainfont{Carlito}
+% ---- Font: Helvetica (URW Nimbus Sans, ships in texlive-fonts-recommended) ----
+\usepackage[scaled=0.95]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+
+% ---- Real base text size. article honors only 10/11/12pt as the class option,
+%      so the true body size is pinned here and applied at begin-document. The
+%      one-page shrink ladder retunes the body by re-issuing \cvbasefont. ----
+\newcommand{\cvbasefont}{\fontsize{9.5pt}{11pt}\selectfont}
+\AtBeginDocument{\cvbasefont}
 
 % ---- Colors ----
 \definecolor{navy}{HTML}{1B3A6B}
@@ -45,12 +51,17 @@
 % ---- No page numbers ----
 \pagestyle{empty}
 
-% ---- Section titles ----
-\titleformat{\section}
-  {\bfseries\large\color{navy}}
-  {}{0em}{}
-  [\vspace{1pt}{\color{navy}\hrule height 0.9pt}\vspace{2pt}]
-\titlespacing*{\section}{0pt}{2pt}{1pt}
+% ---- Section titles (replaces titlesec). \cvsecbefore/\cvsecafter are tunable
+%      lengths so the one-page shrink ladder can retighten section spacing. ----
+\newlength{\cvsecbefore}\setlength{\cvsecbefore}{2pt}
+\newlength{\cvsecafter}\setlength{\cvsecafter}{1pt}
+\newcommand{\cvsection}[1]{%
+  \vspace{\cvsecbefore}%
+  {\bfseries\large\color{navy}#1}\par
+  \vspace{1pt}{\color{navy}\hrule height 0.9pt}%
+  \vspace{\cvsecafter}%
+}
+\renewcommand{\section}[1]{\cvsection{#1}}
 
 % ---- No paragraph indent / spacing ----
 \setlength{\parindent}{0pt}
@@ -71,13 +82,23 @@
   \vspace{0pt}%
 }
 
-% ---- Bullet list style ----
-\setlist[itemize]{
-  leftmargin=1.4em,
-  itemsep=0.5pt,
-  topsep=1pt,
-  parsep=0pt,
-  label={\small\textbullet}
+% ---- Bullet list style (replaces enumitem). \cvitemsep/\cvtopsep/\cvparsep are
+%      tunable lengths so the one-page shrink ladder can retighten list spacing. ----
+\newlength{\cvitemsep}\setlength{\cvitemsep}{0.5pt}
+\newlength{\cvtopsep}\setlength{\cvtopsep}{1pt}
+\newlength{\cvparsep}\setlength{\cvparsep}{0pt}
+\renewenvironment{itemize}{%
+  \begin{list}{\small\textbullet}{%
+      \setlength{\leftmargin}{1.4em}%
+      \setlength{\labelwidth}{1em}%
+      \setlength{\labelsep}{0.4em}%
+      \setlength{\itemsep}{\cvitemsep}%
+      \setlength{\topsep}{\cvtopsep}%
+      \setlength{\parsep}{\cvparsep}%
+      \setlength{\partopsep}{0pt}%
+    }%
+}{%
+  \end{list}%
 }
 
 % ---- Skills table row stretch ----

@@ -1,5 +1,4 @@
 """Deterministic one-page auto-shrink ladder for tailored CVs."""
-import re
 import sys
 
 from .compile import _compile_latex
@@ -22,26 +21,31 @@ ONE_PAGE_SHRINK_LADDER = [
 def _apply_density_overrides(tex_source: str, step: dict) -> str:
     """Return tex_source re-tuned to `step`'s density, for the one-page guard.
 
-    Lowers the \\documentclass font and appends an override block as the last
-    thing before \\begin{document}. Because every knob (\\geometry, \\setstretch,
-    \\titlespacing, \\setlist, \\arraystretch) is re-issued AFTER the template's
-    own settings, the override wins — no need to know the template's values. All
-    referenced packages (geometry, setspace, titlesec, enumitem) are already
-    loaded by the base preamble the tailored CV is built from.
+    Appends an override block as the last thing before \\begin{document}. Because
+    every knob is re-issued AFTER the template's own settings, the override wins —
+    no need to know the template's values:
+
+    - the real body size is re-pinned via \\renewcommand{\\cvbasefont}; the base
+      preamble applies \\cvbasefont at \\AtBeginDocument, so the last renew wins
+      (article ignores the class [Npt] option beyond 10/11/12, which is why the
+      body size lives in \\cvbasefont rather than \\documentclass). The leading is
+      the font size + 1.5pt (9.5->11, 9->10.5, 8.5->10);
+    - \\cvsecbefore/\\cvsecafter (section spacing) and \\cvitemsep/\\cvtopsep/
+      \\cvparsep (list spacing) are the tunable lengths the base macros read;
+    - \\geometry, \\setstretch, \\arraystretch are re-issued directly.
+
+    All referenced packages/macros (geometry, setspace, and the base preamble's
+    \\cvbasefont / \\cvsection / itemize lengths) are loaded by the pdflatex base
+    preamble the tailored CV is built from.
     """
-    # Lower the main font size in the documentclass options (e.g. 9.5pt -> 9pt).
-    tex_source = re.sub(
-        r"(\\documentclass\[[^\]]*?)(\d+(?:\.\d+)?)pt",
-        lambda m: f"{m.group(1)}{step['font']:g}pt",
-        tex_source,
-        count=1,
-    )
+    leading = step["font"] + 1.5  # 9.5->11, 9->10.5, 8.5->10
     override = (
         "% --- one-page guard: auto-shrink density overrides (pipeline) ---\n"
         f"\\geometry{{top={step['top']:g}cm,bottom={step['bottom']:g}cm}}\n"
         f"\\setstretch{{{step['stretch']:g}}}\n"
-        f"\\titlespacing*{{\\section}}{{0pt}}{{{step['sec_before']:g}pt}}{{{step['sec_after']:g}pt}}\n"
-        f"\\setlist[itemize]{{itemsep={step['itemsep']:g}pt,topsep={step['topsep']:g}pt,parsep=0pt}}\n"
+        f"\\renewcommand{{\\cvbasefont}}{{\\fontsize{{{step['font']:g}pt}}{{{leading:g}pt}}\\selectfont}}\n"
+        f"\\setlength{{\\cvsecbefore}}{{{step['sec_before']:g}pt}}\\setlength{{\\cvsecafter}}{{{step['sec_after']:g}pt}}\n"
+        f"\\setlength{{\\cvitemsep}}{{{step['itemsep']:g}pt}}\\setlength{{\\cvtopsep}}{{{step['topsep']:g}pt}}\\setlength{{\\cvparsep}}{{0pt}}\n"
         f"\\renewcommand{{\\arraystretch}}{{{step['arraystretch']:g}}}\n"
     )
     if "\\begin{document}" in tex_source:

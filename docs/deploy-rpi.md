@@ -15,7 +15,7 @@ instead of (or alongside) the GitHub Actions cron.
 The whole application is **pure Python standard library** — every LLM call
 (each provider is a raw wire-protocol scheme) and Telegram delivery is a raw
 `urllib` HTTPS request, and LaTeX is
-a `subprocess` call to `xelatex`. There is **no `grpcio`, no `google-generativeai`
+a `subprocess` call to `pdflatex`. There is **no `grpcio`, no `google-generativeai`
 SDK, no `requests`** — nothing to compile. So the full pipeline needs **zero pip
 packages**; only the optional sources do.
 
@@ -45,18 +45,18 @@ OS (3.9 on Bullseye, 3.11 on Bookworm) is fine — no need to compile 3.12.
 
 The Pi's slow CPU barely matters for most stages — fetch and every LLM call are
 network-bound (the work happens in the cloud). The **only** place a 700 MHz ARMv6
-core bites is the `xelatex` compiles during tailoring.
+core bites is the `pdflatex` compiles during tailoring.
 
 | Stage | Bound by | Time on Pi B |
 |---|---|---|
 | Fetch (16 concurrent sources, capped by `SCRAPE_BUDGET_SECONDS`) | Network | ~2–5 min (hard ceiling 10 min) |
 | Dedupe | trivial | seconds |
 | Filter — **1 LLM call per _new_ job**, `EVAL_WORKERS` at a time | LLM latency | ~1–4 min typical |
-| Tailor — per **match**: 1 long LLM call + `xelatex` ×2 per attempt (≤3 attempts, 120 s each) | xelatex on ARMv6 + LLM | **~1.5–2.5 min per match** |
+| Tailor — per **match**: 1 long LLM call + `pdflatex` ×2 per attempt (≤3 attempts, 120 s each) | pdflatex on ARMv6 + LLM | **~1.5–2.5 min per match** |
 | Notify | Network | seconds |
 
 - **Steady-state day** (~30 new jobs, ~3 matches): **~10–20 minutes**, dominated
-  by the xelatex compiles.
+  by the pdflatex compiles.
 - **Heavy day** (10 matches): tailoring pushes it to ~20–30 minutes.
 - **First run on empty state**: every fetched job is "new" → hundreds of LLM
   evals and dozens of compiles → **potentially 1–3 hours**. Seed the dedup state
@@ -83,7 +83,7 @@ core bites is the `xelatex` compiles during tailoring.
    ```
 
 The script installs packages, bumps swap, sets the timezone, writes a `.env`
-template, seeds `seen_jobs.json` from the `state` branch, pre-warms xelatex, and
+template, seeds `seen_jobs.json` from the `state` branch, pre-warms pdflatex, and
 installs the systemd service + timer. It **stops short** of putting in your
 secrets and enabling the timer — finish those two steps below.
 
@@ -126,7 +126,7 @@ secrets and enabling the timer — finish those two steps below.
      --title 'Senior iOS Developer' --company 'Acme'
    ```
    A tailored PDF landing in Telegram means the whole strict chain worked:
-   factual validation, XeLaTeX compilation, one-page verification, and PDF
+   factual validation, pdflatex compilation, one-page verification, and PDF
    upload all succeeded.
 
 5. **Enable the daily timer**:
@@ -272,13 +272,13 @@ run keeps its 2 h `TimeoutStartSec` safety cap. The run record lives in
 ## Manual setup (what the script does, for reference/troubleshooting)
 
 ```bash
-# 1. Packages — right-sized TeX (NOT texlive-full, which is ~4 GB)
+# 1. Packages — right-sized TeX (NOT texlive-full, which is ~4 GB). Helvetica
+#    ships in texlive-fonts-recommended; pdflatex comes in as a dependency.
 sudo apt update
 sudo apt install -y --no-install-recommends git ca-certificates python3 python3-venv \
-  texlive-xetex texlive-latex-recommended texlive-latex-extra \
-  texlive-fonts-recommended fonts-crosextra-carlito fontconfig
+  texlive-latex-recommended texlive-fonts-recommended
 
-# 2. Swap — pandas/xelatex/pip spike past 512 MB
+# 2. Swap — pandas/pdflatex/pip spike past 512 MB
 sudo dphys-swapfile swapoff
 sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
 sudo dphys-swapfile setup && sudo dphys-swapfile swapon
@@ -286,8 +286,8 @@ sudo dphys-swapfile setup && sudo dphys-swapfile swapon
 # 3. Timezone
 sudo timedatectl set-timezone Asia/Jerusalem
 
-# 4. Pre-warm xelatex (first cold compile builds the font cache and can be slow)
-cd ~/job-search && xelatex -interaction=nonstopmode igor_pivnyk_cv_base_updated.tex
+# 4. Pre-warm pdflatex (first cold compile builds the format/font cache and can be slow)
+cd ~/job-search && pdflatex -interaction=nonstopmode igor_pivnyk_cv_base_updated.tex
 ```
 
 The systemd unit files the script installs are `/etc/systemd/system/job-search.service`
@@ -322,8 +322,7 @@ else keeps running on system python3).
 
 | Symptom | Fix |
 |---|---|
-| `xelatex not found` in logs | TeX install failed — re-run the apt step; check `which xelatex`. |
-| CV compile fails on `\setmainfont{Carlito}` | Font not registered: `sudo apt install fonts-crosextra-carlito && fc-cache -f`, then `fc-list \| grep -i carlito`. |
+| `pdflatex not found` in logs | TeX install failed — re-run the apt step; check `which pdflatex`. |
 | First compile hits the 120 s timeout | Pre-warm once by hand (step 4) so the cache is already built. |
 | Runs get OOM-killed | Increase swap (`SWAP_MB=2048`), and keep `TAILOR_WORKERS=1` / `EVAL_WORKERS=2`. |
 | TLS/certificate errors to Gemini/Telegram | `sudo apt install ca-certificates && sudo update-ca-certificates`. |
