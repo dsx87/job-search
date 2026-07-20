@@ -10,7 +10,24 @@ from job_search.location.classify import (
     is_israel_job,
     guess_location_from_text,
     apply_region,
+    remote_residency_restriction,
 )
+
+
+def test_remote_residency_restriction_flags_specific_geographies():
+    assert remote_residency_restriction(Job(location="Remote - United Kingdom")) == "restricted"
+    assert remote_residency_restriction(Job(location="USA")) == "restricted"
+    assert remote_residency_restriction(Job(location="Europe")) == "restricted"
+    assert remote_residency_restriction(Job(location="United States, Canada")) == "restricted"
+
+
+def test_remote_residency_restriction_allows_worldwide_and_israel():
+    assert remote_residency_restriction(Job(location="Remote")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Worldwide")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Anywhere")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Remote - Israel")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Remote - EMEA")) == "unrestricted"
 
 
 def test_is_eu_member_job_is_strict():

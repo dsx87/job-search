@@ -11,10 +11,12 @@
   offers relocation with visa sponsorship/support. Skip if it is silent on
   remote, relocation, AND sponsorship.
 - Either signal is sufficient — do not require both remote and relocation.
-- Skip remote roles restricted to US and/or Canada residents/citizens only.
-  Signals: "US only", "Canada only", "must reside in the US", "must be
-  authorized to work in the US", "no visa sponsorship", "W2 only". A US/Canadian
-  company with no such restriction is acceptable.
+- Skip a remote role that is restricted to a specific country or region Igor
+  cannot work from (e.g. "Remote — United Kingdom", "US only", "Europe only",
+  "must be authorized to work in the US", "W2 only"), UNLESS it offers
+  relocation/visa sponsorship. Worldwide/anywhere remote — and roles that
+  include Israel, the Middle East, or EMEA — are acceptable. Note: aggregators
+  often carry this restriction in the location field, not the description.
 
 ## Employment type
 

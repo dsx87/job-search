@@ -103,6 +103,33 @@ def is_israel_job(job):
     return False
 
 
+# Umbrellas that plausibly include Israel (Middle East) or are worldwide, so a
+# remote role tagged with them is NOT a disqualifying residency restriction.
+_INCLUSIVE_LOCATION_TOKENS = {
+    "worldwide", "global", "anywhere", "emea", "mena", "middle east",
+}
+
+
+def remote_residency_restriction(job):
+    """Classify a remote role's LOCATION field as a residency restriction.
+
+    Returns "restricted" when the location names a specific geography that
+    excludes Israel (e.g. "Remote - United Kingdom", "USA", "Europe") — the
+    candidate would have to reside there, which relocation cannot fix for a
+    remote role. Returns "unrestricted" for worldwide/anywhere, Israel-inclusive,
+    Middle East / EMEA umbrellas, or an unrecognized location. Deterministic;
+    reads the authoritative structured field, not the free-text description.
+    """
+    loc = job.location.lower().strip()
+    if not loc or is_israel_job(job):
+        return "unrestricted"
+    if any(contains_location_token(loc, token) for token in _INCLUSIVE_LOCATION_TOKENS):
+        return "unrestricted"
+    if classify_region(job) != Region.UNKNOWN:
+        return "restricted"
+    return "unrestricted"
+
+
 def guess_location_from_text(text):
     lower = str(text or "").lower()
     token_sets = [

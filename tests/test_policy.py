@@ -282,6 +282,53 @@ def test_remote_restricted_non_us_uncertain():
     assert apply_policy(facts, Job(description="Remote within Germany."))["verdict"] == "uncertain"
 
 
+# --- rule 7b: residency restriction carried in the LOCATION field -----
+# Aggregator sources (arc requiredCountries, remotive candidate_required_location,
+# jobicy jobGeo, himalayas locationRestrictions, RSS) put a remote role's country
+# lock in the LOCATION field, not the description, so it must be read directly.
+
+def test_remote_country_locked_location_nonfit():
+    # Reproduces the Bjak/arc bug: remote, UK-locked, with only metadata text.
+    facts = _facts(work_arrangement="remote", remote_geo_scope="unknown")
+    job = Job(title="iOS Software Engineer", location="Remote - United Kingdom",
+              region=Region.EU, is_remote=True, description="Full-time Senior iOS")
+    assert apply_policy(facts, job)["verdict"] == "nonfit"
+
+
+def test_remote_country_locked_us_location_nonfit():
+    facts = _facts(work_arrangement="remote", remote_geo_scope="worldwide")
+    job = Job(location="USA", is_remote=True, description="Fully remote iOS role.")
+    assert apply_policy(facts, job)["verdict"] == "nonfit"
+
+
+def test_remote_worldwide_location_still_fit():
+    facts = _facts(work_arrangement="remote", remote_geo_scope="worldwide")
+    job = Job(location="Remote", is_remote=True, description="Fully remote, work from anywhere.")
+    assert apply_policy(facts, job)["verdict"] == "fit"
+
+
+def test_remote_location_including_israel_not_dropped():
+    facts = _facts(work_arrangement="remote")
+    job = Job(location="Remote - Israel", is_remote=True, description="Remote iOS role in Israel.")
+    assert apply_policy(facts, job)["verdict"] == "fit"
+
+
+def test_remote_emea_umbrella_not_dropped():
+    # EMEA / Middle East include Israel — not a disqualifying restriction.
+    facts = _facts(work_arrangement="remote", remote_geo_scope="worldwide")
+    job = Job(location="Remote - EMEA", is_remote=True, description="Remote across the EMEA region.")
+    assert apply_policy(facts, job)["verdict"] == "fit"
+
+
+def test_remote_country_locked_with_grounded_sponsorship_fit():
+    # A grounded relocation/visa sponsorship offer overrides the country lock.
+    facts = _facts(work_arrangement="remote", offers_sponsorship="yes",
+                   evidence={"offers_sponsorship": "we sponsor visas and relocation"})
+    job = Job(location="Remote - United Kingdom", region=Region.EU, is_remote=True,
+              description="Remote UK role. We sponsor visas and relocation for the right hire.")
+    assert apply_policy(facts, job)["verdict"] == "fit"
+
+
 def test_remote_restricted_empty_uncertain():
     facts = _facts(
         work_arrangement="remote",

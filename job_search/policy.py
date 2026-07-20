@@ -16,7 +16,7 @@ description must be written in English, and a non-remote role must explicitly
 state remote work or offer relocation/visa sponsorship. Israeli roles are exempt
 from both (Igor is local; some postings are in Hebrew).
 """
-from .location.classify import is_israel_job
+from .location.classify import is_israel_job, remote_residency_restriction
 from .models import coerce_job
 from .text import collapse_ws, is_probably_english
 
@@ -88,6 +88,27 @@ def apply_policy(facts, job) -> dict:
                 "Israeli role may require 4+ office days, but it is unclear (unverified) — review.",
             )
         return _decision("fit", "Israeli iOS/macOS role meeting office-attendance criteria.", tz)
+
+    # Residency restriction carried in the authoritative location field: a
+    # source-marked remote role tied to a geography that excludes Israel is
+    # unavailable, and relocation cannot help a remote role. Aggregator sources
+    # (arc, remotive, jobicy, himalayas, RSS) put this lock in `location`, not the
+    # description, so the LLM never sees it. A grounded sponsorship offer still
+    # overrides. Israeli roles already returned above.
+    if job.is_remote and remote_residency_restriction(job) == "restricted":
+        where = job.location.strip()
+        if where.lower().startswith("remote"):
+            where = where[len("remote"):].lstrip(" -–—,:").strip() or job.location.strip()
+        if facts.get("offers_sponsorship") == "yes" and _grounded(facts, "offers_sponsorship", text):
+            return _decision(
+                "fit",
+                f"Remote role tied to {where}, but relocation/visa sponsorship is offered.",
+                tz,
+            )
+        return _decision(
+            "nonfit",
+            f"Remote role restricted to {where} — residency required there (you are in Israel).",
+        )
 
     employment = facts.get("employment_type")
     if employment in ("contract", "freelance", "part_time") and arrangement != "remote":
