@@ -1,6 +1,8 @@
 """Characterization tests for the filter rules and run_pipeline."""
 import datetime as dt
 
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.models import Job, Region
 from job_search.filters.rules import (
@@ -60,13 +62,106 @@ def test_remote_filter():
 
 
 def test_relocation_filter():
-    eu = {Region.EU, Region.CA, Region.US}
-    assert relocation_filter(Job(location="Berlin, Germany", description="visa sponsorship available"), eu) is True
-    assert relocation_filter(Job(location="Berlin, Germany", description="we cannot sponsor visas"), eu) is False
-    assert relocation_filter(Job(location="Berlin, Germany", description="just a normal role"), eu) is False
-    assert relocation_filter(Job(source="relocate.me", location="Germany", description="anything"), eu) is True
-    # AU not in the default relocation set
-    assert relocation_filter(Job(location="Sydney, Australia", description="visa sponsorship"), eu) is False
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="Normal full-time iOS role"),
+        {Region.EU},
+    ) is True
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="Local candidates only"),
+        {Region.EU},
+    ) is False
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="Normal role"),
+        {Region.EU},
+    ) is False
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="Visa sponsorship available"),
+        {Region.EU},
+    ) is True
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="Normal role"),
+        {Region.US},
+    ) is False
+    assert relocation_filter(
+        Job(
+            source="relocate.me",
+            location="Berlin, Germany",
+            description="Applicants must already be authorized to work",
+        ),
+        {Region.EU},
+    ) is False
+
+
+def test_relocation_filter_boilerplate_auth_phrase_does_not_block():
+    # "must have the right to work" is common boilerplate in sponsoring listings;
+    # it must no longer block an otherwise-qualifying EU-member role.
+    assert relocation_filter(
+        Job(location="Berlin, Germany", description="You must have the right to work in the EU."),
+        {Region.EU},
+    ) is True
+
+
+def test_relocation_filter_blocker_yields_to_sponsorship_evidence():
+    # A blocker phrase alongside an explicit sponsorship offer must not filter the job.
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="EU citizens only, but visa sponsorship available"),
+        {Region.EU},
+    ) is True
+    # ...but the same blocker with no sponsorship offer still disqualifies.
+    assert relocation_filter(
+        Job(location="London, United Kingdom", description="EU citizens only. No sponsorship."),
+        {Region.EU},
+    ) is False
+
+
+def test_relocation_filter_negated_sponsorship_disqualifies():
+    # Regression: a blocker phrase must not self-satisfy the evidence check —
+    # "no visa sponsorship" contains the evidence keyword "visa sponsorship".
+    for desc in (
+        "No visa sponsorship. US only.",
+        "Visa sponsorship is not available.",
+        "We do not sponsor visas.",
+    ):
+        job = Job(location="Austin, Texas", description=desc)
+        assert relocation_filter(job) is False, desc
+
+
+def test_relocation_filter_rejects_northern_ireland_without_evidence():
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        location="Belfast, Northern Ireland",
+        description="Build an onsite iOS application with Swift and UIKit.",
+    )
+
+    assert relocation_filter(job, {Region.EU}) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Belfast, Northern-Ireland",
+        "Belfast, Northern  Ireland",
+        "Remote - non-EU",
+        "Dublin, Ohio, USA",
+        "Athens, Georgia, USA",
+        "Dublin, Canada",
+        "Athens, Australia",
+        "Dublin, United Kingdom",
+        "Belfast, N. Ireland",
+        "Dublin, GA",
+        "Athens, OH",
+    ],
+)
+def test_relocation_filter_rejects_non_eu_and_conflicting_locations(location):
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        location=location,
+        description="Build an onsite iOS application with Swift and UIKit.",
+    )
+
+    assert relocation_filter(job, {Region.EU}) is False
 
 
 def test_opportunity_filter_israel_always_passes():
@@ -82,6 +177,18 @@ def test_dedup_url_and_title_company_location():
     ]
     out = dedup(jobs)
     assert [j.url for j in out] == ["https://x.com/a/", "https://x.com/1"]
+
+
+def test_dedup_keeps_unrelated_url_less_jobs_distinct():
+    jobs = [
+        Job(title="iOS Engineer", company="Acme"),
+        Job(title="macOS Engineer", company="Beta"),
+        Job(title=" iOS Engineer ", company="ACME"),
+        Job(),
+        Job(),
+    ]
+
+    assert dedup(jobs) == [jobs[0], jobs[1], jobs[3], jobs[4]]
 
 
 def test_filter_by_age():
@@ -118,7 +225,7 @@ def test_run_pipeline_golden():
         Job(title="Android Developer", company="Initech", location="Remote",
             url="https://x/an", description="Swift Kotlin iOS Android remote", is_remote=True, date_posted=today),
         Job(title="iOS Dev", company="Onsite Co", location="Berlin",
-            url="https://x/on", description="strictly onsite in office, no visa", is_remote=False, date_posted=today),
+            url="https://x/on", description="strictly onsite, local candidates only", is_remote=False, date_posted=today),
         Job(title="macOS Engineer", company="Cupertino", location="Remote",
             url="https://x/mac", description="Swift, remote position", is_remote=True, date_posted=today),
     ]
@@ -127,3 +234,151 @@ def test_run_pipeline_golden():
         ("iOS Engineer", "EU"),
         ("macOS Engineer", "UNKNOWN"),
     ]
+
+
+def test_run_pipeline_keeps_onsite_eu_member_role_without_blocker():
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        location="Berlin, Germany",
+        url="https://x/berlin",
+        description="Build an onsite iOS application with Swift and UIKit.",
+    )
+
+    assert run_pipeline([job], max_age_days=30) == [job]
+
+
+# --- audit order 5: dedup now MERGES duplicates instead of dropping them ---
+def test_dedup_merges_richer_description_from_later_duplicate():
+    # Same url; the SECOND posting carries the richer description -> richness, not first-wins.
+    jobs = [
+        Job(url="https://x/1", title="iOS", company="Acme", description="short"),
+        Job(
+            url="https://x/1",
+            title="iOS",
+            company="Acme",
+            description="a much longer and richer description with detail",
+        ),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].description == "a much longer and richer description with detail"
+
+
+def test_dedup_merges_url_and_description_into_url_less_first_record():
+    # First record has no url but the same title|company key as the second.
+    jobs = [
+        Job(title="iOS", company="Acme"),
+        Job(title="iOS", company="Acme", url="https://x/1", description="fuller"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].url == "https://x/1"
+    assert out[0].description == "fuller"
+
+
+def test_dedup_merges_remote_date_and_region_across_duplicates():
+    jobs = [
+        Job(
+            url="https://x/1",
+            title="iOS",
+            company="Acme",
+            is_remote=False,
+            date_posted=dt.date(2024, 1, 1),
+            region=Region.UNKNOWN,
+        ),
+        Job(
+            url="https://x/1",
+            title="iOS",
+            company="Acme",
+            is_remote=True,
+            date_posted=dt.date(2024, 3, 1),
+            region=Region.EU,
+        ),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].is_remote is True
+    assert out[0].date_posted == dt.date(2024, 3, 1)
+    assert out[0].region == Region.EU
+
+
+def test_dedup_chains_third_duplicate_into_same_record():
+    # After the first two merge, the merged record's keys (incl. the url) must be
+    # registered so a third duplicate sharing the url merges into the same record.
+    jobs = [
+        Job(title="iOS", company="Acme"),
+        Job(title="iOS", company="Acme", url="https://x/1"),
+        Job(url="https://x/1", title="iOS Dev", company="Acme", description="third"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].url == "https://x/1"
+    assert out[0].description == "third"
+
+
+def test_dedup_unions_two_prior_records_bridged_by_a_later_job():
+    # A posting carries up to two identity aliases (url and title|company|location).
+    # Records A and B share NO key, so they start distinct. C shares A's url and
+    # B's title|company key, bridging them -- all three must collapse into ONE
+    # record. (The pre-union code merged C into A but left B stranded.)
+    jobs = [
+        Job(url="https://x/1", title="iOS Engineer", company="Acme"),      # A
+        Job(url="https://x/2", title="Senior iOS", company="Acme"),        # B
+        Job(url="https://x/1", title="Senior iOS", company="Acme",         # C bridges A+B
+            description="fullest description across all three"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].description == "fullest description across all three"
+    # The bridged record's keys are all remapped, so a 4th duplicate arriving via
+    # B's url still folds into the same record instead of spawning a new one.
+    out2 = dedup(jobs + [Job(url="https://x/2", title="ignored", company="ignored")])
+    assert len(out2) == 1
+
+
+def test_dedup_registers_identity_alias_synthesized_by_a_merge():
+    # A carries a title but no company; B (same url) carries the company but no
+    # title. Merging them SYNTHESIZES a title|company alias that neither input
+    # had. A later duplicate C matching only that synthesized alias must still
+    # fold into the merged record instead of surviving as a separate job.
+    jobs = [
+        Job(url="https://x/1", title="iOS Engineer"),                 # A: {url, "ios engineer|"}
+        Job(url="https://x/1", company="Acme"),                       # B: {url, "|acme"}
+        Job(url="https://x/2", title="iOS Engineer", company="Acme",  # C: {url2, "ios engineer|acme"}
+            description="third"),
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].title == "iOS Engineer"
+    assert out[0].company == "Acme"
+    assert out[0].description == "third"
+
+
+def test_dedup_absorbs_group_a_synthesized_alias_collides_with():
+    # G is a distinct record whose title|company key is "ios engineer|acme".
+    # A (title only) and B (company only) share a url, so they merge into a record
+    # that SYNTHESIZES that very same title|company key. The synthesized alias
+    # therefore collides with G's existing key: all three must collapse into one
+    # record, not leave G stranded alongside the merged A+B.
+    jobs = [
+        Job(url="https://x/9", title="iOS Engineer", company="Acme", description="G"),  # G
+        Job(url="https://x/1", title="iOS Engineer"),                                   # A
+        Job(url="https://x/1", company="Acme", description="a much fuller posting"),    # B
+    ]
+    out = dedup(jobs)
+    assert len(out) == 1
+    assert out[0].title == "iOS Engineer"
+    assert out[0].company == "Acme"
+    assert out[0].description == "a much fuller posting"
+    # Order-independence: G arriving last must give the same single-record result.
+    reordered = dedup([jobs[1], jobs[2], jobs[0]])
+    assert len(reordered) == 1
+
+
+def test_dedup_keeps_all_empty_jobs():
+    # An all-empty Job() has no identity keys and is never merged.
+    jobs = [Job(), Job(), Job()]
+    out = dedup(jobs)
+    assert len(out) == 3
+    assert out == jobs

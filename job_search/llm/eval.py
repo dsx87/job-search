@@ -1,36 +1,40 @@
-"""LLM job evaluation against the fit criteria."""
-import json
+"""Job evaluation: structured fact extraction + deterministic policy.
+
+Instead of asking the model for a direct fit verdict (whose wording could
+silently change policy), we extract typed facts from the posting and apply
+criteria.md deterministically in Python (audit Finding 17). The verdict is one
+of "fit", "nonfit", or "uncertain"; the pipeline routes "uncertain" to a review
+section rather than discarding it.
+"""
+from ..location.classify import is_israel_job
+from ..models import coerce_job
+from ..policy import apply_policy
+from ..text import is_probably_english
+from .facts import default_facts, extract_facts
 
 
 def evaluate_job(client, criteria: str, job: dict) -> dict:
-    """Returns {"fit": bool, "reason": str, "timezone_note": str|None}."""
-    prompt = f"""You are evaluating a job posting for Igor Pivnyk, an iOS/macOS developer based in Israel (UTC+3).
+    """Extract facts, then apply the deterministic policy.
 
-## Fit Criteria
+    Returns {"fit": bool, "reason": str, "timezone_note": str|None,
+    "verdict": "fit"|"nonfit"|"uncertain", "facts": dict}. The `criteria`
+    argument is retained for call-site compatibility; the policy now lives in
+    job_search/policy.py (the executable form of criteria.md).
 
-{criteria}
-
-## Job Posting
-
-Title: {job.get("title", "")}
-Company: {job.get("company", "")}
-Location: {job.get("location", "")}
-Remote: {job.get("is_remote", "")}
-Source: {job.get("source", "")}
-URL: {job.get("url", "")}
-
-Description:
-{job.get("description", "")[:5000]}
-
-## Your Task
-
-Decide whether this job fits Igor's criteria. Return a JSON object with exactly these fields:
-- "fit": true or false
-- "reason": one or two sentences explaining the decision
-- "timezone_note": a warning string if the role requires strict US business hours only, otherwise null
-"""
-    raw = client.generate(prompt, temperature=0.0, json_mode=True)
-    result = json.loads(raw)
-    if isinstance(result.get("fit"), str):
-        result["fit"] = result["fit"].lower() == "true"
-    return result
+    Non-English, non-Israeli postings are rejected by the policy's language gate
+    regardless of their facts, so fact extraction (an LLM call) is skipped for
+    them; apply_policy still runs and returns the identical verdict/reason.
+    """
+    job = coerce_job(job)
+    if not is_israel_job(job) and not is_probably_english(job.description):
+        facts = default_facts()
+    else:
+        facts = extract_facts(client, job)
+    decision = apply_policy(facts, job)
+    return {
+        "fit": decision["verdict"] == "fit",
+        "reason": decision["reason"],
+        "timezone_note": decision["timezone_note"],
+        "verdict": decision["verdict"],
+        "facts": facts,
+    }

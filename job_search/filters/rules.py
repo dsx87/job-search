@@ -2,9 +2,10 @@
 import datetime as dt
 import re
 
-from ..location.classify import classify_region, is_israel_job
-from ..models import Region
-from ..text import collapse_ws, strip_html
+from ..identity import job_identity_keys
+from ..location.classify import classify_region, is_eu_member_job, is_israel_job
+from ..models import Region, merge_jobs
+from ..text import strip_html
 from .keywords import SKILL_KEYWORDS, match_keywords
 
 RELOCATION_KEYWORDS = [
@@ -115,6 +116,16 @@ _RELOCATION_BLOCKERS = set(
         "visa sponsorship is not available",
         "without current or future sponsorship",
         "must be authorized to work",
+        "locals only",
+        "local candidates only",
+        "eu citizens only",
+        "eu residents only",
+        "european union citizens only",
+        "european union residents only",
+        "must already be authorized to work",
+        "must currently be authorized to work",
+        "must be legally authorized to work",
+        "must have existing work authorization",
     ]
 )
 
@@ -209,8 +220,15 @@ def has_remote_evidence(job, text):
 
 
 def has_relocation_evidence(text):
+    # Blocker phrases contain evidence keywords ("no visa sponsorship" contains
+    # "visa sponsorship"), so neutralize them first — otherwise a denial would
+    # self-register as a positive relocation offer.
+    scan = text
+    for phrase in _RELOCATION_BLOCKERS:
+        if phrase in scan:
+            scan = scan.replace(phrase, " ")
     pattern = "|".join(re.escape(kw) for kw in RELOCATION_KEYWORDS)
-    return bool(re.search(pattern, text))
+    return bool(re.search(pattern, scan))
 
 
 def has_relocation_blocker(text):
@@ -237,12 +255,19 @@ def relocation_filter(job, relocation_regions=None):
     if region not in relocation_regions:
         return False
 
+    text = job_text(job)
+    # A blocker phrase only disqualifies when the posting shows no sponsorship /
+    # relocation offer — many listings carry boilerplate authorization wording
+    # alongside an explicit "visa sponsorship available".
+    if has_relocation_blocker(text) and not has_relocation_evidence(text):
+        return False
+
+    if is_eu_member_job(job):
+        return True
+
     if job.source.lower() in RELOCATION_GUARANTEED_SOURCES:
         return True
 
-    text = job_text(job)
-    if has_relocation_blocker(text):
-        return False
     return has_relocation_evidence(text)
 
 
@@ -253,20 +278,77 @@ def opportunity_filter(job, relocation_regions=None):
 
 
 def dedup(jobs):
-    seen = set()
+    """Collapse duplicate postings, MERGING richer fields into the kept record.
+
+    Rather than dropping whichever duplicate arrives later (which could discard
+    the fuller description, a better URL, or a known date), a duplicate is merged
+    into the record it shares an identity key with. A posting carries up to two
+    identity aliases (URL and title/company/location), so duplicates form a graph
+    that this collapses with union-find semantics:
+
+    - A single incoming job can bridge two records that were previously distinct
+      (it shares one alias with each); all bridged records are unioned.
+    - Merging complementary fields can SYNTHESIZE an alias no input carried (a
+      title from one record + a company from another form a title|company key
+      present in neither); if that alias collides with a still-distinct group,
+      that group is absorbed too, repeating until the survivor's key set is
+      closed. Each absorb tombstones one group, so this settles in finite steps.
+
+    Survivors keep the earliest slot they were merged into and every key of the
+    unioned group is remapped to it with a plain assignment (not setdefault, so
+    no stale mapping can strand a later duplicate). Identity-less jobs are kept
+    as-is; first-appearance order of distinct identities is preserved.
+    """
     result = []
+    group_keys = []  # keys owned by each slot; None once merged away or identity-less
+    key_to_index = {}
+
+    def absorb(idx, other):
+        """Union slot `other` into `idx`, tombstoning `other` (dropped later)."""
+        result[idx] = merge_jobs(result[idx], result[other])
+        group_keys[idx] |= group_keys[other]
+        result[other] = None
+        group_keys[other] = None
+
     for job in jobs:
-        key = job.url.rstrip("/").lower()
-        alt_key = "{}|{}".format(job.title.lower().strip(), job.company.lower().strip())
-        location = collapse_ws(job.location).lower()
-        if location:
-            alt_key = "{}|{}".format(alt_key, location)
-        if key in seen or alt_key in seen:
+        keys = set(job_identity_keys(job))
+        if not keys:
+            result.append(job)
+            group_keys.append(None)
             continue
-        seen.add(key)
-        seen.add(alt_key)
-        result.append(job)
-    return result
+        # Every distinct existing record this job's own keys touch, earliest first.
+        matched = sorted({key_to_index[key] for key in keys if key in key_to_index})
+        if not matched:
+            result.append(job)
+            group_keys.append(set(keys))
+            idx = len(result) - 1
+        else:
+            idx = matched[0]
+            result[idx] = merge_jobs(result[idx], job)
+            group_keys[idx] |= keys
+            for other in matched[1:]:
+                absorb(idx, other)
+        # Close the survivor's key set: register every alias the merged record now
+        # has (including any synthesized by the merge), absorbing any live group a
+        # synthesized alias collides with. Sorted drain keeps absorption order
+        # deterministic; the `not None` guard skips groups tombstoned this pass.
+        pending = sorted(set(job_identity_keys(result[idx])) - group_keys[idx])
+        while pending:
+            key = pending.pop()
+            if key in group_keys[idx]:
+                continue
+            group_keys[idx].add(key)
+            collide = key_to_index.get(key)
+            if collide is not None and collide != idx and result[collide] is not None:
+                # Keep the EARLIEST slot as the survivor (as the main merge path
+                # does), so first-appearance order and tie-breaking stay stable
+                # even when the colliding group predates this one.
+                idx, gone = (idx, collide) if idx < collide else (collide, idx)
+                absorb(idx, gone)
+                pending = sorted(set(job_identity_keys(result[idx])) - group_keys[idx])
+        for key in group_keys[idx]:
+            key_to_index[key] = idx
+    return [job for job in result if job is not None]
 
 
 def filter_by_age(jobs, max_age_days):

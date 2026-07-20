@@ -28,6 +28,7 @@ import urllib.error
 
 from ..dates import parse_iso_date
 from ..http import http_request
+from ..identity import job_identity_keys
 from ..models import Job
 from .base import BaseSource, register
 
@@ -108,18 +109,10 @@ class LinkedInGuestSource(BaseSource):
         # (not at module top) so the state package never imports this source
         # module in a cycle.
         try:
-            from ..state.seen_jobs import (
-                load_seen_jobs,
-                normalize_url,
-                title_company_key,
-            )
+            from ..state.seen_jobs import load_seen_jobs
             seen = load_seen_jobs() or set()
         except Exception:
             seen = set()
-            normalize_url = lambda u: (u or "").rstrip("/").lower()  # noqa: E731
-            title_company_key = lambda t, c, loc="": "{}|{}".format(  # noqa: E731
-                (t or "").lower().strip(), (c or "").lower().strip()
-            )
 
         timeout = 30
         global_budget = self._env_float("SCRAPE_BUDGET_SECONDS", 600.0)
@@ -134,6 +127,7 @@ class LinkedInGuestSource(BaseSource):
         for query in QUERIES:
             for location, results_wanted in LOCATIONS:
                 if time.monotonic() >= deadline:
+                    self._timed_out("LinkedIn source time budget reached")
                     if verbose:
                         print("[{}] time budget reached — returning {} job(s)".format(NAME, len(jobs)), flush=True)
                     return jobs
@@ -142,6 +136,7 @@ class LinkedInGuestSource(BaseSource):
                     print("[{}] {!r} in {} ({} page(s))...".format(NAME, query, location, pages), flush=True)
                 for page in range(pages):
                     if time.monotonic() >= deadline:
+                        self._timed_out("LinkedIn source time budget reached")
                         return jobs
                     start = page * PER_PAGE
                     try:
@@ -150,11 +145,14 @@ class LinkedInGuestSource(BaseSource):
                             {"keywords": query, "location": location, "start": start},
                             timeout, verbose,
                         )
+                        self._attempt_http(status)
                     except _RateLimited:
+                        self._attempt_failed("HTTP 429 rate limit")
                         if verbose:
                             print("[{}] rate-limited on search — stopping this location".format(NAME), flush=True)
                         break
                     except Exception as exc:
+                        self._attempt_failed(exc)
                         if verbose:
                             print("[{}] search error ({} start={}): {}".format(NAME, location, start, exc), flush=True)
                         break
@@ -186,10 +184,12 @@ class LinkedInGuestSource(BaseSource):
                         is_remote = "remote" in loc.lower() or "remote" in title.lower()
 
                         # Only fetch the (expensive) description for genuinely-new jobs.
-                        already_seen = (
-                            normalize_url(url) in seen
-                            or title_company_key(title, company, loc) in seen
-                        )
+                        already_seen = not seen.isdisjoint(job_identity_keys({
+                            "url": url,
+                            "title": title,
+                            "company": company,
+                            "location": loc,
+                        }))
                         description = ""
                         if not already_seen and not descriptions_disabled and time.monotonic() < deadline:
                             try:

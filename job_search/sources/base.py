@@ -14,6 +14,33 @@ class BaseSource(object):
     # enabled via SOURCES_ENABLE / --sources <name>. See sources.fetch.select_sources.
     default_enabled = True
 
+    def __init__(self):
+        self._attempts = 0
+        self._failures = []
+        self._skip_detail = ""
+        self._timeout_detail = ""
+
+    def _attempt_succeeded(self):
+        self._attempts += 1
+
+    def _attempt_failed(self, error):
+        self._attempts += 1
+        detail = " ".join(str(error or "request failed").split())
+        if detail:
+            self._failures.append(detail[:240])
+
+    def _attempt_http(self, status):
+        if 200 <= status < 300:
+            self._attempt_succeeded()
+        else:
+            self._attempt_failed("HTTP {}".format(status))
+
+    def _skip(self, detail):
+        self._skip_detail = " ".join(str(detail).split())[:240]
+
+    def _timed_out(self, detail):
+        self._timeout_detail = " ".join(str(detail).split())[:240]
+
     def fetch(self, verbose=False):
         raise NotImplementedError
 

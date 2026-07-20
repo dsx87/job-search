@@ -1,13 +1,114 @@
 """Characterization tests for region classification and location helpers."""
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.models import Job, Region
 from job_search.location.classify import (
     classify_region,
     contains_location_token,
+    is_eu_member_job,
     is_israel_job,
     guess_location_from_text,
     apply_region,
+    remote_residency_restriction,
 )
+
+
+def test_remote_residency_restriction_flags_specific_geographies():
+    assert remote_residency_restriction(Job(location="Remote - United Kingdom")) == "restricted"
+    assert remote_residency_restriction(Job(location="USA")) == "restricted"
+    assert remote_residency_restriction(Job(location="Europe")) == "restricted"
+    assert remote_residency_restriction(Job(location="United States, Canada")) == "restricted"
+
+
+def test_remote_residency_restriction_allows_worldwide_and_israel():
+    assert remote_residency_restriction(Job(location="Remote")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Worldwide")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Anywhere")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Remote - Israel")) == "unrestricted"
+    assert remote_residency_restriction(Job(location="Remote - EMEA")) == "unrestricted"
+
+
+def test_is_eu_member_job_is_strict():
+    assert is_eu_member_job(Job(location="Berlin, Germany")) is True
+    assert is_eu_member_job(Job(location="Paris, France")) is True
+    assert is_eu_member_job(Job(location="Remote - EU")) is True
+    assert is_eu_member_job(Job(location="European Union")) is True
+    assert is_eu_member_job(Job(location="Dublin, Ireland")) is True
+    assert is_eu_member_job(Job(location="Belfast, Northern Ireland")) is False
+    assert is_eu_member_job(
+        Job(location="Dublin, Ireland / Belfast, Northern Ireland")
+    ) is True
+
+    assert is_eu_member_job(Job(location="London, United Kingdom")) is False
+    assert is_eu_member_job(Job(location="Zurich, Switzerland")) is False
+    assert is_eu_member_job(Job(location="Oslo, Norway")) is False
+    assert is_eu_member_job(Job(location="Europe")) is False
+    assert is_eu_member_job(Job(location="EMEA")) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Belfast, Northern-Ireland",
+        "Belfast, Northern  Ireland",
+        "Belfast, N. Ireland",
+        "Belfast, N Ireland",
+        "Belfast, N.Ireland",
+    ],
+)
+def test_is_eu_member_job_rejects_northern_ireland_spelling_variants(location):
+    assert is_eu_member_job(Job(location=location)) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Remote - non-EU",
+        "Dublin, Ohio, USA",
+        "Athens, Georgia, USA",
+        "Dublin, Canada",
+        "Athens, Australia",
+        "Dublin, United Kingdom",
+        # US state postal codes without a spelled-out country
+        "Dublin, GA",
+        "Athens, OH",
+        "Dublin, OH",
+    ],
+)
+def test_is_eu_member_job_rejects_negation_and_conflicting_city_evidence(location):
+    assert is_eu_member_job(Job(location=location)) is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        # A genuine member city plus a broad-Europe umbrella still qualifies.
+        "Munich, EMEA",
+        "Berlin, Europe",
+        "Amsterdam, EEA",
+        # DE is the Germany country code, not the Delaware state code.
+        "Munich, DE",
+        # Irish "Co." county notation must not read as the Colorado state code.
+        "Dublin, Co. Dublin",
+    ],
+)
+def test_is_eu_member_job_keeps_member_city_with_broad_or_ambiguous_qualifier(location):
+    assert is_eu_member_job(Job(location=location)) is True
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Dublin, Ireland / Belfast, Northern-Ireland",
+        "Berlin, Germany / USA",
+        "Remote - EU / USA",
+        "Non-EU applicants / Paris, France",
+    ],
+)
+def test_is_eu_member_job_keeps_independent_positive_eu_evidence(location):
+    assert is_eu_member_job(Job(location=location)) is True
 
 
 def test_classify_region():

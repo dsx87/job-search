@@ -5,15 +5,97 @@ rather than module globals, so a single client is built once in run.py/cli.py
 and threaded through. prepare_fit performs NO Telegram I/O (safe to run
 concurrently); send_fit does the delivery.
 """
+import html
 import re
 import sys
+import urllib.parse
 import urllib.request
+from collections.abc import MutableMapping
+from dataclasses import dataclass
+from typing import Optional
 
 from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instructions
 from ..latex.compile import compile_with_fixes
 from ..llm.eval import evaluate_job
 from ..llm.tailor import tailor_resume
-from ..text import strip_html
+from ..models import Job, coerce_job
+from ..profile import validate_tailored_cv
+from ..text import collapse_ws, strip_html
+
+
+class CVPreparationError(RuntimeError):
+    """Raised when a verified one-page PDF cannot be prepared."""
+
+
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    notification_sent: bool = False
+    cv_sent: bool = False
+    error: Optional[Exception] = None
+    notification_satisfied: bool = False
+
+    @property
+    def complete(self) -> bool:
+        return self.notification_satisfied and self.cv_sent and self.error is None
+
+
+class CVDeliveryError(RuntimeError):
+    """Raised when both Telegram delivery steps do not complete."""
+
+    def __init__(self, outcome: DeliveryOutcome):
+        self.outcome = outcome
+        detail = str(outcome.error) if outcome.error else "incomplete delivery"
+        super().__init__(detail)
+
+
+# Only run HTML stripping when the value actually looks like markup, so plain-text
+# descriptions keep literal angle-bracket content (generics like ``Map<String, Int>``
+# and markdown autolinks like ``<https://apply.example.com>``).
+_HTML_MARKUP_RE = re.compile(
+    r"</[a-z][^>]*>"                                   # any closing tag
+    r"|<(?:div|p|br|span|ul|ol|li|table|tr|td|th|h[1-6]|strong|em|b|i|a|"
+    r"section|article|header|footer|body|html|head|script|style|img|hr|"
+    r"blockquote|pre|code)\b[^>]*>"                    # common opening tags
+    r"|&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);",         # entities
+    re.I,
+)
+
+
+def clean_job_description(value):
+    """Return collapsed plain text, stripping HTML only when markup is present."""
+    text = str(value or "")
+    if _HTML_MARKUP_RE.search(text):
+        return collapse_ws(strip_html(text))
+    return collapse_ws(text)
+
+
+def _is_http_job_url(url):
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
+
+
+def ensure_job_description(job, fetcher=None, min_length=MIN_JOB_TEXT_LEN):
+    """Keep the richest cleaned description and report whether it is sufficient."""
+    legacy = job if isinstance(job, MutableMapping) and not isinstance(job, Job) else None
+    job = coerce_job(job)
+    current = clean_job_description(job.description)
+    if len(current) < min_length and _is_http_job_url(job.url):
+        fetch = fetcher or fetch_job_text_from_url
+        try:
+            fetched = clean_job_description(fetch(job.url))
+        except Exception as exc:
+            print(
+                f"    Job-description enrichment failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            fetched = ""
+        if len(fetched) > len(current):
+            current = fetched
+
+    job.description = current
+    if legacy is not None:
+        legacy["description"] = current
+    return len(current) >= min_length
 
 
 def _company_slug(company: str) -> str:
@@ -51,17 +133,83 @@ def fetch_job_text_from_url(url: str) -> str:
     # only removes tags, not the CSS/JS text between them, which would otherwise
     # flood the LLM prompt with markup noise.
     body = re.sub(r"(?is)<(script|style|head|noscript)\b.*?</\1>", " ", body)
-    text = strip_html(body)
-    return " ".join(text.split())
+    return clean_job_description(body)
+
+
+def _format_deferred_notification(jobs, limit=10):
+    """Build one bounded, HTML-safe Telegram summary for deferred jobs."""
+    count = len(jobs)
+    noun = "posting" if count == 1 else "postings"
+    lines = [
+        f"⚠️ <b>{count} new job {noun} deferred</b>",
+        "Not enough job-description text for reliable AI evaluation. "
+        "They will retry next run.",
+        "",
+    ]
+
+    for job in jobs[:limit]:
+        title = collapse_ws(job.get("title", ""))
+        company = collapse_ws(job.get("company", ""))
+        label = " — ".join(part for part in (title, company) if part) or "Unknown job"
+        if len(label) > 180:
+            label = label[:179] + "…"
+        safe_label = html.escape(label)
+        url = str(job.get("url", "") or "").strip()
+        if _is_http_job_url(url):
+            lines.append(f'• <a href="{html.escape(url, quote=True)}">{safe_label}</a>')
+        else:
+            lines.append(f"• {safe_label}")
+
+    omitted = count - min(count, limit)
+    if omitted:
+        lines.append(f"• … and {omitted} more")
+
+    return "\n".join(lines)
+
+
+def _format_uncertain_notification(items, limit=10):
+    """One bounded, HTML-safe Telegram summary for jobs needing human review.
+
+    `items` is a list of (job, evaluation) pairs whose deterministic verdict was
+    "uncertain" — the policy could not confidently decide, so they are surfaced
+    for review rather than silently dropped (audit Finding 18).
+    """
+    count = len(items)
+    noun = "posting" if count == 1 else "postings"
+    lines = [
+        f"🔍 <b>{count} job {noun} flagged for review</b>",
+        "The policy could not confidently decide these. Review and use /tailor if a fit.",
+        "",
+    ]
+    for job, evaluation in items[:limit]:
+        job = coerce_job(job)
+        title = collapse_ws(job.get("title", ""))
+        company = collapse_ws(job.get("company", ""))
+        label = " — ".join(part for part in (title, company) if part) or "Unknown job"
+        if len(label) > 180:
+            label = label[:179] + "…"
+        safe_label = html.escape(label)
+        reason = html.escape(collapse_ws(str((evaluation or {}).get("reason", "")))[:300])
+        url = str(job.get("url", "") or "").strip()
+        if _is_http_job_url(url):
+            head = f'• <a href="{html.escape(url, quote=True)}">{safe_label}</a>'
+        else:
+            head = f"• {safe_label}"
+        lines.append(head + (f"\n  <i>{reason}</i>" if reason else ""))
+    omitted = count - min(count, limit)
+    if omitted:
+        lines.append(f"• … and {omitted} more")
+    return "\n".join(lines)
 
 
 def _format_notification(job: dict, evaluation: dict) -> str:
-    title = job.get("title", "Unknown Title")
-    company = job.get("company", "Unknown Company")
-    location = job.get("location", "")
-    url = job.get("url", "")
-    source = job.get("source", "")
-    reason = evaluation.get("reason", "")
+    job = coerce_job(job)
+    title = html.escape(job.get("title", "Unknown Title"))
+    company = html.escape(job.get("company", "Unknown Company"))
+    location = html.escape(job.get("location", ""))
+    url = html.escape(job.get("url", ""), quote=True)
+    source = html.escape(job.get("source", ""))
+    reason = html.escape(evaluation.get("reason", ""))
     timezone_note = evaluation.get("timezone_note")
 
     lines = [
@@ -72,111 +220,139 @@ def _format_notification(job: dict, evaluation: dict) -> str:
         f"<i>{reason}</i>",
     ]
     if timezone_note:
-        lines.append(f"\n⚠️ <b>Timezone:</b> {timezone_note}")
+        lines.append(f"\n⚠️ <b>Timezone:</b> {html.escape(timezone_note)}")
 
     return "\n".join(lines)
 
 
-def prepare_fit(gemini, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
+def _prepare_verified_pdf(client, instructions: str, base_tex: str, job: dict) -> bytes:
+    """Tailor and compile a job-specific CV, failing unless a verified PDF exists."""
+    job = coerce_job(job)
+    try:
+        tex_source = tailor_resume(client, instructions, base_tex, job)
+    except Exception as exc:
+        raise CVPreparationError(f"CV tailoring failed: {exc}") from exc
+
+    try:
+        ok, pdf_bytes, final_tex = compile_with_fixes(client, tex_source)
+    except Exception as exc:
+        raise CVPreparationError(f"CV compilation failed: {exc}") from exc
+
+    if not ok or not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        raise CVPreparationError("CV compilation did not produce a verified one-page PDF")
+    if not isinstance(final_tex, str):
+        raise CVPreparationError("CV compilation did not return verifiable LaTeX source")
+    violations = validate_tailored_cv(final_tex)
+    if violations:
+        raise CVPreparationError(
+            "Final CV validation failed after compilation repair: " + "; ".join(violations)
+        )
+    return pdf_bytes
+
+
+def prepare_fit(llm, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
     """
     Tailor + compile the CV for a job already judged a fit, and assemble the
     Telegram send-payload. Performs NO Telegram I/O — pure preparation, so it is
-    safe to run concurrently across jobs. Tailoring/compilation failures are soft:
-    we fall back to raw .tex or no document.
+    safe to run concurrently across jobs. Preparation failures propagate so the
+    job remains eligible for a later retry.
 
     Returns a payload dict consumed by send_fit().
     """
+    job = coerce_job(job)
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"    Fit! Tailoring resume: {title} at {company}", flush=True)
 
-    tex_source = None
-    try:
-        tex_source = tailor_resume(gemini, tailoring_instructions, base_tex, job)
-    except Exception as exc:
-        print(f"    Tailoring error: {exc}", file=sys.stderr)
-
-    pdf_bytes = None
-    final_tex = tex_source
-    compilation_failed = False
-    if tex_source:
-        print(f"    Compiling PDF: {title} at {company}...", flush=True)
-        ok, pdf_bytes, final_tex = compile_with_fixes(gemini, tex_source)
-        if ok:
-            print(f"    PDF compiled successfully: {title} at {company}.", flush=True)
-        else:
-            compilation_failed = True
-            print(f"    PDF compilation failed after all attempts ({title} at {company}) — will send .tex as fallback.", flush=True)
-
-    message = _format_notification(job, evaluation)
-    if compilation_failed:
-        message += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
+    print(f"    Preparing verified PDF: {title} at {company}...", flush=True)
+    pdf_bytes = _prepare_verified_pdf(llm, tailoring_instructions, base_tex, job)
+    print(f"    Verified one-page PDF ready: {title} at {company}.", flush=True)
 
     return {
         "title": title,
         "company": company,
-        "message": message,
+        "message": _format_notification(job, evaluation),
         "pdf_bytes": pdf_bytes,
-        "final_tex": final_tex,
     }
 
 
-def send_fit(payload: dict, telegram) -> None:
+def prepare_retry_fit(llm, tailoring_instructions: str, base_tex: str, job: dict) -> dict:
+    """Prepare a verified CV for a known fit without creating another fit message."""
+    job = coerce_job(job)
+    title = job.get("title", "?")
+    company = job.get("company", "?")
+    print(f"    Retrying verified PDF: {title} at {company}...", flush=True)
+    pdf_bytes = _prepare_verified_pdf(llm, tailoring_instructions, base_tex, job)
+    return {"title": title, "company": company, "pdf_bytes": pdf_bytes}
+
+
+def send_fit(payload: dict, telegram, notification_already_sent=False) -> DeliveryOutcome:
     """
     Send a prepared fit to Telegram: the notification message, then the tailored
-    CV document (PDF, or .tex fallback). Raises if the message send fails so the
-    caller can leave the job unseen for a retry next run; document-send failures
-    are soft (logged, not raised).
+    verified PDF. Returns explicit partial-progress flags for orchestration.
     """
     title = payload["title"]
     company = payload["company"]
+    pdf_bytes = payload.get("pdf_bytes")
+    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        return DeliveryOutcome(
+            error=ValueError("verified PDF bytes are required for delivery"),
+            notification_satisfied=notification_already_sent,
+        )
 
-    # Let Telegram message errors propagate — caller will not mark the job as seen.
-    telegram.send_message(payload["message"])
+    notification_sent = False
+    if not notification_already_sent:
+        try:
+            telegram.send_message(payload["message"])
+        except Exception as exc:
+            return DeliveryOutcome(error=exc)
+        notification_sent = True
 
     slug = _company_slug(company)
-    pdf_bytes = payload.get("pdf_bytes")
-    final_tex = payload.get("final_tex")
-    if pdf_bytes:
-        try:
-            telegram.send_document(
-                f"igor_pivnyk_cv_{slug}.pdf", pdf_bytes,
-                caption=f"Tailored CV — {title} at {company}",
-            )
-        except Exception as exc:
-            print(f"    Telegram PDF error: {exc}", file=sys.stderr)
-    elif final_tex:
-        try:
-            telegram.send_document(
-                f"igor_pivnyk_cv_{slug}.tex", final_tex.encode("utf-8"),
-                caption=f"Tailored CV (LaTeX source) — {title} at {company}",
-            )
-        except Exception as exc:
-            print(f"    Telegram document error: {exc}", file=sys.stderr)
+    try:
+        telegram.send_document(
+            f"igor_pivnyk_cv_{slug}.pdf",
+            pdf_bytes,
+            caption=f"Tailored CV — {title} at {company}",
+        )
+    except Exception as exc:
+        return DeliveryOutcome(
+            notification_sent=notification_sent,
+            notification_satisfied=True,
+            error=exc,
+        )
+    return DeliveryOutcome(
+        notification_sent=notification_sent,
+        notification_satisfied=True,
+        cv_sent=True,
+    )
 
 
-def process_job(gemini, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:
+def process_job(llm, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:
     """
     Evaluate → tailor → compile → send a single job end-to-end.
     Returns True if a notification was sent (job was a fit).
-    Raises on errors that warrant a retry next run (evaluation failure, Telegram send failure).
-    Tailoring/compilation failures are soft — we fall back to no CV or raw .tex.
+    Raises on evaluation, preparation, or incomplete-delivery errors so the job
+    can retry next run.
 
     Thin wrapper over evaluate_job/prepare_fit/send_fit, kept for --test mode.
     """
+    job = coerce_job(job)
     title = job.get("title", "?")
     company = job.get("company", "?")
     print(f"  Evaluating: {title} at {company}", flush=True)
 
     # Let evaluation errors propagate — caller will not mark the job as seen.
-    evaluation = evaluate_job(gemini, criteria, job)
+    evaluation = evaluate_job(llm, criteria, job)
 
     if not evaluation.get("fit"):
         print(f"    Skip — {evaluation.get('reason', '')}")
         return False
 
-    payload = prepare_fit(gemini, tailoring_instructions, base_tex, job, evaluation)
-    send_fit(payload, telegram)
+    payload = prepare_fit(llm, tailoring_instructions, base_tex, job, evaluation)
+    outcome = send_fit(payload, telegram)
+    if not outcome.complete:
+        raise CVDeliveryError(outcome)
     return True
 
 
@@ -187,38 +363,40 @@ def tailor_single_job(client, job: dict, telegram) -> None:
     pipeline (see process_job). Does NOT touch seen_jobs.json — this is an
     on-demand action, not part of dedup state.
     """
+    job = coerce_job(job)
     title = job.get("title", "iOS Developer")
     company = job.get("company", "the role")
 
-    print(f"  Tailoring CV for: {title} at {company}", flush=True)
-    tex_source = tailor_resume(client, load_tailoring_instructions(), load_base_tex(), job)
+    print(f"  Tailoring and verifying CV for: {title} at {company}", flush=True)
+    pdf_bytes = _prepare_verified_pdf(
+        client,
+        load_tailoring_instructions(),
+        load_base_tex(),
+        job,
+    )
 
-    print("  Compiling PDF...", flush=True)
-    ok, pdf_bytes, final_tex = compile_with_fixes(client, tex_source)
-
+    safe_title = html.escape(title)
+    safe_company = html.escape(company)
+    safe_location = html.escape(job.get("location", ""))
+    safe_url = html.escape(job.get("url", ""), quote=True)
     header = (
-        f"<b>{title}</b>\n"
-        f"<b>{company}</b>" + (f" — {job['location']}" if job.get("location") else "") + "\n"
-        + (f'<a href="{job["url"]}">View posting</a>\n' if job.get("url") else "")
+        f"<b>{safe_title}</b>\n"
+        f"<b>{safe_company}</b>" + (f" — {safe_location}" if job.get("location") else "") + "\n"
+        + (f'<a href="{safe_url}">View posting</a>\n' if job.get("url") else "")
         + "\n📄 Tailored CV attached."
     )
-    if not ok:
-        header += "\n\n⚠️ <b>Note:</b> PDF compilation failed — raw LaTeX attached instead."
-    telegram.send_message(header)
-
-    slug = _company_slug(company)
-    if pdf_bytes:
-        telegram.send_document(
-            f"igor_pivnyk_cv_{slug}.pdf", pdf_bytes,
-            caption=f"Tailored CV — {title} at {company}",
-        )
-        print("  PDF sent to Telegram.", flush=True)
-    else:
-        telegram.send_document(
-            f"igor_pivnyk_cv_{slug}.tex", final_tex.encode("utf-8"),
-            caption=f"Tailored CV (LaTeX source) — {title} at {company}",
-        )
-        print("  LaTeX source sent to Telegram (compilation failed).", flush=True)
+    outcome = send_fit(
+        {
+            "title": title,
+            "company": company,
+            "message": header,
+            "pdf_bytes": pdf_bytes,
+        },
+        telegram,
+    )
+    if not outcome.complete:
+        raise CVDeliveryError(outcome)
+    print("  Verified PDF sent to Telegram.", flush=True)
 
 
 def _send_error_notification(exc: Exception, telegram) -> None:

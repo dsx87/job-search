@@ -12,7 +12,7 @@ import pytest
 
 
 class FakeLLM:
-    """Minimal stand-in for LLMClient / GeminiClient with a .generate method.
+    """Minimal stand-in for LLMClient / a provider with a .generate method.
 
     Either return canned responses in order, or raise queued exceptions. Records
     every prompt it was given so tests can assert on prompt contents.
@@ -22,7 +22,7 @@ class FakeLLM:
         self._responses = list(responses or [])
         self.prompts = []
 
-    def generate(self, prompt, temperature=0.0, json_mode=False):
+    def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
         self.prompts.append(prompt)
         if not self._responses:
             raise AssertionError("FakeLLM ran out of canned responses")

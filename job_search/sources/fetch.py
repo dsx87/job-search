@@ -12,6 +12,7 @@ from ..filters.rules import DEFAULT_RELOCATION_REGIONS
 from ..models import REGION_LABELS, REGION_MAP, Region, job_to_dict
 from ..text import unescape2
 from . import ALL_SOURCES, SOURCE_DESCRIPTIONS
+from .health import FetchReport, SourceHealth, SourceStatus, format_source_health
 
 
 def parse_sources(value):
@@ -91,7 +92,7 @@ def regions_for_display(regions):
     return ",".join(reverse[region] for region in ordered if region in regions)
 
 
-def fetch_source(source_name, source_cls, verbose):
+def _fetch_source_with_diagnostics(source_name, source_cls, verbose):
     source = source_cls()
     if verbose:
         print("[{}] fetching...".format(source_name), flush=True)
@@ -99,9 +100,15 @@ def fetch_source(source_name, source_cls, verbose):
         jobs = source.fetch(verbose=verbose)
         if verbose:
             print("[{}] done — {} job(s)".format(source_name, len(jobs)), flush=True)
-        return source_name, jobs, None
+        return source_name, jobs, None, source
     except Exception as exc:
-        return source_name, [], exc
+        return source_name, [], exc, source
+
+
+def fetch_source(source_name, source_cls, verbose):
+    """Compatibility helper preserving the historical three-item result."""
+    name, jobs, error, _source = _fetch_source_with_diagnostics(source_name, source_cls, verbose)
+    return name, jobs, error
 
 
 def _budget_seconds_from_env(default):
@@ -118,7 +125,29 @@ def _budget_seconds_from_env(default):
     return value if value > 0 else default
 
 
-def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=False, budget_seconds=None):
+def _source_health(name, jobs, error, source):
+    if error is not None:
+        return SourceHealth(name, SourceStatus.FAILED, failure_detail=" ".join(str(error).split())[:240])
+    if source._skip_detail:
+        return SourceHealth(name, SourceStatus.SKIPPED, failure_detail=source._skip_detail)
+    attempts = source._attempts
+    failures = source._failures
+    if source._timeout_detail:
+        successes = attempts - len(failures)
+        status = SourceStatus.PARTIAL if successes else SourceStatus.TIMED_OUT
+        return SourceHealth(
+            name, status, len(jobs), attempts, source._timeout_detail,
+        )
+    if attempts == 0:
+        return SourceHealth(name, SourceStatus.SUCCESS, len(jobs), 0)
+    successes = attempts - len(failures)
+    status = SourceStatus.PARTIAL if failures and successes else (
+        SourceStatus.FAILED if failures else SourceStatus.SUCCESS
+    )
+    return SourceHealth(name, status, len(jobs), attempts, failures[-1] if failures else "")
+
+
+def fetch_jobs_with_health(source_names=None, relocation_regions=None, max_age=30, verbose=False, budget_seconds=None):
     """Fetch and filter jobs, returning the list of Job objects.
 
     Sources run concurrently under a wall-clock budget: any source still running
@@ -133,7 +162,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
     selected = [(name, ALL_SOURCES[name]) for name in selected_names if name in ALL_SOURCES]
 
     if not selected:
-        return []
+        return FetchReport((), ())
 
     if verbose:
         print("Scraping {} sources: {}...".format(len(selected), ", ".join(name for name, _ in selected)), flush=True)
@@ -147,7 +176,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
 
     def worker(name, source_cls):
         with limiter:
-            results.put(fetch_source(name, source_cls, verbose))
+            results.put(_fetch_source_with_diagnostics(name, source_cls, verbose))
 
     for name, source_cls in selected:
         threading.Thread(
@@ -157,16 +186,18 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
 
     raw_jobs = []
     completed = set()
+    outcomes_by_name = {}
     deadline = time.monotonic() + budget_seconds
     while len(completed) < len(selected):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
-            source_name, jobs, error = results.get(timeout=remaining)
+            source_name, jobs, error, source = results.get(timeout=remaining)
         except queue.Empty:
             break
         completed.add(source_name)
+        outcomes_by_name[source_name] = _source_health(source_name, jobs, error, source)
         if error is not None:
             if verbose:
                 print("[{}] Failed: {}".format(source_name, error), file=sys.stderr)
@@ -174,6 +205,11 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
         raw_jobs.extend(jobs)
 
     abandoned = [name for name, _ in selected if name not in completed]
+    for name in abandoned:
+        outcomes_by_name[name] = SourceHealth(
+            name, SourceStatus.TIMED_OUT,
+            failure_detail="scrape budget of {:g}s exceeded".format(budget_seconds),
+        )
     if abandoned:
         # Always surface (not just under verbose): a truncated fetch is
         # operationally significant, and naming the culprit aids diagnosis.
@@ -194,7 +230,19 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
     if verbose:
         print("After filtering: {}".format(len(filtered)), flush=True)
 
-    return filtered
+    outcomes = tuple(outcomes_by_name[name] for name, _ in selected)
+    return FetchReport(tuple(filtered), outcomes)
+
+
+def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=False, budget_seconds=None):
+    """Compatibility wrapper returning only the filtered job list."""
+    return list(fetch_jobs_with_health(
+        source_names=source_names,
+        relocation_regions=relocation_regions,
+        max_age=max_age,
+        verbose=verbose,
+        budget_seconds=budget_seconds,
+    ).jobs)
 
 
 def run_scraper(source_names=None, relocation_regions=None, max_age=30, as_json=False, verbose=False):
@@ -208,14 +256,19 @@ def run_scraper(source_names=None, relocation_regions=None, max_age=30, as_json=
     if not as_json and not verbose:
         print("Scraping {} sources: {}...".format(len(selected), ", ".join(name for name, _ in selected)))
 
-    jobs = fetch_jobs(
+    report = fetch_jobs_with_health(
         source_names=source_names,
         relocation_regions=relocation_regions,
         max_age=max_age,
         verbose=verbose,
     )
 
-    render_jobs(jobs, as_json=as_json)
+    print(format_source_health(report), file=sys.stderr)
+    if not report.has_usable_source:
+        print("No usable job source completed; aborting.", file=sys.stderr)
+        return 1
+
+    render_jobs(report.jobs, as_json=as_json)
     return 0
 
 

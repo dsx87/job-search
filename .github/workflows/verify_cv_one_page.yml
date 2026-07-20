@@ -32,6 +32,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             texlive-xetex \
             texlive-latex-extra \
+            texlive-fonts-recommended \
             fonts-crosextra-carlito
 
       - name: Run one-page guard self-test

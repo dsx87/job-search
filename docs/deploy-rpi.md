@@ -1,8 +1,8 @@
 # Running the daily flow on a Raspberry Pi
 
 This runs the full pipeline — **fetch → dedupe → LLM filter → tailor résumé →
-compile PDF → Telegram** — on a self-hosted Pi instead of (or alongside) the
-GitHub Actions cron.
+validate → compile and verify a one-page PDF → Telegram** — on a self-hosted Pi
+instead of (or alongside) the GitHub Actions cron.
 
 > The GitHub Actions cron is still the more reliable option (no SD-card wear, no
 > home power/network dependency). Treat the Pi as a project or a redundant runner
@@ -12,8 +12,9 @@ GitHub Actions cron.
 
 ## Will it run on my Pi?
 
-The whole application is **pure Python standard library** — the LLM calls
-(Gemini/Qwen) and Telegram delivery are raw `urllib` HTTPS requests, and LaTeX is
+The whole application is **pure Python standard library** — every LLM call
+(each provider is a raw wire-protocol scheme) and Telegram delivery is a raw
+`urllib` HTTPS request, and LaTeX is
 a `subprocess` call to `xelatex`. There is **no `grpcio`, no `google-generativeai`
 SDK, no `requests`** — nothing to compile. So the full pipeline needs **zero pip
 packages**; only the optional sources do.
@@ -50,7 +51,7 @@ core bites is the `xelatex` compiles during tailoring.
 |---|---|---|
 | Fetch (16 concurrent sources, capped by `SCRAPE_BUDGET_SECONDS`) | Network | ~2–5 min (hard ceiling 10 min) |
 | Dedupe | trivial | seconds |
-| Filter — **1 Gemini call per _new_ job**, `EVAL_WORKERS` at a time | Gemini latency | ~1–4 min typical |
+| Filter — **1 LLM call per _new_ job**, `EVAL_WORKERS` at a time | LLM latency | ~1–4 min typical |
 | Tailor — per **match**: 1 long LLM call + `xelatex` ×2 per attempt (≤3 attempts, 120 s each) | xelatex on ARMv6 + LLM | **~1.5–2.5 min per match** |
 | Notify | Network | seconds |
 
@@ -96,15 +97,26 @@ secrets and enabling the timer — finish those two steps below.
    ```
    | Variable | Required | Purpose |
    |---|---|---|
-   | `GEMINI_API_KEY` | ✅ | LLM filtering & tailoring |
+   | `LLM_PRIMARY_API_KEY` | ✅ | primary provider key (also read as `GEMINI_API_KEY` for back-compat) |
    | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
    | `TELEGRAM_CHAT_ID` | ✅ | delivery |
-   | `QWEN_API_KEY` | optional | fallback model |
+   | `LLM_FALLBACK_API_KEY` | optional | fallback provider key (e.g. a prepaid OpenAI key) |
+   | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `gemini`) + model (default `gemini-2.5-flash`) |
+   | `LLM_PRIMARY_API_BASE` | optional | primary API base override |
+   | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-5.4-mini`) |
+   | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`) |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
    | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | comma lists forcing sources on/off; the Pi ships `linkedin-guest` on and the jobspy LinkedIn sources off |
    | `STATE_SYNC` | sync | `1` to sync `seen_jobs.json` with the `state` branch (see below); default `0` |
+
+   A provider is a **scheme** (`gemini` \| `openai` \| `anthropic`) + model + key
+   (+ optional base) — switching providers is a config edit, no code change. The
+   `openai` scheme covers any OpenAI-compatible endpoint (Groq, xAI Grok,
+   DeepSeek, …) via its `*_API_BASE`. Leave provider overrides unset, empty, or
+   whitespace-only to use the defaults; API-base overrides may include a trailing
+   slash (the client normalizes it).
 
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
    ```bash
@@ -113,7 +125,9 @@ secrets and enabling the timer — finish those two steps below.
      --job-text 'Senior iOS Engineer, remote, Swift/SwiftUI' \
      --title 'Senior iOS Developer' --company 'Acme'
    ```
-   A tailored PDF landing in Telegram means the whole chain works.
+   A tailored PDF landing in Telegram means the whole strict chain worked:
+   factual validation, XeLaTeX compilation, one-page verification, and PDF
+   upload all succeeded.
 
 5. **Enable the daily timer**:
    ```bash
@@ -194,6 +208,25 @@ account are ignored silently):
 
 The bot **self-registers** this command menu with Telegram via `setMyCommands`
 on startup, so autocomplete works with no @BotFather step.
+
+Daily runs, CLI `--tailor`, and bot `/tailor` all use the same fail-closed CV
+path. The pipeline tries one factual correction and repairs eligible compiler
+errors, but unresolved validation, compilation, page-verification, or upload
+failures block artifact delivery. Scheduled fits make no more than three
+automated delivery attempts: the initial day, one day later, and two days after
+that (days 0, 1, and 3). While backoff is pending, the job performs no LLM work.
+
+When a fit is known but its PDF cannot be prepared, Telegram sends one
+“verified CV pending” message containing the fit reasoning and next retry date.
+That successful text delivery is recorded immediately. Later attempts skip
+evaluation and send only a newly verified PDF, so a failed upload never repeats
+the fit notification. After attempt three, the job enters a blocked state and a
+terminal alert points to `/tailor`; terminal alerts retry until Telegram accepts
+them without repeating any LLM work. `/tailor` is intentionally manual and
+bypasses this daily state. The final summary reports retry, backoff, known-fit,
+blocked, preparation, notification, and CV-delivery counts plus bounded per-job
+failure details. The system never sends raw `.tex`, an unknown-page PDF, or a
+multi-page PDF.
 
 **Everything runs through one wrapper.** Both the daily timer and the bot execute
 `scripts/run_pipeline.sh`, guarded by a single `flock` — the single 700 MHz core
@@ -296,3 +329,4 @@ else keeps running on system python3).
 | TLS/certificate errors to Gemini/Telegram | `sudo apt install ca-certificates && sudo update-ca-certificates`. |
 | First run takes hours | You didn't seed `seen_jobs.json` — see "Seeding the dedup state". |
 | Fetch hangs | Expected occasionally (LinkedIn throttling); `SCRAPE_BUDGET_SECONDS` caps the fetch stage so the run continues. |
+| A matching job has no CV | Check the final summary for its attempt and next retry date. Automated attempts run on days 0, 1, and 3; after the terminal blocked alert, use `/tailor <url>` (or paste the description) to recover manually. |

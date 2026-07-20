@@ -1,9 +1,9 @@
 name: Tailor CV
 
 # Manually tailor a CV for ONE specific job posting and deliver it to Telegram.
-# Reuses the same Gemini/Qwen tailoring + xelatex compile path as the daily
-# pipeline (no Anthropic API). The phone number is injected at compile time
-# from the CV_PHONE secret and never enters the repo.
+# Reuses the same generic scheme-based LLM providers + xelatex compile path as
+# the daily pipeline. The phone number is injected at compile time from the
+# CV_PHONE secret and never enters the repo.
 #
 # Provide a URL (the action tries to fetch it) and/or paste the job text. If the
 # URL is blocked or needs JavaScript, the fetch yields too little text and the
@@ -53,20 +53,35 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             texlive-xetex \
             texlive-latex-extra \
+            texlive-fonts-recommended \
             fonts-crosextra-carlito
 
       - name: Tailor CV and send to Telegram
         env:
           PYTHONUNBUFFERED: "1"
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          # Generic scheme-based LLM providers (see the daily workflow).
+          LLM_PRIMARY_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_FALLBACK_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_PRIMARY_SCHEME: ${{ vars.LLM_PRIMARY_SCHEME }}
+          LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+          LLM_PRIMARY_API_BASE: ${{ vars.LLM_PRIMARY_API_BASE }}
+          LLM_FALLBACK_SCHEME: ${{ vars.LLM_FALLBACK_SCHEME }}
+          LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
+          LLM_FALLBACK_API_BASE: ${{ vars.LLM_FALLBACK_API_BASE }}
           CV_PHONE: ${{ secrets.CV_PHONE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pass dispatch inputs through the environment (data, not shell) so a
+          # crafted value cannot inject commands into the run: block below.
+          IN_URL: ${{ inputs.url }}
+          IN_JOB_TEXT: ${{ inputs.job_text }}
+          IN_TITLE: ${{ inputs.title }}
+          IN_COMPANY: ${{ inputs.company }}
+          IN_LOCATION: ${{ inputs.location }}
         run: |
           python3 -u -m job_search.pipeline --tailor \
-            --url "${{ inputs.url }}" \
-            --job-text "${{ inputs.job_text }}" \
-            --title "${{ inputs.title }}" \
-            --company "${{ inputs.company }}" \
-            --location "${{ inputs.location }}"
+            --url "$IN_URL" \
+            --job-text "$IN_JOB_TEXT" \
+            --title "$IN_TITLE" \
+            --company "$IN_COMPANY" \
+            --location "$IN_LOCATION"

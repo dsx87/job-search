@@ -1,66 +1,42 @@
-"""LLM CV tailoring with a deterministic content guard + one corrective retry."""
-import sys
+"""Deterministic CV tailoring: the model selects base bullets; we render them.
 
-from ..latex.compile import _strip_latex_fences
-from ..profile import EXPECTED_JOB_ORDER, validate_tailored_cv
+The model returns a structured selection of existing base bullets (llm/cv_edits)
+and a deterministic renderer (latex/tailor_render) rebuilds the CV from the
+trusted base. Every emitted line is verbatim base content, so the result is
+always a compilable subset of the base and cannot fabricate claims — replacing
+the previous full-LaTeX generation, its fabrication guard, and its repair retry
+(audit Finding 19).
+"""
+from ..latex.tailor_render import render_tailored
+from ..models import coerce_job
+from ..profile import validate_tailored_cv
+from .cv_edits import select_cv_bullets
+
+
+class CVValidationError(ValueError):
+    """Raised when even the full-base render violates factual constraints."""
+
+    def __init__(self, violations):
+        self.violations = tuple(violations)
+        super().__init__("; ".join(self.violations))
 
 
 def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict) -> str:
-    """Returns tailored LaTeX source (code fences stripped).
+    """Select relevant base bullets via the model, then render deterministically.
 
-    Generates at temperature 0.0 for factual stability, then runs a
-    deterministic guard (validate_tailored_cv). On violations it regenerates
-    once with a corrective instruction; if the second pass still fails, it logs
-    the remaining violations and returns the best attempt.
+    `tailoring_instructions` is retained for call-site compatibility; the
+    structured selection prompt no longer needs the large static instruction
+    block. A subset render should always pass the content guard; the full-base
+    fallback is defensive.
     """
-    job_text = (
-        f"Title: {job.get('title', '')}\n"
-        f"Company: {job.get('company', '')}\n"
-        f"Location: {job.get('location', '')}\n"
-        f"URL: {job.get('url', '')}\n\n"
-        f"{job.get('description', '')[:7000]}"
-    )
-    prompt = f"""You are a professional resume writer. Tailor Igor Pivnyk's CV for the job posting below.
-
-{tailoring_instructions}
-
-## Produce the LaTeX file
-
-Write the complete, compilable LaTeX source. Start from the base template and apply your changes. \
-Output the entire .tex file — do not truncate. Output raw LaTeX only — no markdown fences, \
-no explanation before or after.
-
-## Base LaTeX Template
-
-{base_tex}
-
-## Job Posting
-
-{job_text}
-"""
-    tex = _strip_latex_fences(client.generate(prompt, temperature=0.0))
-    violations = validate_tailored_cv(tex)
-    if not violations:
+    job = coerce_job(job)
+    selection = select_cv_bullets(client, base_tex, job)
+    tex = render_tailored(base_tex, selection)
+    if not validate_tailored_cv(tex):
         return tex
 
-    print(f"    CV guard caught violations: {'; '.join(violations)} — regenerating once.", flush=True)
-    corrective = prompt + f"""
-
-## CORRECTION REQUIRED
-
-Your previous attempt violated these hard constraints:
-{chr(10).join(f"- {v}" for v in violations)}
-
-Regenerate the complete LaTeX file fixing exactly these issues. The four jobs must appear in this \
-fixed order: {' → '.join(EXPECTED_JOB_ORDER)}. Do not claim any industry/domain or skill Igor does \
-not have. Output raw LaTeX only.
-"""
-    tex2 = _strip_latex_fences(client.generate(corrective, temperature=0.0))
-    remaining = validate_tailored_cv(tex2)
+    tex = render_tailored(base_tex, {})
+    remaining = validate_tailored_cv(tex)
     if remaining:
-        print(
-            f"    CV guard: violations persist after retry: {'; '.join(remaining)} — "
-            f"delivering best attempt, REVIEW BEFORE SENDING.",
-            file=sys.stderr,
-        )
-    return tex2
+        raise CVValidationError(remaining)
+    return tex

@@ -6,6 +6,7 @@ import re
 from ..dates import parse_epoch_date
 from ..filters.rules import dedup
 from ..http import http_request, verbose_source_error
+from ..identity import job_identity_keys
 from ..location.db import COUNTRY_NAMES
 from ..models import Job
 from .base import BaseSource, register
@@ -39,20 +40,22 @@ class ArcSource(BaseSource):
             url = "{}/remote-jobs/{}".format(self.BASE_URL, path)
             try:
                 status, text = http_request(url)
+                self._attempt_http(status)
                 if status != 200:
                     if verbose:
                         print("[arc] HTTP {} for {}".format(status, path))
                     continue
             except Exception as exc:
+                self._attempt_failed(exc)
                 if verbose:
                     print("[arc] Error fetching {}: {}".format(path, exc))
                 continue
 
             for job in self.parse_html(text):
-                key = job.url or "{}|{}".format(job.title, job.company)
-                if key in seen:
+                keys = job_identity_keys(job)
+                if keys and not seen.isdisjoint(keys):
                     continue
-                seen.add(key)
+                seen.update(keys)
                 jobs.append(job)
 
         if verbose:
@@ -157,11 +160,13 @@ class MobileCareerSource(BaseSource):
         jobs = []
         try:
             status, text = http_request(self.IOS_URL)
+            self._attempt_http(status)
             if status != 200:
                 if verbose:
                     print("[mobile.career] HTTP {}".format(status))
                 return jobs
         except Exception as exc:
+            self._attempt_failed(exc)
             verbose_source_error(self.name, verbose, exc)
             return jobs
 
@@ -218,11 +223,13 @@ class JobScrollerSource(BaseSource):
         for role_url in self.ROLE_URLS:
             try:
                 status, text = http_request(role_url)
+                self._attempt_http(status)
                 if status != 200:
                     if verbose:
                         print("[jobscroller] HTTP {} for {}".format(status, role_url))
                     continue
             except Exception as exc:
+                self._attempt_failed(exc)
                 if verbose:
                     print("[jobscroller] Error fetching {}: {}".format(role_url, exc))
                 continue
@@ -269,6 +276,7 @@ class RelocateMeSource(BaseSource):
         for query in self.QUERIES:
             try:
                 status, text = http_request(self.SEARCH_URL, params={"q": query})
+                self._attempt_http(status)
                 if status != 200:
                     if verbose:
                         print("[relocate.me] HTTP {} for query={!r}".format(status, query))
@@ -283,6 +291,7 @@ class RelocateMeSource(BaseSource):
                     )
                 )
             except Exception as exc:
+                self._attempt_failed(exc)
                 if verbose:
                     print("[relocate.me] Error for query={!r}: {}".format(query, exc))
                 continue
