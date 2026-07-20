@@ -204,12 +204,12 @@ def _format_uncertain_notification(items, limit=10):
 
 def _format_notification(job: dict, evaluation: dict) -> str:
     job = coerce_job(job)
-    title = job.get("title", "Unknown Title")
-    company = job.get("company", "Unknown Company")
-    location = job.get("location", "")
-    url = job.get("url", "")
-    source = job.get("source", "")
-    reason = evaluation.get("reason", "")
+    title = html.escape(job.get("title", "Unknown Title"))
+    company = html.escape(job.get("company", "Unknown Company"))
+    location = html.escape(job.get("location", ""))
+    url = html.escape(job.get("url", ""), quote=True)
+    source = html.escape(job.get("source", ""))
+    reason = html.escape(evaluation.get("reason", ""))
     timezone_note = evaluation.get("timezone_note")
 
     lines = [
@@ -220,7 +220,7 @@ def _format_notification(job: dict, evaluation: dict) -> str:
         f"<i>{reason}</i>",
     ]
     if timezone_note:
-        lines.append(f"\n⚠️ <b>Timezone:</b> {timezone_note}")
+        lines.append(f"\n⚠️ <b>Timezone:</b> {html.escape(timezone_note)}")
 
     return "\n".join(lines)
 
@@ -375,10 +375,14 @@ def tailor_single_job(client, job: dict, telegram) -> None:
         job,
     )
 
+    safe_title = html.escape(title)
+    safe_company = html.escape(company)
+    safe_location = html.escape(job.get("location", ""))
+    safe_url = html.escape(job.get("url", ""), quote=True)
     header = (
-        f"<b>{title}</b>\n"
-        f"<b>{company}</b>" + (f" — {job['location']}" if job.get("location") else "") + "\n"
-        + (f'<a href="{job["url"]}">View posting</a>\n' if job.get("url") else "")
+        f"<b>{safe_title}</b>\n"
+        f"<b>{safe_company}</b>" + (f" — {safe_location}" if job.get("location") else "") + "\n"
+        + (f'<a href="{safe_url}">View posting</a>\n' if job.get("url") else "")
         + "\n📄 Tailored CV attached."
     )
     outcome = send_fit(

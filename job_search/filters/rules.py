@@ -220,8 +220,15 @@ def has_remote_evidence(job, text):
 
 
 def has_relocation_evidence(text):
+    # Blocker phrases contain evidence keywords ("no visa sponsorship" contains
+    # "visa sponsorship"), so neutralize them first — otherwise a denial would
+    # self-register as a positive relocation offer.
+    scan = text
+    for phrase in _RELOCATION_BLOCKERS:
+        if phrase in scan:
+            scan = scan.replace(phrase, " ")
     pattern = "|".join(re.escape(kw) for kw in RELOCATION_KEYWORDS)
-    return bool(re.search(pattern, text))
+    return bool(re.search(pattern, scan))
 
 
 def has_relocation_blocker(text):

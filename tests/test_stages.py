@@ -298,6 +298,26 @@ def test_send_error_notification_swallows_failure():
     assert "Pipeline error" in tg2.messages[0]
 
 
+def test_format_notification_escapes_html_in_fields():
+    from job_search.pipeline.stages import _format_notification
+
+    job = Job(
+        title="R&D iOS Engineer",
+        company="AT&T",
+        location="Denver <HQ>",
+        url="https://x/1",
+        source="arc",
+        description="d",
+    )
+    msg = _format_notification(job, {"reason": "great <fit>", "timezone_note": "US <hours>"})
+    assert "R&amp;D iOS Engineer" in msg
+    assert "AT&amp;T" in msg
+    assert "Denver &lt;HQ&gt;" in msg
+    assert "great &lt;fit&gt;" in msg
+    assert "US &lt;hours&gt;" in msg
+    assert 'href="https://x/1"' in msg
+
+
 def test_format_uncertain_notification_escapes_and_includes_reason():
     from job_search.pipeline.stages import _format_uncertain_notification
 

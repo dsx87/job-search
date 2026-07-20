@@ -114,6 +114,18 @@ def test_relocation_filter_blocker_yields_to_sponsorship_evidence():
     ) is False
 
 
+def test_relocation_filter_negated_sponsorship_disqualifies():
+    # Regression: a blocker phrase must not self-satisfy the evidence check —
+    # "no visa sponsorship" contains the evidence keyword "visa sponsorship".
+    for desc in (
+        "No visa sponsorship. US only.",
+        "Visa sponsorship is not available.",
+        "We do not sponsor visas.",
+    ):
+        job = Job(location="Austin, Texas", description=desc)
+        assert relocation_filter(job) is False, desc
+
+
 def test_relocation_filter_rejects_northern_ireland_without_evidence():
     job = Job(
         title="iOS Engineer",
