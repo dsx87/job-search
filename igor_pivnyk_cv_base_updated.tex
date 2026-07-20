@@ -61,7 +61,15 @@
   \vspace{1pt}{\color{navy}\hrule height 0.9pt}%
   \vspace{\cvsecafter}%
 }
-\renewcommand{\section}[1]{\cvsection{#1}}
+% Redefine \section to \cvsection while still tolerating the star form
+% (\section*{...}) and the optional short-title arg (\section[Short]{Long}) that
+% real LaTeX/titlesec accept — so a tailored CV using either doesn't silently
+% corrupt (a plain 1-arg \renewcommand would typeset "*" or "[" as the title).
+\makeatletter
+\renewcommand{\section}{\@ifstar{\cv@section}{\cv@section@opt}}
+\newcommand{\cv@section}[1]{\cvsection{#1}}
+\newcommand{\cv@section@opt}[2][]{\cvsection{#2}}
+\makeatother
 
 % ---- No paragraph indent / spacing ----
 \setlength{\parindent}{0pt}

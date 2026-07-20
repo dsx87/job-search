@@ -84,12 +84,17 @@ TAILOR_WORKERS = 8
 # semaphore honors it; a malformed/non-positive value falls back to the default.
 # LATEX_MAX_WORKERS is the current name; the legacy XELATEX_MAX_WORKERS is still
 # honored as a fallback so an existing Pi .env with the old name keeps working.
-try:
-    LATEX_MAX_WORKERS = int(
-        os.environ.get("LATEX_MAX_WORKERS", os.environ.get("XELATEX_MAX_WORKERS", "2"))
-    )
-except ValueError:
-    LATEX_MAX_WORKERS = 2
+# Take the first candidate that parses as an int, so a malformed new value still
+# falls back to a valid legacy value (rather than masking it) before the default.
+LATEX_MAX_WORKERS = 2
+for _latex_workers_env in ("LATEX_MAX_WORKERS", "XELATEX_MAX_WORKERS"):
+    _latex_workers_raw = os.environ.get(_latex_workers_env, "").strip()
+    if _latex_workers_raw:
+        try:
+            LATEX_MAX_WORKERS = int(_latex_workers_raw)
+            break
+        except ValueError:
+            continue
 if LATEX_MAX_WORKERS < 1:
     LATEX_MAX_WORKERS = 2
 

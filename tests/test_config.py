@@ -202,3 +202,19 @@ def test_latex_max_workers_legacy_env_fallback(monkeypatch):
     finally:
         monkeypatch.delenv("XELATEX_MAX_WORKERS", raising=False)
         importlib.reload(config)
+
+
+def test_latex_max_workers_malformed_new_falls_back_to_legacy(monkeypatch):
+    """A malformed LATEX_MAX_WORKERS must not mask a valid legacy XELATEX_MAX_WORKERS:
+    the first env candidate that parses as an int wins, else the default."""
+    import importlib
+
+    monkeypatch.setenv("LATEX_MAX_WORKERS", "not-an-int")
+    monkeypatch.setenv("XELATEX_MAX_WORKERS", "3")
+    try:
+        reloaded = importlib.reload(config)
+        assert reloaded.LATEX_MAX_WORKERS == 3
+    finally:
+        monkeypatch.delenv("LATEX_MAX_WORKERS", raising=False)
+        monkeypatch.delenv("XELATEX_MAX_WORKERS", raising=False)
+        importlib.reload(config)

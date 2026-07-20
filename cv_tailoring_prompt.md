@@ -106,6 +106,7 @@ Write the complete, compilable LaTeX source for the tailored CV. Start from the 
 - Section titles are the `\cvsection` macro (`\section` is redefined to call it). To uppercase a title, wrap its text in `\MakeUppercase{...}`; otherwise leave it as-is. Do NOT reintroduce `titlesec`/`\titleformat` — it is not installed in the slimmed TeX set.
 - Special characters in LaTeX: `&` must be `\&`, `%` must be `\%`, `#` must be `\#`, `_` must be `\_`
 - Em dashes: use `---` or `—` (the latter renders via `inputenc` utf8 + T1 `fontenc`)
+- **Character set (important — compilation is pdflatex, not Unicode-native XeLaTeX):** use only standard Latin/T1 characters. Regular letters, digits, punctuation, curly quotes, `–`/`—` dashes, `…`, `×`, and accented Latin letters are fine. Do NOT emit arrows (`→ ← ↔`), math/relational symbols (`≥ ≤ ≈ ∞`), emoji, checkmarks (`✓`), bullets (use `\textbullet`), or non-Latin scripts (Cyrillic, Hebrew, etc.) — pdflatex aborts on them (`inputenc Error: Unicode character not set up`). Spell out or transliterate instead of pasting such glyphs.
 - The `\jobheader{Company}{Role}{Location}{Dates}` command creates a two-column header row
 - The italic context line after `\jobheader` uses: `{\small\color{midgray}\itshape ...}`
 
@@ -372,7 +373,13 @@ Use this as your starting point. Modify only what needs to change for the specif
   \vspace{1pt}{\color{navy}\hrule height 0.9pt}%
   \vspace{\cvsecafter}%
 }
-\renewcommand{\section}[1]{\cvsection{#1}}
+%% \section -> \cvsection, but tolerate \section*{...} and \section[Short]{Long}
+%% so either form never silently corrupts (a plain 1-arg renew would print "*"/"[").
+\makeatletter
+\renewcommand{\section}{\@ifstar{\cv@section}{\cv@section@opt}}
+\newcommand{\cv@section}[1]{\cvsection{#1}}
+\newcommand{\cv@section@opt}[2][]{\cvsection{#2}}
+\makeatother
 
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0pt}
