@@ -147,6 +147,10 @@ class PipelineConfig:
     # STATE_SYNC=1 → git-sync seen_jobs.json (pull before / push after) around
     # run_daily, sharing the dedup baseline via the orphan `state` branch.
     state_sync: bool = False
+    # DIGEST_DELIVERY (default on) → deliver one ZIP per run (HTML dashboard +
+    # tailored CVs) instead of a stream of per-job Telegram messages. Set
+    # DIGEST_DELIVERY=0 to fall back to the legacy per-job delivery path.
+    digest_delivery: bool = True
 
     @classmethod
     def from_env(cls) -> "PipelineConfig":
@@ -177,6 +181,7 @@ class PipelineConfig:
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
             sources_disable=_split_csv(os.environ.get("SOURCES_DISABLE", "")),
             state_sync=os.environ.get("STATE_SYNC", "") == "1",
+            digest_delivery=os.environ.get("DIGEST_DELIVERY", "1") != "0",
         )
 
 

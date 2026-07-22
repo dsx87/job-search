@@ -61,7 +61,12 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
 4. **Tailor** — for every match, the model rewrites my base LaTeX résumé to
    emphasize the relevant experience. A factual-content guard validates it,
    XeLaTeX compiles it, and the page guard verifies exactly one page.
-5. **Notify** — the match, the reasoning, and the tailored CV land in Telegram.
+5. **Notify** — each run is bundled into **one ZIP digest** delivered to Telegram:
+   a self-contained HTML dashboard (a table of every match with a one-line
+   summary, the fit reasoning, key facts, and a local link to its tailored CV,
+   plus the jobs flagged for review and the deferred ones) alongside the CV PDFs
+   themselves. Set `DIGEST_DELIVERY=0` to fall back to the legacy per-job
+   message + attachment stream.
 
 ## The design choice that makes both work
 
@@ -205,6 +210,13 @@ python3 -m job_search.pipeline --tailor --url "https://…"          # auto-fetc
 python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
   --title "Senior iOS Developer" --company "Acme"                  # paste fallback
 ```
+
+By default (`DIGEST_DELIVERY=1`) the daily flow bundles every fit, review, and
+deferred job into a **single ZIP digest** (`job-digest-<date>.zip`: an HTML
+dashboard + the tailored CV PDFs) and sends it in one Telegram message. A
+successful send marks all included fits delivered; a failed send leaves them for
+the same day-1/day-3 retry as before. The CLI `--tailor` and Telegram `/tailor`
+commands are unaffected — they still deliver a single tailored CV directly.
 
 The daily flow, CLI `--tailor`, and Telegram `/tailor` command share the same
 delivery contract: validation, successful compilation, exactly-one-page

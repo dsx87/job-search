@@ -11,9 +11,19 @@ import sys
 from dataclasses import dataclass, field
 
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
+from ..digest import (
+    DeferredEntry,
+    DigestContext,
+    FitEntry,
+    ReviewEntry,
+    build_digest_zip,
+    cv_filename_for,
+    digest_filename,
+)
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient
 from ..llm.eval import evaluate_job
+from ..llm.summarize import summarize_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
 from ..sources.fetch import fetch_jobs_with_health, select_sources
@@ -254,6 +264,135 @@ def run_list(cfg) -> int:
     return 0
 
 
+def _summaries(llm, jobs, workers):
+    """One short LLM summary per job, computed concurrently (aligned with jobs)."""
+    if not jobs:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return list(pool.map(lambda job: summarize_job(llm, job), jobs))
+
+
+def _digest_caption(n_fits, n_review, n_deferred, date) -> str:
+    # Counts come from what actually went into the archive, not the run-level
+    # stats (a fit whose CV failed to compile is not bundled).
+    bits = ["{} fit{}".format(n_fits, "" if n_fits == 1 else "s")]
+    if n_review:
+        bits.append(f"{n_review} to review")
+    if n_deferred:
+        bits.append(f"{n_deferred} deferred")
+    return "✅ Job Search Digest — {}\n{}\nOpen index.html in the archive.".format(
+        date.isoformat(), " · ".join(bits)
+    )
+
+
+# Telegram's bot sendDocument ceiling. A real run bundles a handful of ~40 KB
+# CVs (well under 1 MB), so this only guards a pathological batch; we log rather
+# than split, since exceeding it here would mean something is badly wrong.
+_TELEGRAM_DOC_LIMIT = 50 * 1024 * 1024
+
+
+def _deliver_digest(
+    llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
+    source_warning, telegram, signature_for,
+):
+    """Bundle a run into ONE ZIP (HTML dashboard + tailored CVs) and send it once.
+
+    On a successful send every included fit is marked delivered/seen exactly as
+    the per-job path does; on a failed send each fit records a delivery failure
+    so it retries next run (the day+1/day+2/block-after-3 machinery is reused).
+    """
+    fit_jobs = [job for job, _payload, _rs, _ev in prepared]
+    review_jobs = [job for job, _ev in uncertain]
+    summaries = _summaries(llm, fit_jobs + review_jobs, cfg.eval_workers)
+    fit_summaries = summaries[: len(fit_jobs)]
+    review_summaries = summaries[len(fit_jobs):]
+
+    taken = set()
+    fit_entries = []
+    for (job, payload, _rs, evaluation), summary in zip(prepared, fit_summaries):
+        name = cv_filename_for(job, taken)
+        taken.add(name)
+        fit_entries.append(
+            FitEntry(
+                job=job,
+                evaluation=evaluation,
+                summary=summary,
+                pdf_bytes=payload.get("pdf_bytes"),
+                cv_filename=name,
+            )
+        )
+    review_entries = [
+        ReviewEntry(job=job, evaluation=evaluation, summary=summary)
+        for (job, evaluation), summary in zip(uncertain, review_summaries)
+    ]
+    deferred_entries = [DeferredEntry(job=job) for job in newly_deferred]
+
+    if not (fit_entries or review_entries or deferred_entries):
+        # Nothing to show — keep the lightweight text completion notice.
+        try:
+            telegram.send_message(_format_run_summary(stats, source_warning))
+        except Exception as exc:
+            print(f"Telegram notification error: {exc}", file=sys.stderr)
+        return
+
+    ctx = DigestContext(
+        date=today,
+        stats=stats,
+        source_warning=source_warning,
+        usage_summary=llm.usage_summary(),
+        fits=fit_entries,
+        review=review_entries,
+        deferred=deferred_entries,
+    )
+    zip_bytes = build_digest_zip(ctx)
+    if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
+        # Diagnosable rather than silent: the send below will fail and the fits
+        # will retry, but at least the log says why.
+        print(
+            f"  Digest is {len(zip_bytes) // (1024 * 1024)} MB, over Telegram's "
+            f"{_TELEGRAM_DOC_LIMIT // (1024 * 1024)} MB limit — send will likely fail.",
+            file=sys.stderr,
+        )
+    caption = _digest_caption(len(fit_entries), len(review_entries), len(deferred_entries), today)
+    try:
+        telegram.send_document(digest_filename(today), zip_bytes, caption)
+    except Exception as exc:
+        # Whole-batch delivery failed: every fit stays unseen and retries.
+        print(f"  Digest delivery failed — fits will retry next run: {exc}", file=sys.stderr)
+        for job, _payload, _rs, _ev in prepared:
+            stats.delivery_failed += 1
+            _record_fit_failure(seen, stats, job, "delivery", today, telegram)
+        # Never leave the user in silence — the ZIP was the only delivery, so
+        # fall back to the text run summary (which reports the delivery failures
+        # and the pending retries).
+        try:
+            telegram.send_message(_format_run_summary(stats, source_warning))
+        except Exception as summary_exc:
+            print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
+        return
+
+    for job, _payload, _rs, _ev in prepared:
+        stats.notification_sent += 1
+        stats.cv_sent += 1
+        mark_delivery_notified(seen, **job)
+        seen.update(job_identity_keys(job))
+        sig = signature_for(job)
+        if sig is not None:
+            record_evaluation(seen, job, sig, "fit", today)
+        save_seen_jobs(seen)
+
+    # The review section rode on this same (now-delivered) ZIP, so it is finally
+    # safe to mark the uncertain jobs seen — a failed send above returns early and
+    # leaves them unseen to re-surface next run.
+    for job, evaluation in uncertain:
+        seen.update(job_identity_keys(job))
+        sig = signature_for(job)
+        if sig is not None:
+            record_evaluation(seen, job, sig, "uncertain", today)
+    if uncertain:
+        save_seen_jobs(seen)
+
+
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
     if cfg.state_sync:
@@ -442,14 +581,18 @@ def run_daily(cfg, test: bool = False) -> int:
                         # Policy could not confidently decide: surface for review
                         # rather than discard. Marked seen so it notifies once;
                         # the structured lifecycle reopens it if content/criteria
-                        # later change.
+                        # later change. In digest mode the whole review section
+                        # rides on the single ZIP send, so marking is deferred to
+                        # _deliver_digest and only applied once delivery succeeds
+                        # (otherwise a failed send would bury it forever).
                         stats.uncertain += 1
                         print(f"    Review '{job.get('title')}' — {evaluation.get('reason', '')}")
                         uncertain.append((job, evaluation))
-                        seen.update(job_identity_keys(job))
-                        signature = _signature_for(job)
-                        if signature is not None:
-                            record_evaluation(seen, job, signature, "uncertain", today)
+                        if not cfg.digest_delivery:
+                            seen.update(job_identity_keys(job))
+                            signature = _signature_for(job)
+                            if signature is not None:
+                                record_evaluation(seen, job, signature, "uncertain", today)
                     else:
                         # Not a fit: mark seen so it won't be reprocessed.
                         stats.non_fit += 1
@@ -463,22 +606,25 @@ def run_daily(cfg, test: bool = False) -> int:
                 f"Deferred {stats.deferred} job(s) with insufficient description text.",
                 flush=True,
             )
-        if newly_deferred:
-            try:
-                telegram.send_message(_format_deferred_notification(newly_deferred))
-            except Exception as exc:
-                print(
-                    f"Telegram deferred-job notification error: {exc}",
-                    file=sys.stderr,
-                )
-        if uncertain:
-            try:
-                telegram.send_message(_format_uncertain_notification(uncertain))
-            except Exception as exc:
-                print(
-                    f"Telegram uncertain-job notification error: {exc}",
-                    file=sys.stderr,
-                )
+        # In digest mode these are folded into the HTML dashboard instead of
+        # going out as their own Telegram messages.
+        if not cfg.digest_delivery:
+            if newly_deferred:
+                try:
+                    telegram.send_message(_format_deferred_notification(newly_deferred))
+                except Exception as exc:
+                    print(
+                        f"Telegram deferred-job notification error: {exc}",
+                        file=sys.stderr,
+                    )
+            if uncertain:
+                try:
+                    telegram.send_message(_format_uncertain_notification(uncertain))
+                except Exception as exc:
+                    print(
+                        f"Telegram uncertain-job notification error: {exc}",
+                        file=sys.stderr,
+                    )
         # Persist the non-fits and uncertain jobs captured above in one write.
         save_seen_jobs(seen)
         print(f"{len(fits)} fit(s) to tailor.", flush=True)
@@ -544,52 +690,62 @@ def run_daily(cfg, test: bool = False) -> int:
                                 mark_delivery_notified(seen, **job)
                                 save_seen_jobs(seen)
                         continue
-                    prepared.append((job, payload, retry_state))
+                    prepared.append((job, payload, retry_state, evaluation))
 
-        # ── Stage 4: Send to Telegram sequentially ───────────────────────────
-        # Sequential to preserve message order and stay polite to the Telegram API.
-        # A successful send marks the job seen; a failed send leaves it for retry.
-        for job, payload, retry_state in prepared:
+        # ── Stage 4: Deliver ─────────────────────────────────────────────────
+        if cfg.digest_delivery:
+            # One ZIP per run: HTML dashboard + every tailored CV, folding in the
+            # uncertain and deferred jobs too. All state reconciliation (mark
+            # seen on success, record delivery failure on send error) happens
+            # inside _deliver_digest.
+            _deliver_digest(
+                llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
+                source_warning, telegram, _signature_for,
+            )
+        else:
+            # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per
+            # fit, sequentially, then a text run summary.
+            for job, payload, retry_state, _evaluation in prepared:
+                try:
+                    outcome = send_fit(
+                        payload,
+                        telegram,
+                        notification_already_sent=retry_state.notified,
+                    )
+                except Exception as exc:
+                    stats.delivery_failed += 1
+                    _record_fit_failure(seen, stats, job, "notification", today, telegram)
+                    print(
+                        f"  Error sending '{payload.get('title')}': {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                stats.notification_sent += int(outcome.notification_sent)
+                stats.cv_sent += int(outcome.cv_sent)
+                if outcome.notification_sent:
+                    mark_delivery_notified(seen, **job)
+                    save_seen_jobs(seen)
+                if outcome.complete:
+                    seen.update(job_identity_keys(job))
+                    signature = _signature_for(job)
+                    if signature is not None:
+                        record_evaluation(seen, job, signature, "fit", today)
+                    save_seen_jobs(seen)
+                else:
+                    stats.delivery_failed += 1
+                    stage = "document" if outcome.notification_satisfied else "notification"
+                    _record_fit_failure(seen, stats, job, stage, today, telegram)
+                    detail = outcome.error or "incomplete delivery"
+                    print(
+                        f"  Error sending '{payload.get('title')}': {detail}",
+                        file=sys.stderr,
+                    )
+
             try:
-                outcome = send_fit(
-                    payload,
-                    telegram,
-                    notification_already_sent=retry_state.notified,
-                )
+                telegram.send_message(_format_run_summary(stats, source_warning))
             except Exception as exc:
-                stats.delivery_failed += 1
-                _record_fit_failure(seen, stats, job, "notification", today, telegram)
-                print(
-                    f"  Error sending '{payload.get('title')}': {exc}",
-                    file=sys.stderr,
-                )
-                continue
-
-            stats.notification_sent += int(outcome.notification_sent)
-            stats.cv_sent += int(outcome.cv_sent)
-            if outcome.notification_sent:
-                mark_delivery_notified(seen, **job)
-                save_seen_jobs(seen)
-            if outcome.complete:
-                seen.update(job_identity_keys(job))
-                signature = _signature_for(job)
-                if signature is not None:
-                    record_evaluation(seen, job, signature, "fit", today)
-                save_seen_jobs(seen)
-            else:
-                stats.delivery_failed += 1
-                stage = "document" if outcome.notification_satisfied else "notification"
-                _record_fit_failure(seen, stats, job, stage, today, telegram)
-                detail = outcome.error or "incomplete delivery"
-                print(
-                    f"  Error sending '{payload.get('title')}': {detail}",
-                    file=sys.stderr,
-                )
-
-        try:
-            telegram.send_message(_format_run_summary(stats, source_warning))
-        except Exception as exc:
-            print(f"Telegram notification error: {exc}", file=sys.stderr)
+                print(f"Telegram notification error: {exc}", file=sys.stderr)
 
         print(llm.usage_summary(), flush=True)
         print("Done.", flush=True)

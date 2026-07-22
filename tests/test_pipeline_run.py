@@ -40,7 +40,9 @@ class FakeTelegram:
         self.documents.append((filename, content, caption))
 
 
-def make_config():
+def make_config(digest_delivery=False):
+    # Existing tests exercise the legacy per-job delivery path, so this defaults
+    # digest_delivery OFF; the digest-mode tests below pass digest_delivery=True.
     return SimpleNamespace(
         llm_primary_scheme="gemini",
         llm_primary_model="gemini-custom",
@@ -57,6 +59,7 @@ def make_config():
         sources_enable=(),
         sources_disable=(),
         state_sync=False,
+        digest_delivery=digest_delivery,
     )
 
 
@@ -840,3 +843,197 @@ def test_uncertain_verdict_is_surfaced_for_review_and_marked_seen(monkeypatch):
     # a second run does NOT re-surface it (marked seen)
     run.run_daily(make_config())
     assert len([m for m in telegram.messages if "flagged for review" in m]) == 1
+
+
+# ── digest delivery (one ZIP per run: HTML dashboard + tailored CVs) ───────────
+
+def _read_digest(telegram):
+    """Return (filename, ZipFile, index.html text) for the last sent document."""
+    import io
+    import zipfile
+
+    name, content, _caption = telegram.documents[-1]
+    zf = zipfile.ZipFile(io.BytesIO(content))
+    return name, zf, zf.read("index.html").decode("utf-8")
+
+
+def _install_digest_fit(monkeypatch, pdf=b"PDFDATA", summary="One-line summary."):
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+    )
+    monkeypatch.setattr(
+        run,
+        "prepare_fit",
+        lambda *_a: {"title": "Match", "company": "Acme", "message": "m", "pdf_bytes": pdf},
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: summary)
+
+
+def test_digest_delivery_sends_one_zip_and_marks_fit_seen(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    # Exactly one message total — the ZIP document; no per-job or summary texts.
+    assert telegram.messages == []
+    assert len(telegram.documents) == 1
+    name, zf, html = _read_digest(telegram)
+    assert name == "job-digest-2026-07-21.zip"
+    assert "Match" in html
+    assert "great fit" in html
+    assert "One-line summary." in html
+    pdfs = [n for n in zf.namelist() if n.startswith("cvs/") and n.endswith(".pdf")]
+    assert len(pdfs) == 1
+    assert zf.read(pdfs[0]) == b"PDFDATA"
+    assert 'href="{}"'.format(pdfs[0]) in html  # the local link resolves
+    assert "https://x/match" in saved[-1]
+
+
+def test_digest_delivery_failure_keeps_fit_unseen_and_schedules_retry(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("upload down")
+
+    telegram.send_document = boom
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert "https://x/match" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+    # The user must not be left in silence: a text fallback summary is sent.
+    assert any("Job search complete" in m for m in telegram.messages)
+
+
+def test_digest_folds_uncertain_and_deferred_into_zip_not_messages(monkeypatch):
+    fit = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    maybe = Job(title="Maybe", company="Beta", url="https://x/maybe", description="x" * 200)
+    sparse = Job(title="Sparse", company="Gamma", url="https://x/sparse", description="tiny")
+    telegram, saved = install_daily_fakes(monkeypatch, [fit, maybe, sparse])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda job: job["title"] != "Sparse")
+
+    def evaluate(_client, _criteria, job):
+        if job["title"] == "Match":
+            return {"fit": True, "reason": "great", "timezone_note": None, "facts": {}}
+        return {"fit": False, "verdict": "uncertain", "reason": "cannot decide", "timezone_note": None}
+
+    monkeypatch.setattr(run, "evaluate_job", evaluate)
+    monkeypatch.setattr(
+        run,
+        "prepare_fit",
+        lambda *_a: {"title": "Match", "company": "Acme", "message": "m", "pdf_bytes": b"PDF"},
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "sum")
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert all("flagged for review" not in m for m in telegram.messages)
+    assert all("posting deferred" not in m for m in telegram.messages)
+    assert len(telegram.documents) == 1
+    _name, _zf, html = _read_digest(telegram)
+    assert "Maybe" in html and "cannot decide" in html
+    assert "Sparse" in html
+
+
+def test_digest_success_marks_uncertain_seen(monkeypatch):
+    job = Job(title="Maybe", company="Acme", url="https://x/maybe", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert len(telegram.documents) == 1
+    # A delivered digest marks the uncertain job seen so it isn't re-surfaced.
+    assert "https://x/maybe" in saved[-1]
+    assert any(m.startswith("eval:verdict:") and m.endswith(":uncertain") for m in saved[-1])
+
+
+def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
+    job = Job(title="Maybe", company="Acme", url="https://x/maybe", description="x" * 200)
+    telegram = FakeTelegram()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("upload down")
+
+    telegram.send_document = boom
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    # A failed digest must NOT bury the uncertain job — it re-surfaces next run.
+    assert "https://x/maybe" not in saved[-1]
+    assert not any(m.startswith("eval:verdict:") and m.endswith(":uncertain") for m in saved[-1])
+
+
+def test_digest_caption_counts_delivered_fits_not_found_fits(monkeypatch):
+    good = Job(title="Good", company="Acme", url="https://x/good", description="x" * 200)
+    bad = Job(title="Bad", company="Beta", url="https://x/bad", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [good, bad])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_a: {"fit": True, "reason": "great", "timezone_note": None, "facts": {}},
+    )
+
+    def prepare(_llm, _instr, _base, job, _evaluation):
+        if job["title"] == "Bad":
+            raise RuntimeError("compile down")
+        return {"title": "Good", "company": "Acme", "message": "m", "pdf_bytes": b"PDF"}
+
+    monkeypatch.setattr(run, "prepare_fit", prepare)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    # Two fits were found but only one compiled — the digest must say "1 fit".
+    _name, _content, caption = telegram.documents[-1]
+    assert "1 fit" in caption
+    assert "2 fit" not in caption
+    _n, _zf, html = _read_digest(telegram)
+    assert "Good" in html
+    assert "Bad" not in html  # the failed fit is not in the bundle
+
+
+def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):
+    job = Job(title="No", company="Acme", url="https://x/no", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_a: {"fit": False, "reason": "no", "timezone_note": None},
+    )
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert telegram.documents == []
+    assert any("Job search complete" in m for m in telegram.messages)

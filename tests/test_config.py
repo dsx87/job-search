@@ -154,6 +154,15 @@ def test_pipeline_config_from_env_parses_source_lists(monkeypatch):
 def test_pipeline_config_from_env_state_sync_flag(monkeypatch):
     monkeypatch.setenv("STATE_SYNC", "1")
     assert PipelineConfig.from_env().state_sync is True
+
+
+def test_digest_delivery_defaults_on_and_is_disabled_by_zero(monkeypatch):
+    # New default: bundle each run into one ZIP digest.
+    assert PipelineConfig().digest_delivery is True
+    monkeypatch.delenv("DIGEST_DELIVERY", raising=False)
+    assert PipelineConfig.from_env().digest_delivery is True
+    monkeypatch.setenv("DIGEST_DELIVERY", "0")
+    assert PipelineConfig.from_env().digest_delivery is False
     for falsey in ("0", "true", ""):
         monkeypatch.setenv("STATE_SYNC", falsey)
         assert PipelineConfig.from_env().state_sync is False
