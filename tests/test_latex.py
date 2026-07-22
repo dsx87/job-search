@@ -96,23 +96,27 @@ def test_extract_latex_errors():
     assert "! Undefined control sequence." in out
 
 
-def test_apply_density_overrides_lowers_font_and_inserts_block():
-    src = "\\documentclass[10pt]{article}\n\\begin{document}\nbody\n\\end{document}"
-    step = ONE_PAGE_SHRINK_LADDER[3]  # font 9
+def test_apply_density_overrides_inserts_block_with_tunable_macros():
+    src = "\\documentclass[10pt,a4paper]{article}\n\\begin{document}\nbody\n\\end{document}"
+    step = ONE_PAGE_SHRINK_LADDER[3]  # font 9 -> leading 10.5
     out = _apply_density_overrides(src, step)
-    assert "10pt" not in out
-    assert "9pt" in out
+    # the \documentclass is left untouched — the real body size lives in \cvbasefont
+    assert "\\documentclass[10pt,a4paper]{article}" in out
+    assert "\\renewcommand{\\cvbasefont}{\\fontsize{9pt}{10.5pt}\\selectfont}" in out
     assert "one-page guard" in out
     # override block is inserted immediately before \begin{document}
     assert out.index("one-page guard") < out.index("\\begin{document}")
     assert "\\setstretch{0.86}" in out
+    assert "\\setlength{\\cvsecbefore}{1pt}\\setlength{\\cvsecafter}{1pt}" in out
+    assert "\\setlength{\\cvitemsep}{0pt}\\setlength{\\cvtopsep}{1pt}\\setlength{\\cvparsep}{0pt}" in out
+    assert "\\renewcommand{\\arraystretch}{0.95}" in out
 
 
 def test_expected_job_order_constant():
     assert EXPECTED_JOB_ORDER == ["Check Point", "Applitools", "Shutterfly", "CNOGA"]
 
 
-def _fake_xelatex(monkeypatch, returncodes, pdf_bytes=b"PDF", log_text=None):
+def _fake_pdflatex(monkeypatch, returncodes, pdf_bytes=b"PDF", log_text=None):
     calls = []
     codes = iter(returncodes)
 
@@ -135,7 +139,7 @@ def _fake_xelatex(monkeypatch, returncodes, pdf_bytes=b"PDF", log_text=None):
 
 @pytest.mark.parametrize("returncodes", [(1, 0), (0, 1)])
 def test_compile_latex_rejects_either_failed_pass(monkeypatch, returncodes):
-    calls = _fake_xelatex(
+    calls = _fake_pdflatex(
         monkeypatch,
         returncodes,
         log_text="! Undefined control sequence.\nOutput written on cv.pdf (1 page, 3 bytes).",
@@ -161,7 +165,7 @@ def test_compile_latex_rejects_either_failed_pass(monkeypatch, returncodes):
     ],
 )
 def test_compile_latex_rejects_unverifiable_pdf(monkeypatch, pdf_bytes, log_text, page_count):
-    _fake_xelatex(monkeypatch, (0, 0), pdf_bytes=pdf_bytes, log_text=log_text)
+    _fake_pdflatex(monkeypatch, (0, 0), pdf_bytes=pdf_bytes, log_text=log_text)
 
     result = _compile_latex("source", cv_phone="")
 
@@ -174,8 +178,8 @@ def test_compile_latex_rejects_unverifiable_pdf(monkeypatch, pdf_bytes, log_text
 @pytest.mark.parametrize(
     ("exc", "expected"),
     [
-        (FileNotFoundError("xelatex"), "not found"),
-        (subprocess.TimeoutExpired(["xelatex"], 120), "timed out"),
+        (FileNotFoundError("pdflatex"), "not found"),
+        (subprocess.TimeoutExpired(["pdflatex"], 120), "timed out"),
     ],
 )
 def test_compile_latex_environment_failures_are_not_repairable(monkeypatch, exc, expected):
@@ -257,15 +261,15 @@ def test_shrink_to_one_page_uses_verified_compile_result(monkeypatch):
 
 
 # =====================================================================
-# audit order 8 — XeLaTeX worker limit (module-level semaphore)
+# audit order 8 — pdflatex worker limit (module-level semaphore)
 # =====================================================================
 
 
 class _RecordingSemaphore:
-    """Context-manager stand-in for compile._XELATEX_SEMAPHORE.
+    """Context-manager stand-in for compile._LATEX_SEMAPHORE.
 
     Records enters/exits and the current hold depth so a test can prove
-    _compile_latex holds it (exactly once) around BOTH xelatex passes.
+    _compile_latex holds it (exactly once) around BOTH pdflatex passes.
     Deterministic: no real threads, blocking, or sleeps involved.
     """
 
@@ -287,15 +291,15 @@ class _RecordingSemaphore:
         return False
 
 
-def test_compile_latex_holds_xelatex_semaphore_around_both_passes(monkeypatch):
+def test_compile_latex_holds_latex_semaphore_around_both_passes(monkeypatch):
     sem = _RecordingSemaphore()
-    # raising=True (default): fails until compile.py grows _XELATEX_SEMAPHORE.
-    monkeypatch.setattr(compile_mod, "_XELATEX_SEMAPHORE", sem)
+    # raising=True (default): fails until compile.py grows _LATEX_SEMAPHORE.
+    monkeypatch.setattr(compile_mod, "_LATEX_SEMAPHORE", sem)
 
     depth_at_each_run = []
 
     def run(cmd, capture_output, timeout):
-        # both xelatex passes must observe the semaphore held (depth == 1)
+        # both pdflatex passes must observe the semaphore held (depth == 1)
         depth_at_each_run.append(sem.depth)
         tmpdir = Path(cmd[cmd.index("-output-directory") + 1])
         (tmpdir / "cv.pdf").write_bytes(b"PDF")
@@ -319,9 +323,9 @@ def test_compile_latex_holds_xelatex_semaphore_around_both_passes(monkeypatch):
     assert sem.depth == 0
 
 
-def test_xelatex_semaphore_exists_and_is_a_real_semaphore():
+def test_latex_semaphore_exists_and_is_a_real_semaphore():
     import threading
 
-    sem = compile_mod._XELATEX_SEMAPHORE
-    # a real threading.Semaphore at module scope bounds concurrent xelatex runs
+    sem = compile_mod._LATEX_SEMAPHORE
+    # a real threading.Semaphore at module scope bounds concurrent pdflatex runs
     assert isinstance(sem, threading.Semaphore)

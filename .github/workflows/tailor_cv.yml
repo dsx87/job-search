@@ -1,7 +1,7 @@
 name: Tailor CV
 
 # Manually tailor a CV for ONE specific job posting and deliver it to Telegram.
-# Reuses the same generic scheme-based LLM providers + xelatex compile path as
+# Reuses the same generic scheme-based LLM providers + pdflatex compile path as
 # the daily pipeline. The phone number is injected at compile time from the
 # CV_PHONE secret and never enters the repo.
 #
@@ -51,10 +51,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            texlive-xetex \
-            texlive-latex-extra \
-            texlive-fonts-recommended \
-            fonts-crosextra-carlito
+            texlive-latex-recommended \
+            texlive-fonts-recommended
 
       - name: Tailor CV and send to Telegram
         env:

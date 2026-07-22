@@ -6,12 +6,12 @@
 # OS Lite (32-bit). Also works on newer Pis. Safe to re-run (idempotent).
 #
 # What it does:
-#   1. Installs Python 3, git, and a right-sized XeLaTeX + Carlito font set
-#   2. Bumps swap (pandas/xelatex/pip spike past 512 MB)
+#   1. Installs Python 3, git, and a right-sized pdflatex + Helvetica font set
+#   2. Bumps swap (pandas/pdflatex/pip spike past 512 MB)
 #   3. Sets the timezone
 #   4. Creates a .env secrets template (never overwrites an existing one)
 #   5. Seeds seen_jobs.json from the origin/state branch (avoids the first-run trap)
-#   6. Pre-warms xelatex so the first timed compile isn't the cold one
+#   6. Pre-warms pdflatex so the first timed compile isn't the cold one
 #   7. Installs a systemd service + timer for the daily run
 #
 # What it does NOT do: flash the OS, put your secrets in, or run the (possibly
@@ -31,7 +31,7 @@ TIMEZONE="${TIMEZONE:-Asia/Jerusalem}"
 RUN_TIME="${RUN_TIME:-07:00}"                       # local HH:MM for the daily timer
 SWAP_MB="${SWAP_MB:-1024}"
 EVAL_WORKERS="${EVAL_WORKERS:-2}"                   # LLM filter concurrency (single core!)
-TAILOR_WORKERS="${TAILOR_WORKERS:-1}"              # CV/xelatex concurrency
+TAILOR_WORKERS="${TAILOR_WORKERS:-1}"              # CV/pdflatex concurrency
 SCRAPE_BUDGET_SECONDS="${SCRAPE_BUDGET_SECONDS:-600}"
 TRY_JOBSPY="${TRY_JOBSPY:-0}"                       # 1 = attempt pandas/jobspy (usually fails on ARMv6)
 SERVICE_NAME="job-search"
@@ -70,18 +70,14 @@ fi
 
 # ---- 1. APT packages -------------------------------------------------------
 # --no-install-recommends keeps TeX Live from pulling ~GBs of docs onto the SD card.
-step "Installing system packages (Python, git, XeLaTeX, Carlito font)"
+step "Installing system packages (Python, git, pdflatex + Helvetica)"
 $SUDO apt-get update -qq
+# Helvetica (URW Nimbus Sans) ships in texlive-fonts-recommended, so no separate
+# font package or fontconfig is needed. pdflatex is in texlive-binaries, pulled
+# in as a dependency of texlive-latex-recommended.
 $SUDO apt-get install -y --no-install-recommends \
   git ca-certificates python3 python3-venv \
-  texlive-xetex texlive-latex-recommended texlive-latex-extra \
-  texlive-fonts-recommended fonts-crosextra-carlito fontconfig
-$SUDO fc-cache -f >/dev/null 2>&1 || true
-if fc-list 2>/dev/null | grep -qi carlito; then
-  ok "Carlito font registered with fontconfig."
-else
-  warn "Carlito not visible to fontconfig — the CV \\setmainfont{Carlito} may fail. Check 'fc-list | grep -i carlito'."
-fi
+  texlive-latex-recommended texlive-fonts-recommended
 
 # ---- 2. Swap ---------------------------------------------------------------
 step "Configuring ${SWAP_MB} MB swap"
@@ -170,21 +166,21 @@ else
   warn "and may take hours. Seed it manually before enabling the timer (see docs/deploy-rpi.md)."
 fi
 
-# ---- 6. Pre-warm xelatex ---------------------------------------------------
-step "Pre-warming xelatex (builds font cache so the first timed compile isn't cold)"
-if command -v xelatex >/dev/null 2>&1; then
+# ---- 6. Pre-warm pdflatex --------------------------------------------------
+step "Pre-warming pdflatex (builds the format/font cache so the first timed compile isn't cold)"
+if command -v pdflatex >/dev/null 2>&1; then
   WARM_DIR="$(mktemp -d)"
-  if sudo -u "$REAL_USER" env HOME="$REAL_HOME" xelatex -interaction=nonstopmode \
+  if sudo -u "$REAL_USER" env HOME="$REAL_HOME" pdflatex -interaction=nonstopmode \
         -output-directory "$WARM_DIR" "$REPO/igor_pivnyk_cv_base_updated.tex" >/dev/null 2>&1 \
         && [ -f "$WARM_DIR/igor_pivnyk_cv_base_updated.pdf" ]; then
-    ok "Base CV compiled to PDF — the XeLaTeX toolchain works."
+    ok "Base CV compiled to PDF — the pdflatex toolchain works."
   else
-    warn "Cold xelatex compile did not produce a PDF. Run it by hand to see the error:"
-    warn "  cd $REPO && xelatex igor_pivnyk_cv_base_updated.tex"
+    warn "Cold pdflatex compile did not produce a PDF. Run it by hand to see the error:"
+    warn "  cd $REPO && pdflatex igor_pivnyk_cv_base_updated.tex"
   fi
   rm -rf "$WARM_DIR"
 else
-  warn "xelatex not on PATH after install — CV PDF generation will fail."
+  warn "pdflatex not on PATH after install — CV PDF generation will fail."
 fi
 
 # ---- 7. Optional: attempt JobSpy (pandas) ----------------------------------

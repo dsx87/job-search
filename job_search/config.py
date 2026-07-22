@@ -53,7 +53,7 @@ LLM_RETRY_BACKOFF = (2, 8, 20)
 
 # Consecutive post-retry circuit-break failures before the primary is disabled
 # for the rest of the run. Env-overridable via LLM_BREAKER_THRESHOLD, using the
-# same safe try/except pattern as XELATEX_MAX_WORKERS (read at import so a
+# same safe try/except pattern as LATEX_MAX_WORKERS (read at import so a
 # malformed value can't crash the scraper CLI).
 try:
     LLM_BREAKER_THRESHOLD = int(os.environ.get("LLM_BREAKER_THRESHOLD", "2"))
@@ -78,16 +78,25 @@ if ANTHROPIC_MAX_TOKENS < 1:
 EVAL_WORKERS = 12
 TAILOR_WORKERS = 8
 
-# XeLaTeX is CPU/IO-heavy; cap concurrent compilations independently of the
-# tailor pool so a large TAILOR_WORKERS can't spawn many parallel xelatex runs
+# pdflatex is CPU/IO-heavy; cap concurrent compilations independently of the
+# tailor pool so a large TAILOR_WORKERS can't spawn many parallel pdflatex runs
 # and starve a small runner. Read at import so compile.py's module-level
 # semaphore honors it; a malformed/non-positive value falls back to the default.
-try:
-    XELATEX_MAX_WORKERS = int(os.environ.get("XELATEX_MAX_WORKERS", "2"))
-except ValueError:
-    XELATEX_MAX_WORKERS = 2
-if XELATEX_MAX_WORKERS < 1:
-    XELATEX_MAX_WORKERS = 2
+# LATEX_MAX_WORKERS is the current name; the legacy XELATEX_MAX_WORKERS is still
+# honored as a fallback so an existing Pi .env with the old name keeps working.
+# Take the first candidate that parses as an int, so a malformed new value still
+# falls back to a valid legacy value (rather than masking it) before the default.
+LATEX_MAX_WORKERS = 2
+for _latex_workers_env in ("LATEX_MAX_WORKERS", "XELATEX_MAX_WORKERS"):
+    _latex_workers_raw = os.environ.get(_latex_workers_env, "").strip()
+    if _latex_workers_raw:
+        try:
+            LATEX_MAX_WORKERS = int(_latex_workers_raw)
+            break
+        except ValueError:
+            continue
+if LATEX_MAX_WORKERS < 1:
+    LATEX_MAX_WORKERS = 2
 
 # Minimum job-description length before we trust it for evaluation or tailoring.
 MIN_JOB_TEXT_LEN = 200

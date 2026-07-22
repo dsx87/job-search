@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI self-test for the single-page CV guard (requires xelatex + Carlito).
+"""CI self-test for the single-page CV guard (requires pdflatex).
 
 Verifies the two halves of the one-page guarantee:
   1. The hand-tuned base CV compiles to exactly one page.
@@ -14,7 +14,6 @@ to recover it. Exits non-zero on any failure so CI fails loudly.
 
 Run with: python -m job_search.tests.one_page_guard
 """
-import re
 import sys
 
 from ..config import BASE_TEX_FILE
@@ -24,17 +23,16 @@ from ..latex.onepage import _shrink_to_one_page
 
 def _blow_up(tex: str) -> str:
     """Force the one-page base past a page via loose density only (no content
-    change), mimicking the 'one line on page 2' overflow the guard must fix."""
-    tex = re.sub(
-        r"(\\documentclass\[[^\]]*?)(\d+(?:\.\d+)?)pt",
-        lambda m: f"{m.group(1)}12pt",
-        tex,
-        count=1,
-    )
+    change), mimicking the 'one line on page 2' overflow the guard must fix.
+
+    Drives the same tunable knobs the base preamble exposes (\\cvbasefont for the
+    real body size, plus the \\cvitemsep/\\cvtopsep list lengths) so the shrink
+    ladder — which re-issues those same knobs after this block — can recover it."""
     blow = (
+        "\\renewcommand{\\cvbasefont}{\\fontsize{13pt}{16pt}\\selectfont}\n"
         "\\geometry{top=2.2cm,bottom=2.2cm}\n"
         "\\setstretch{1.3}\n"
-        "\\setlist[itemize]{itemsep=6pt,topsep=8pt}\n"
+        "\\setlength{\\cvitemsep}{6pt}\\setlength{\\cvtopsep}{8pt}\n"
     )
     return tex.replace("\\begin{document}", blow + "\\begin{document}", 1)
 

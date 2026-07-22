@@ -60,7 +60,7 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
    explains its verdict.
 4. **Tailor** — for every match, the model rewrites my base LaTeX résumé to
    emphasize the relevant experience. A factual-content guard validates it,
-   XeLaTeX compiles it, and the page guard verifies exactly one page.
+   pdflatex compiles it, and the page guard verifies exactly one page.
 5. **Notify** — the match, the reasoning, and the tailored CV land in Telegram.
 
 ## The design choice that makes both work
@@ -72,7 +72,7 @@ So the core has **none of them**:
 - **Every LLM call is a raw `urllib` HTTPS request**, and so is Telegram delivery
   — no `google-generativeai`, no `anthropic`, no `openai`, no `requests`. Each
   provider is a small wire-protocol *scheme* (`gemini`/`openai`/`anthropic`), so
-  the SDKs never enter the tree. LaTeX is a `subprocess` call to `xelatex`. The
+  the SDKs never enter the tree. LaTeX is a `subprocess` call to `pdflatex`. The
   entire fetch → filter → tailor → notify path needs **zero pip installs**.
 - **Optional sources are lazily imported.** JobSpy (`python-jobspy`) and the
   Chromium/Playwright source are imported *inside* `fetch()`, so when their
@@ -85,7 +85,7 @@ So the core has **none of them**:
 ## Engineering highlights
 
 - **Strict, self-healing CV delivery** — factual validation and repair run before
-  compilation; repairable XeLaTeX errors are fed back to the LLM. A persistent
+  compilation; repairable pdflatex errors are fed back to the LLM. A persistent
   content violation, compiler failure, unverifiable page count, multi-page PDF,
   or failed document upload blocks completion and is counted in the daily run
   summary. Automated delivery makes at most three attempts (days 0, 1, and 3),
@@ -150,13 +150,13 @@ To make one primary, swap the `LLM_PRIMARY_*` block (and its key) for the
 `LLM_FALLBACK_*` values.
 
 The workflow keeps dedup state on an orphan **`state`** branch (see [layout](#repository-layout)),
-installs a right-sized XeLaTeX + Chromium, runs the pipeline, and commits the
+installs a right-sized pdflatex + Chromium, runs the pipeline, and commits the
 updated `seen_jobs.json` back to `state`. No server to operate.
 
 ## 🍓 Deploy on a Raspberry Pi 1
 
 One script provisions everything — packages, swap, timezone, a `.env` template,
-seeded dedup state, a pre-warmed XeLaTeX cache, and the systemd service + timer +
+seeded dedup state, a pre-warmed pdflatex cache, and the systemd service + timer +
 control bot:
 
 ```bash
@@ -219,7 +219,7 @@ the daily retry state.
 ## Tech stack
 
 Python (stdlib-only core) · GitHub Actions · Raspberry Pi / systemd · Playwright ·
-scheme-based LLM providers (Gemini / OpenAI-compatible / Anthropic) · XeLaTeX ·
+scheme-based LLM providers (Gemini / OpenAI-compatible / Anthropic) · pdflatex ·
 Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 
 ## Repository layout
@@ -230,7 +230,7 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `job_search/sources/` | ~20 pluggable job-board sources behind a `@register` registry |
 | `job_search/pipeline/` | Orchestrates fetch → dedupe → filter → tailor → notify |
 | `job_search/bot/` | The Telegram control bot (`/run`, `/status`, `/tailor`) |
-| `job_search/latex/` | Base-CV render, `xelatex` compile, one-page guard |
+| `job_search/latex/` | Base-CV render, `pdflatex` compile, one-page guard |
 | `job_search/llm/` | scheme-based LLM providers, criteria evaluation, résumé tailoring |
 | `scripts/setup-rpi.sh` | One-shot Raspberry Pi provisioning |
 | `scripts/run_pipeline.sh` | The single `flock`'d entry point every run goes through |
