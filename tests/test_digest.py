@@ -125,6 +125,30 @@ def test_html_shows_source_warning_when_present():
     assert "flaky: partial" in html
 
 
+def test_fits_render_as_cards_not_a_scrolling_table():
+    # Redesigned to a responsive card layout — a phone can't read a 6-column
+    # table without horizontal scrolling, so there is no <table> at all.
+    html = render_digest_html(_context(fits=[_fit()]))
+    assert '<article class="job fit">' in html
+    assert "<table" not in html
+
+
+def test_fit_cv_is_a_prominent_download_button():
+    entry = _fit()
+    html = render_digest_html(_context(fits=[entry]))
+    assert 'class="btn cv" href="cvs/{}"'.format(entry.cv_filename) in html
+
+
+def test_review_renders_as_a_card():
+    review = [ReviewEntry(
+        job=Job(title="Maybe iOS", company="Beta", url="https://x/2", description="d"),
+        evaluation={"reason": "policy could not decide", "timezone_note": None},
+        summary="Ambiguous remote scope.",
+    )]
+    html = render_digest_html(_context(review=review))
+    assert '<article class="job review">' in html
+
+
 # ── build_digest_zip ──────────────────────────────────────────────────────────
 
 def test_zip_contains_index_and_one_pdf_per_fit():
