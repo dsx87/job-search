@@ -136,8 +136,23 @@ footer{color:var(--faint);font-size:12px;margin-top:30px;border-top:1px solid va
   .actions .btn{flex:1 1 auto;justify-content:center}
 }
 @media print{
-  body{background:#fff}
+  /* Force the light palette so a dark-mode "save as PDF" stays readable
+     (otherwise light text lands on the white print background). */
+  :root{
+    --bg:#ffffff; --panel:#ffffff; --panel-2:#f8fafc;
+    --ink:#1a1d22; --muted:#5b6472; --faint:#8b94a0;
+    --line:#e4e7ec; --line-soft:#eef1f4;
+    --accent:#2b4bd0; --accent-ink:#ffffff;
+    --fit:#0f8f52; --fit-bg:#e7f4ec; --fit-line:#c3e6d1;
+    --review:#b57705; --review-bg:#fbf1d7; --review-line:#ecd9a3;
+    --defer:#b0532c; --defer-bg:#f6e9e1; --defer-line:#ecd0bf;
+    --chip:#eef1f5; --chip-ink:#39424d;
+  }
+  body{background:#fff;color:var(--ink)}
   .job,.stat,ul.deferred{box-shadow:none}
+  /* Outlined, not filled: the accent fill is dropped when "Background
+     graphics" is off (default when saving to PDF), which would hide white text. */
+  .btn.cv{background:transparent;color:var(--accent);border-color:var(--accent)}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 """
