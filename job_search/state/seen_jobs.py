@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
@@ -313,6 +314,44 @@ def load_seen_jobs():
         return set(json.load(f))
 
 
+def dump_keys(path: str, keys) -> None:
+    """Write ``keys`` to ``path`` atomically in the canonical seen_jobs format.
+
+    Canonical means sorted with ``indent=2`` — the state-branch union merge and
+    ``git_sync`` both parse this file, and ``git_sync`` diffs it, so the byte
+    layout is part of the contract.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".seen_jobs.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(sorted(keys), f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Leave the previous file intact and take the partial temp file with us.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_seen_jobs(seen: set) -> None:
-    with open(SEEN_JOBS_FILE, "w") as f:
-        json.dump(sorted(seen), f, indent=2)
+    """Persist the seen set atomically (temp file + rename).
+
+    This file is the system's only dedup memory, and it is rewritten many times
+    per run. A plain ``open(..., "w")`` truncates first, so a SIGKILL, an
+    OOM-kill (which the Pi troubleshooting table lists as a real occurrence) or a
+    power cut mid-write would leave truncated JSON that makes every subsequent
+    ``load_seen_jobs`` raise. Writing beside the target and renaming makes the
+    replacement atomic on POSIX: a reader sees either the old file or the new
+    one. Same tmp-then-rename shape as ``bot.poller.OffsetStore.save`` and
+    ``scripts/run_pipeline.sh``'s ``write_last_run``.
+
+    The temp file is created in the target's own directory so the rename stays
+    within one filesystem; the on-disk format (sorted, ``indent=2``) is unchanged
+    because the state-branch union merge parses it.
+    """
+    dump_keys(SEEN_JOBS_FILE, seen)

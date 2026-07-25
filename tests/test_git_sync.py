@@ -105,6 +105,54 @@ def test_pull_state_refreshes_local(state_env):
     assert _read_seen("seen_jobs.json") == {"a", "b", "e"}
 
 
+def test_pull_state_preserves_local_only_keys(state_env, capsys):
+    # finding N2: pull was `reset --hard` + copyfile, i.e. a hard overwrite. But
+    # push_state promises a failed push leaves the state local and "will retry
+    # next run" — and this is what runs next run. The local-only keys are exactly
+    # the ones that were waiting: delivered-job identities, delivery:notified
+    # markers, attempt counters. Dropping them re-notifies jobs, re-sends CVs,
+    # and resets the retry ladder.
+    _write_seen(
+        "seen_jobs.json",
+        {"a", "b", "local-only-delivered-job", "delivery:notified:xyz"},
+    )
+    _push_concurrent(state_env, {"a", "b", "e"})
+
+    assert git_sync.pull_state(state_dir=".state") is True
+
+    assert _read_seen("seen_jobs.json") == {
+        "a", "b", "e", "local-only-delivered-job", "delivery:notified:xyz",
+    }
+    assert "kept 2 local-only key(s)" in capsys.readouterr().out
+
+
+def test_pull_state_without_a_local_file_takes_the_remote(state_env):
+    # First run on a fresh runner: nothing local to preserve.
+    assert not os.path.exists("seen_jobs.json")
+    assert git_sync.pull_state(state_dir=".state") is True
+    assert _read_seen("seen_jobs.json") == {"a", "b"}
+
+
+def test_pull_state_keeps_the_canonical_on_disk_format(state_env):
+    # git_sync diffs this file and the state-branch merge parses it, so the
+    # sorted/indent=2 layout is part of the contract.
+    _write_seen("seen_jobs.json", {"z-local"})
+    assert git_sync.pull_state(state_dir=".state") is True
+    with open("seen_jobs.json") as f:
+        assert f.read() == json.dumps(["a", "b", "z-local"], indent=2)
+
+
+def test_pull_state_failure_leaves_local_state_untouched(state_env, capsys):
+    # An offline/broken remote must not cost the local baseline.
+    _write_seen("seen_jobs.json", {"local-1", "local-2"})
+    _git(state_env.state_dir, "remote", "set-url", "origin", "file:///nonexistent/repo.git")
+
+    assert git_sync.pull_state(state_dir=".state") is False
+
+    assert _read_seen("seen_jobs.json") == {"local-1", "local-2"}
+    assert "pull skipped" in capsys.readouterr().err
+
+
 # ── push ──────────────────────────────────────────────────────────────────────
 def test_push_state_no_checkout_returns_false(state_env, capsys):
     assert git_sync.push_state(state_dir="nonexistent") is False

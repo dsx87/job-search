@@ -7,6 +7,8 @@ import json
 import datetime
 import hashlib
 
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.state import seen_jobs as seen_mod
 from job_search.state import seen_merge
@@ -16,6 +18,7 @@ from job_search.state.seen_jobs import (
     criteria_version,
     delivery_identity_tokens,
     delivery_retry_state,
+    dump_keys,
     evaluation_signature,
     lifecycle_record,
     load_seen_jobs,
@@ -56,6 +59,44 @@ def test_seen_jobs_roundtrip_and_format(tmp_path, monkeypatch):
     # exact on-disk format the workflow merge relies on
     assert path.read_text() == json.dumps(["a", "b", "c"], indent=2)
     assert load_seen_jobs() == {"a", "b", "c"}
+
+
+def test_save_seen_jobs_is_atomic_and_leaves_no_temp_files(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    save_seen_jobs({"a"})
+    save_seen_jobs({"a", "b"})
+    assert load_seen_jobs() == {"a", "b"}
+    assert [p.name for p in tmp_path.iterdir()] == ["seen.json"]
+
+
+def test_save_seen_jobs_survives_a_torn_write(tmp_path, monkeypatch):
+    # finding N4: `open(..., "w")` truncates first, so a SIGKILL / OOM-kill /
+    # power cut mid-write left truncated JSON and every later run raised
+    # JSONDecodeError on the only dedup memory the system has. With tmp+rename,
+    # a crashed write leaves the previous file exactly as it was.
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    save_seen_jobs({"first", "second"})
+    before = path.read_text()
+
+    def _die(*_args, **_kwargs):
+        raise KeyboardInterrupt("killed mid-write")
+
+    monkeypatch.setattr(seen_mod.json, "dump", _die)
+    with pytest.raises(KeyboardInterrupt):
+        save_seen_jobs({"third"})
+
+    assert path.read_text() == before
+    assert load_seen_jobs() == {"first", "second"}
+    # ...and the partial temp file is not left behind to accumulate.
+    assert [p.name for p in tmp_path.iterdir()] == ["seen.json"]
+
+
+def test_dump_keys_writes_the_canonical_format_to_any_path(tmp_path):
+    target = tmp_path / "elsewhere.json"
+    dump_keys(str(target), {"b", "a"})
+    assert target.read_text() == json.dumps(["a", "b"], indent=2)
 
 
 def test_delivery_identity_tokens_use_full_sha256_for_url_and_meaningful_job_key():

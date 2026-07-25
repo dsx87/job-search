@@ -25,8 +25,17 @@ jobs:
           ref: state
           path: .state
 
+      # Tolerate a state branch that doesn't carry the file yet (a fresh branch,
+      # or one whose first push never landed): the pipeline treats a missing
+      # seen_jobs.json as its documented first-run sentinel, which is a far
+      # better outcome than failing the whole run on a `cp`.
       - name: Load seen_jobs.json from state branch
-        run: cp .state/seen_jobs.json seen_jobs.json
+        run: |
+          if [ -f .state/seen_jobs.json ]; then
+            cp .state/seen_jobs.json seen_jobs.json
+          else
+            echo "No seen_jobs.json on the state branch yet — starting from empty state."
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -66,9 +75,21 @@ jobs:
           CV_PHONE: ${{ secrets.CV_PHONE }}
         run: python3 -u -m job_search.pipeline
 
+      # `if: always()` mirrors the Pi's `push_state()` in a `finally` block
+      # ("push even on error"). run_daily re-raises on a fatal error precisely
+      # when it has ALREADY marked non-fits seen, written deferral markers, and
+      # incremented retry counters — skipping the push there throws all of that
+      # away and re-pays the LLM cost next run. Every key is set-union-safe, so
+      # sharing partial-run state is sound. Without this the two runners
+      # disagreed, and CI was the one contradicting the documented intent.
       - name: Persist seen_jobs.json to state branch
+        if: always()
         working-directory: .state
         run: |
+          if [ ! -f ../seen_jobs.json ]; then
+            echo "No seen_jobs.json produced (the run failed before writing state)."
+            exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           cp ../seen_jobs.json seen_jobs.json
