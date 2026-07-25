@@ -21,7 +21,7 @@ from ..digest import (
     digest_filename,
 )
 from ..identity import job_identity_keys, normalize_url
-from ..llm.clients import LLMClient
+from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
@@ -412,11 +412,22 @@ def run_daily(cfg, test: bool = False) -> int:
     state_mutation_allowed = False
     try:
         llm = LLMClient.from_config(cfg)
+        shutdown_note = model_shutdown_warning(cfg.llm_primary_model)
+        if shutdown_note:
+            print(shutdown_note, flush=True)
         if not cfg.llm_fallback_api_key:
             print(
                 "Note: no LLM fallback configured (LLM_FALLBACK_API_KEY / OPENAI_API_KEY unset).",
                 flush=True,
             )
+            if shutdown_note:
+                # Without a fallback, a retired primary is a total outage: every
+                # job fails evaluation and the run delivers nothing.
+                print(
+                    "  ⚠️ With no fallback, a retired primary model means the run "
+                    "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
+                    flush=True,
+                )
         criteria = load_criteria()
         crit_ver = criteria_version(criteria)
         tailoring_instructions = load_tailoring_instructions()

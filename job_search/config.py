@@ -32,13 +32,40 @@ OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
 # A provider is a wire-protocol *scheme* (gemini | openai | anthropic) + model +
 # API key (+ optional base). Switching providers is a config edit — no code
 # change. See job_search.llm.clients for the schemes and the factory.
+#
+# Primary model choice (recorded deliberately, 2026-07-25): gemini-2.5-flash is
+# kept over the 3.x lineage because 2.5 proved steadier on this workload — see
+# commit 08a12a2. That is a quality call, not an oversight, and it carries a
+# dated risk: Google has scheduled 2.5-flash for shutdown (see
+# LLM_MODEL_SHUTDOWN_DATES). Revisit before that date; if a 3.x successor has
+# since become steady enough, switch LLM_PRIMARY_MODEL here (or pin it per-runner
+# via the LLM_PRIMARY_MODEL env var / workflow variable) and update the README +
+# docs/deploy-rpi.md examples alongside it.
 LLM_PRIMARY_SCHEME = "gemini"
 LLM_PRIMARY_MODEL = "gemini-2.5-flash"
 LLM_FALLBACK_SCHEME = "openai"          # OpenAI-compatible: also Groq, DeepSeek, xAI, … via api_base
 LLM_FALLBACK_MODEL = "gpt-5.4-mini"
 
+# Announced provider shutdown dates (ISO) for models this repo defaults to. A
+# retired model does not degrade — it starts answering 404, which is neither
+# retryable nor a circuit-break status, so without this the only symptom would be
+# a doomed primary request per job. Surfaced ahead of time in the run log and the
+# digest footer (see llm.clients.model_shutdown_warning) so the date is visible
+# while there is still time to act.
+LLM_MODEL_SHUTDOWN_DATES = {
+    "gemini-2.5-flash": "2026-10-16",
+}
+# How far ahead of a shutdown date the warning starts appearing.
+LLM_MODEL_SHUTDOWN_WARN_DAYS = 120
+
 # Transient HTTP statuses a provider retries internally before giving up.
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# Statuses that mean "this provider will never serve this model/request" — a
+# retired or misspelled model (404), or a request the endpoint rejects outright
+# (400). Retrying or re-attempting per job is pure waste, so the primary is
+# disabled for the rest of the run after one loud message.
+LLM_MODEL_REJECT_STATUS = {400, 404}
 
 # Statuses that count toward the primary circuit-breaker (429 rate limit,
 # 503 overloaded). A post-retry error with one of these codes increments the

@@ -118,6 +118,12 @@ secrets and enabling the timer — finish those two steps below.
    whitespace-only to use the defaults; API-base overrides may include a trailing
    slash (the client normalizes it).
 
+   > ⚠️ The default primary `gemini-2.5-flash` is scheduled for shutdown on
+   > **2026-10-16** (kept deliberately until then — it is steadier here than the
+   > 3.x lineage). `LLM_FALLBACK_API_KEY` is *not* optional in practice: with it
+   > blank, a retired primary turns every job into an evaluation failure and the
+   > Pi delivers nothing. The run log warns from 120 days out.
+
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
    ```bash
    cd ~/job-search && set -a && . ./.env && set +a

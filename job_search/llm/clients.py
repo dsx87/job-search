@@ -30,6 +30,9 @@ from ..config import (
     LLM_BREAKER_THRESHOLD,
     LLM_CIRCUIT_BREAK_STATUS,
     LLM_FALLBACK_MODEL,
+    LLM_MODEL_REJECT_STATUS,
+    LLM_MODEL_SHUTDOWN_DATES,
+    LLM_MODEL_SHUTDOWN_WARN_DAYS,
     LLM_PRIMARY_MODEL,
     LLM_RETRY_BACKOFF,
     RETRYABLE_STATUS,
@@ -54,6 +57,36 @@ def _int(value):
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def model_shutdown_warning(model: str, today=None) -> str:
+    """Return a one-line warning when ``model`` has an announced shutdown date near.
+
+    Empty string when the model has no recorded date or the date is further out
+    than ``LLM_MODEL_SHUTDOWN_WARN_DAYS``. Past the date the wording changes to
+    past-tense, because at that point the provider may already be answering 404
+    (which :class:`LLMClient` reports separately, but only once a call is made).
+    """
+    raw = LLM_MODEL_SHUTDOWN_DATES.get((model or "").strip())
+    if not raw:
+        return ""
+    try:
+        shutdown = datetime.date.fromisoformat(raw)
+    except ValueError:
+        return ""
+    today = today or datetime.date.today()
+    days = (shutdown - today).days
+    if days > LLM_MODEL_SHUTDOWN_WARN_DAYS:
+        return ""
+    if days < 0:
+        return (
+            f"[LLM] {model} passed its announced shutdown date ({raw}) "
+            f"{-days} day(s) ago — set LLM_PRIMARY_MODEL to a supported model."
+        )
+    return (
+        f"[LLM] {model} is scheduled for shutdown on {raw} ({days} day(s) away) — "
+        f"plan the LLM_PRIMARY_MODEL migration."
+    )
 
 
 def _post_json_with_retry(url, payload, headers, *, timeout=90, label=""):
@@ -321,11 +354,13 @@ class LLMClient:
         fallback=None,
         *,
         breaker_statuses=LLM_CIRCUIT_BREAK_STATUS,
+        reject_statuses=LLM_MODEL_REJECT_STATUS,
         threshold: int = LLM_BREAKER_THRESHOLD,
     ):
         self.primary = primary
         self.fallback = fallback
         self._breaker_statuses = set(breaker_statuses)
+        self._reject_statuses = set(reject_statuses)
         self._threshold = threshold
         self._lock = threading.Lock()
         self._primary_disabled = False
@@ -396,6 +431,15 @@ class LLMClient:
                 prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema
             )
         except urllib.error.HTTPError as exc:
+            if exc.code in self._reject_statuses:
+                # The provider will not serve this model/request — a retired or
+                # misspelled model (404), or a rejected body (400). Retrying it
+                # per job pays a doomed request every time, so say so once and
+                # take the primary out for the rest of the run. Slightly
+                # heavy-handed for a genuinely per-prompt 400, but the fallback
+                # still serves every request and the log names the cause.
+                self._record_primary_rejected(exc)
+                return self._use_fallback(prompt, temperature, json_mode, response_schema)
             if exc.code in self._breaker_statuses:
                 # Count toward the breaker; disable at threshold. Serve this
                 # request via the fallback (or raise if there is none).
@@ -442,6 +486,37 @@ class LLMClient:
             self._accumulate(getattr(self.fallback, "last_usage", None))
         return result
 
+    @staticmethod
+    def _error_detail(exc, limit: int = 200) -> str:
+        """Best-effort one-line body of an HTTPError (providers name the cause there)."""
+        try:
+            body = exc.read().decode("utf-8", "replace")
+        except Exception:
+            return ""
+        body = " ".join(body.split())
+        return body[: limit - 1] + "…" if len(body) > limit else body
+
+    def _record_primary_rejected(self, exc) -> None:
+        """Disable the primary for the run after a model/request rejection, loudly once."""
+        reason = f"HTTP {exc.code} (model or request rejected — check LLM_PRIMARY_MODEL)"
+        with self._lock:
+            if self._primary_disabled:
+                return
+            self._primary_disabled = True
+            self._primary_disabled_reason = reason
+        detail = self._error_detail(exc)
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        print(
+            f"    [LLM] {stamp} Primary model rejected — check LLM_PRIMARY_MODEL "
+            f"({self.primary_label} answered HTTP {exc.code}"
+            + (f": {detail}" if detail else "")
+            + f"). Serving the rest of this run from {self.fallback_label}.",
+            flush=True,
+        )
+        shutdown = model_shutdown_warning(getattr(self.primary, "model", ""))
+        if shutdown:
+            print(f"    {shutdown}", flush=True)
+
     def _record_primary_failure(self, code: int) -> None:
         label = {
             429: "429 RESOURCE_EXHAUSTED (rate limit — your quota)",
@@ -478,4 +553,9 @@ class LLMClient:
             f" Tokens — input: {tokens['input']}, output: {tokens['output']}, "
             f"thinking: {tokens['thinking']}, cached: {tokens['cached']}."
         )
+        # Carried on the usage line so an approaching model retirement shows up
+        # in the digest footer every run, not only in the CI log.
+        shutdown = model_shutdown_warning(getattr(self.primary, "model", ""))
+        if shutdown:
+            line += " " + shutdown.replace("[LLM] ", "⚠️ ", 1)
         return line
