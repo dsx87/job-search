@@ -24,6 +24,84 @@ def test_india_exclusion_filter():
     assert india_exclusion_filter(Job(title="iOS Dev", location="Berlin")) is True
 
 
+# ── audit finding 10: the lexical cases (reproductions used as fixtures) ───────
+
+
+def test_india_filter_keeps_a_berlin_role_that_mentions_an_indian_team():
+    # The audit's headline reproduction: a Berlin posting was dropped as an
+    # "India job" purely because the description named an offshore team. It never
+    # reached the LLM and never appeared in any count.
+    job = Job(
+        title="Senior iOS Engineer",
+        location="Berlin, Germany",
+        description=(
+            "You will join our Berlin platform group and collaborate daily with "
+            "our engineering team in Bangalore, India."
+        ),
+    )
+    assert india_exclusion_filter(job) is True
+
+
+def test_india_filter_still_drops_india_placed_jobs():
+    # Location field, title, and an explicit candidate restriction in the body.
+    assert india_exclusion_filter(Job(title="iOS Dev", location="Bengaluru")) is False
+    assert india_exclusion_filter(Job(title="iOS Developer - Hyderabad", location="")) is False
+    assert india_exclusion_filter(
+        Job(title="iOS Dev", location="Remote", description="Candidates must be based in India.")
+    ) is False
+    assert india_exclusion_filter(
+        Job(title="iOS Dev", location="Remote", description="This is a Pune-based role.")
+    ) is False
+    assert india_exclusion_filter(
+        Job(title="iOS Dev", location="Remote", description="Open to candidates in India only.")
+    ) is False
+
+
+def test_remote_filter_rejects_a_denial_of_remote_work():
+    # The audit's second reproduction: "Remote work is not available" satisfied
+    # the remote check, because the denial contains the evidence keyword.
+    job = Job(
+        title="iOS Developer",
+        location="Munich, Germany",
+        description="Remote work is not available for this position.",
+    )
+    assert remote_filter(job) is False
+
+
+def test_remote_filter_rejects_other_denial_phrasings():
+    for desc in (
+        "This is not a remote role.",
+        "No remote work; we are an in-office team.",
+        "We do not offer remote arrangements.",
+        "Fully remote is not possible for this role.",
+    ):
+        job = Job(title="iOS Developer", location="Munich, Germany", description=desc)
+        assert remote_filter(job) is False, desc
+
+
+def test_remote_filter_keeps_genuine_remote_wording_after_negation_handling():
+    # Neutralizing denials must not blunt real evidence, including the wording
+    # that token-aware matching would otherwise lose.
+    for desc in (
+        "This role is fully remote.",
+        "You can work remotely from anywhere in Europe.",
+        "We are an asynchronous, distributed team.",
+    ):
+        job = Job(title="iOS Developer", location="Munich, Germany", description=desc)
+        assert remote_filter(job) is True, desc
+
+
+def test_remote_filter_denial_does_not_rescue_an_onsite_job():
+    # The denial used to be the very "remote" mention that cleared the
+    # hybrid/on-site conflict check.
+    job = Job(
+        title="iOS Developer",
+        location="Munich, Germany",
+        description="Hybrid, three days in office. Fully remote work is not available.",
+    )
+    assert remote_filter(job) is False
+
+
 def test_role_filter():
     assert role_filter(Job(title="iOS Developer")) is True
     assert role_filter(Job(title="Senior iOS Architect")) is True
@@ -51,6 +129,22 @@ def test_skills_filter_description_needs_two_signals():
 
     weak = Job(title="Backend Engineer", description="Some iOS adjacent work maybe")
     assert skills_filter(weak) is False
+
+
+def test_skills_filter_accepts_the_coredata_spelling():
+    # audit finding 10: "CoreData" produced no match at all, so a posting whose
+    # only second Apple signal was Core Data fell below the two-signal bar.
+    job = Job(title="Software Engineer", description="Build with SwiftUI and CoreData in our app")
+    assert skills_filter(job) is True
+    assert job.matched_skills == ["core data", "swiftui"]
+
+
+def test_skills_filter_does_not_invent_an_apple_signal_from_the_verb_combine():
+    job = Job(
+        title="Software Engineer",
+        description="We combine data and swift decisions to drive growth.",
+    )
+    assert skills_filter(job) is False
 
 
 def test_remote_filter():

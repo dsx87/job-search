@@ -83,12 +83,52 @@ _REMOTE_KEYWORDS = set(
     [
         "remote",
         "remote-first",
+        # Spelled out because matching is token-aware now: a keyword no longer
+        # reaches inside a longer word the way substring matching did, so
+        # "work remotely" and "fully asynchronous" need their own entries.
+        "remotely",
         "work from home",
         "work-from-home",
         "distributed",
         "async",
+        "asynchronous",
         "anywhere",
         "home office",
+    ]
+)
+
+# Phrases that *deny* remote work. They contain the evidence keyword itself
+# ("remote work is not available" contains "remote"), so without neutralizing
+# them first a denial registers as a positive remote signal — the same trap
+# has_relocation_evidence already sidesteps for sponsorship blockers
+# (audit finding 10).
+_REMOTE_NEGATIONS = set(
+    [
+        "remote work is not available",
+        "remote work is not an option",
+        "remote work is not possible",
+        "remote work is not offered",
+        "remote work is unavailable",
+        "remote work not available",
+        "remote is not available",
+        "remote is not an option",
+        "no remote work",
+        "no remote option",
+        "no remote positions",
+        "no remote",
+        "not a remote role",
+        "not a remote position",
+        "not a remote job",
+        "this is not a remote",
+        "not remote",
+        "does not offer remote",
+        "do not offer remote",
+        "we don't offer remote",
+        "no fully remote",
+        "fully remote is not",
+        "not open to remote",
+        "not available for remote",
+        "remote work is not",
     ]
 )
 
@@ -129,9 +169,29 @@ _RELOCATION_BLOCKERS = set(
     ]
 )
 
+_INDIA_PLACE = (
+    r"(?:india|bengaluru|bangalore|mumbai|delhi|new delhi|hyderabad|"
+    r"pune|chennai|kolkata|gurgaon|gurugram|noida)"
+)
+
 _INDIA_LOCATION_RE = re.compile(
-    r"(?<![a-z])(?:india|bengaluru|bangalore|mumbai|delhi|new delhi|hyderabad|"
-    r"pune|chennai|kolkata|gurgaon|gurugram|noida)(?![a-z])",
+    r"(?<![a-z])" + _INDIA_PLACE + r"(?![a-z])",
+    re.IGNORECASE,
+)
+
+# Description wording that ties the *candidate* to India, as opposed to merely
+# mentioning an Indian office or offshore team. Scanning the whole description
+# for a bare place name (the pre-2026-07-25 behavior) dropped Berlin roles that
+# happened to name a Bangalore team — a silent false negative that never showed
+# up in any count. See audit finding 10.
+_INDIA_RESTRICTION_RE = re.compile(
+    r"(?:based (?:in|out of)|located (?:in|at)|residing in|reside in|resident of|"
+    r"work(?:ing)? from|work(?:ing)? in|relocat(?:e|ing) to|"
+    r"candidates? (?:in|from|based in)|applicants? (?:in|from|based in)|"
+    r"open to candidates in|hiring in|"
+    r"(?:role|position|job) is (?:based )?in)"
+    r"\s+(?:the\s+)?" + _INDIA_PLACE + r"(?![a-z])"
+    r"|(?<![a-z])" + _INDIA_PLACE + r"\s*(?:[-–,]\s*)?(?:based|only)(?![a-z])",
     re.IGNORECASE,
 )
 
@@ -157,7 +217,17 @@ def job_text(job):
 
 
 def india_exclusion_filter(job):
-    return not _INDIA_LOCATION_RE.search(job_text(job))
+    """Keep the job unless it is actually an India-based posting.
+
+    The place name has to appear where it means the *job* is in India — the
+    title or the location field — or the description has to restrict the
+    candidate to India explicitly. A description that merely mentions an Indian
+    office, team, or entity no longer discards the posting.
+    """
+    placement = " ".join(part for part in (job.title, job.location) if part).lower()
+    if _INDIA_LOCATION_RE.search(placement):
+        return False
+    return not _INDIA_RESTRICTION_RE.search(strip_html(job.description).lower())
 
 
 def role_filter(job):
@@ -211,12 +281,27 @@ def skills_filter(job):
     return True
 
 
+def neutralize_remote_negations(text):
+    """Blank out phrases that deny remote work, so they can't read as evidence.
+
+    Longest phrase first, so "no remote work" is consumed whole rather than
+    leaving a dangling fragment behind the shorter "no remote".
+    """
+    scan = text
+    for phrase in sorted(_REMOTE_NEGATIONS, key=len, reverse=True):
+        if phrase in scan:
+            scan = scan.replace(phrase, " ")
+    return scan
+
+
 def has_remote_evidence(job, text):
+    # The structured flags come from the source's own metadata and outrank
+    # description prose; only the free text needs negation handling.
     if job.is_remote:
         return True
     if "remote" in job.location.lower():
         return True
-    return bool(match_keywords(text, _REMOTE_KEYWORDS))
+    return bool(match_keywords(neutralize_remote_negations(text), _REMOTE_KEYWORDS))
 
 
 def has_relocation_evidence(text):
@@ -238,12 +323,16 @@ def has_relocation_blocker(text):
 def remote_filter(job):
     text = job_text(job)
     remote_evidence = has_remote_evidence(job, text)
-    onsite_conflict = bool(match_keywords(text, _HYBRID_OR_ONSITE_KEYWORDS))
+    # Judge the on-site conflict on the same negation-neutralized text, so a
+    # hybrid posting whose only "remote" mention is a denial can't clear the
+    # conflict check on that denial.
+    scan = neutralize_remote_negations(text)
+    onsite_conflict = bool(match_keywords(scan, _HYBRID_OR_ONSITE_KEYWORDS))
 
     if not remote_evidence:
         return False
 
-    if onsite_conflict and "remote" not in text:
+    if onsite_conflict and "remote" not in scan:
         return False
 
     return True

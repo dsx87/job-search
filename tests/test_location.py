@@ -12,6 +12,7 @@ from job_search.location.classify import (
     apply_region,
     remote_residency_restriction,
 )
+from job_search.filters.rules import opportunity_filter
 
 
 def test_remote_residency_restriction_flags_specific_geographies():
@@ -133,6 +134,36 @@ def test_is_israel_job():
     assert is_israel_job(Job(location="Tel-Aviv, Israel")) is True
     assert is_israel_job(Job(location="Haifa")) is True
     assert is_israel_job(Job(location="Berlin, Germany")) is False
+
+
+def test_is_israel_job_recognizes_the_remaining_tech_hubs():
+    # audit finding 10: bare "Ramat Gan" (the Diamond Exchange tech cluster) went
+    # unrecognized, so opportunity_filter never applied the Israel exception.
+    for location in (
+        "Ramat Gan",
+        "Ramat-Gan, Israel",
+        "Givatayim",
+        "Herzliya Pituach",
+        "Ramat HaSharon",
+        "Hod HaSharon",
+        "Kiryat Ono",
+        "Nes Ziona",
+        "Yavne",
+        "Karmiel",
+        "Migdal HaEmek",
+    ):
+        assert is_israel_job(Job(location=location)) is True, location
+
+
+def test_ramat_gan_job_survives_the_opportunity_filter():
+    # The point of recognizing it: an office-based Israeli role must reach the
+    # LLM rather than be dropped for having no remote/relocation evidence.
+    job = Job(
+        title="iOS Developer",
+        location="Ramat Gan",
+        description="Senior iOS engineer for our Bursa district office.",
+    )
+    assert opportunity_filter(job) is True
 
 
 def test_guess_location_from_text():
