@@ -30,6 +30,7 @@ from ..sources.fetch import fetch_jobs_with_health, select_sources
 from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
+    SeenSet,
     acknowledge_block_alert,
     criteria_version,
     delivery_retry_state,
@@ -41,6 +42,7 @@ from ..state.seen_jobs import (
     record_evaluation,
     save_seen_jobs,
     should_reevaluate,
+    state_size_summary,
 )
 from .stages import (
     _format_deferred_notification,
@@ -231,7 +233,7 @@ def run_seed(cfg) -> int:
         return 1
     raw_jobs = report.jobs
     seen_raw = load_seen_jobs()
-    seen = seen_raw if seen_raw is not None else set()
+    seen = seen_raw if seen_raw is not None else SeenSet()
     added = 0
     for j in raw_jobs:
         keys = job_identity_keys(j)
@@ -252,7 +254,7 @@ def run_list(cfg) -> int:
         return 1
     raw_jobs = report.jobs
     seen_raw = load_seen_jobs()
-    seen = seen_raw if seen_raw is not None else set()
+    seen = seen_raw if seen_raw is not None else SeenSet()
     new_jobs = [j for j in raw_jobs if seen.isdisjoint(job_identity_keys(j))]
     print(f"{len(new_jobs)} new job(s):\n")
     for j in new_jobs:
@@ -339,7 +341,9 @@ def _deliver_digest(
         date=today,
         stats=stats,
         source_warning=source_warning,
-        usage_summary=llm.usage_summary(),
+        # The state-size line rides along here so the growth trend is visible in
+        # the archive itself, not only in a CI log nobody reads.
+        usage_summary=" ".join((llm.usage_summary(), state_size_summary(seen))),
         fits=fit_entries,
         review=review_entries,
         deferred=deferred_entries,
@@ -379,6 +383,10 @@ def _deliver_digest(
         sig = signature_for(job)
         if sig is not None:
             record_evaluation(seen, job, sig, "fit", today)
+    # One write for the whole batch rather than one per fit: save_seen_jobs
+    # re-sorts and rewrites the entire file, and every key here is union-safe, so
+    # a crash mid-loop is already covered by the retry ladder.
+    if prepared:
         save_seen_jobs(seen)
 
     # The review section rode on this same (now-delivered) ZIP, so it is finally
@@ -474,7 +482,11 @@ def run_daily(cfg, test: bool = False) -> int:
 
         seen_raw = load_seen_jobs()
         first_run = seen_raw is None
-        seen = seen_raw if seen_raw is not None else set()
+        seen = seen_raw if seen_raw is not None else SeenSet()
+        # Reported, never pruned: the eval:* markers are order 4d's reopen
+        # history. Logging the growth every run means a future pruning decision
+        # rests on real numbers.
+        print(state_size_summary(seen), flush=True)
         _drain_block_alerts(seen, telegram)
 
         today = _today()

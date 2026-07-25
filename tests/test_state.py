@@ -93,6 +93,117 @@ def test_save_seen_jobs_survives_a_torn_write(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == ["seen.json"]
 
 
+# ── finding N1: the marker index (SeenSet) ───────────────────────────────────
+
+
+def _marker_state_fixture():
+    """A job plus a seen set carrying its markers and a lot of unrelated noise."""
+    job = {"url": "https://x.com/a", "title": "iOS Dev", "company": "Acme", "location": "Berlin"}
+    keys = set()
+    for i in range(500):
+        token = delivery_identity_tokens(url=f"https://other.com/{i}")[0]
+        keys |= {
+            f"https://other.com/{i}",
+            f"eval:sig:{token}:{i:016x}",
+            f"eval:verdict:{token}:{i:016x}:nonfit",
+            f"delivery:notified:{token}",
+        }
+    return job, keys
+
+
+def test_seen_set_answers_marker_queries_identically_to_a_plain_set():
+    # The index must be an optimization only — same answers, either container.
+    job, noise = _marker_state_fixture()
+    today = datetime.date(2026, 7, 25)
+
+    plain = set(noise)
+    indexed = seen_mod.SeenSet(noise)
+    for container in (plain, indexed):
+        mark_delivery_notified(container, **job)
+        record_delivery_failure(container, job, today, "delivery")
+        record_evaluation(container, job, "sig-abc", "nonfit", today)
+
+    assert delivery_retry_state(plain, **job) == delivery_retry_state(indexed, **job)
+    assert lifecycle_record(plain, **job) == lifecycle_record(indexed, **job)
+    assert pending_block_alerts(plain) == pending_block_alerts(indexed)
+    assert set(plain) == set(indexed)
+
+
+def test_seen_set_index_only_examines_the_job_s_own_markers():
+    # The point of the index: cost stops scaling with the size of the seen set.
+    job, noise = _marker_state_fixture()
+    indexed = seen_mod.SeenSet(noise)
+    mark_delivery_notified(indexed, **job)
+
+    tokens = set(delivery_identity_tokens(**job))
+    examined = set()
+    for token in tokens:
+        examined |= indexed.markers_for(token)
+    assert examined == {f"delivery:notified:{token}" for token in tokens}
+    assert len(examined) < len(indexed) / 100
+
+
+def test_seen_set_index_tracks_every_mutation_path():
+    seen = seen_mod.SeenSet()
+    token = "a" * 64
+    seen.add(f"delivery:notified:{token}")
+    seen.update({f"eval:sig:{token}:sig1"})
+    seen |= {f"eval:last:{token}:2026-07-25"}
+    assert seen.markers_for(token) == {
+        f"delivery:notified:{token}",
+        f"eval:sig:{token}:sig1",
+        f"eval:last:{token}:2026-07-25",
+    }
+
+    seen.discard(f"eval:sig:{token}:sig1")
+    seen.remove(f"eval:last:{token}:2026-07-25")
+    assert seen.markers_for(token) == {f"delivery:notified:{token}"}
+
+    seen.clear()
+    assert seen.markers_for(token) == frozenset()
+
+
+def test_seen_set_does_not_index_plain_identities():
+    # A URL contains colons; it must never be mistaken for a namespaced marker.
+    seen = seen_mod.SeenSet({"https://x.com/a:b", "iOS Dev|Acme|Berlin", "deferred:url:x"})
+    assert seen.markers_for("//x.com/a") == frozenset()
+    assert seen.markers_of_kind("deferred:url") is None
+
+
+def test_block_alerts_survive_a_plain_set_without_the_index():
+    # Every consumer keeps the full-scan fallback, so old call sites still work.
+    job = {"url": "https://x.com/a", "title": "iOS Dev", "company": "Acme", "location": "Berlin"}
+    plain = set()
+    today = datetime.date(2026, 7, 25)
+    for _ in range(3):
+        record_delivery_failure(plain, job, today, "delivery")
+    alerts = pending_block_alerts(plain)
+    assert len(alerts) == 1
+    assert alerts[0][1]["title"] == "iOS Dev"
+
+
+def test_load_seen_jobs_returns_an_indexed_set(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    token = "b" * 64
+    save_seen_jobs({"https://x.com/a", f"delivery:notified:{token}"})
+    loaded = load_seen_jobs()
+    assert isinstance(loaded, seen_mod.SeenSet)
+    assert loaded.markers_for(token) == {f"delivery:notified:{token}"}
+
+
+def test_state_size_summary_splits_identities_from_markers(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    token = "c" * 64
+    save_seen_jobs({"https://x.com/a", "https://x.com/b", f"eval:sig:{token}:s"})
+    summary = seen_mod.state_size_summary(load_seen_jobs())
+    assert "3 seen key(s)" in summary
+    assert "2 identities" in summary
+    assert "1 markers" in summary
+    assert "KB on disk" in summary
+
+
 def test_dump_keys_writes_the_canonical_format_to_any_path(tmp_path):
     target = tmp_path / "elsewhere.json"
     dump_keys(str(target), {"b", "a"})
