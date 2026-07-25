@@ -128,6 +128,24 @@ if LATEX_MAX_WORKERS < 1:
 # Minimum job-description length before we trust it for evaluation or tailoring.
 MIN_JOB_TEXT_LEN = 200
 
+# ── Telegram delivery limits / retries ────────────────────────────────────────
+# Telegram's sendMessage text cap. Enforced in notify.telegram at the client
+# boundary: an overlong message is a 400, and some callers have already marked
+# their jobs seen by the time it raises (finding N6).
+TELEGRAM_MAX_MESSAGE_CHARS = 4096
+
+# Backoff between transient-failure retries of a Telegram send. Delivery is the
+# most expensive thing in the run to lose — in digest mode one blip on the single
+# ZIP send defers every fit for a day and re-pays the LLM + pdflatex cost
+# (finding N8) — but the ladder still has to fit inside the CI job cap, so it
+# matches LLM_RETRY_BACKOFF rather than going longer.
+TELEGRAM_RETRY_BACKOFF = (2, 8, 20)
+
+# Upper bound on a `retry_after` Telegram asks us to honor on a 429; beyond this
+# the fixed ladder above is used instead, so a hostile/absurd value can't stall
+# the run.
+TELEGRAM_RETRY_AFTER_CAP = 60
+
 
 def _split_csv(raw: str) -> tuple:
     """Parse a comma-separated env list into a lowercased/stripped/de-empty tuple.
