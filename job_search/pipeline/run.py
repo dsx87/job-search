@@ -631,7 +631,7 @@ def run_daily(cfg, test: bool = False) -> int:
 
         # ── Stage 3: Tailor + compile the fits concurrently ──────────────────
         # Tailoring is LLM-bound and compilation is CPU-bound; a smaller pool
-        # keeps parallel xelatex runs from starving the runner. No Telegram I/O
+        # keeps parallel pdflatex runs from starving the runner. No Telegram I/O
         # happens here, so order doesn't matter and failures stay soft.
         prepared = []  # list of (job, payload, retry_state, evaluation) ready to send
         if fits:

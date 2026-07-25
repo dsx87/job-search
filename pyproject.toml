@@ -5,5 +5,5 @@ pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
 markers = [
-    "requires_xelatex: integration check that needs a real xelatex toolchain (skipped when absent)",
+    "requires_pdflatex: integration check that needs a real pdflatex toolchain (skipped when absent)",
 ]
