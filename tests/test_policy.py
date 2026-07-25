@@ -444,3 +444,64 @@ def test_timezone_note_absent_when_not_required():
     decision = apply_policy(facts, Job(description="Fully remote worldwide."))
     assert decision["verdict"] == "fit"
     assert decision["timezone_note"] is None
+
+
+# --- finding 15: policy/criteria drift --------------------------------
+
+def test_restricted_remote_role_honors_a_grounded_sponsorship_offer():
+    # criteria.md: skip a geographically restricted remote role UNLESS it offers
+    # relocation/visa sponsorship. The location-based branch honored that; this
+    # description-based one ignored it, so the same job got opposite verdicts
+    # depending on where the restriction happened to be written down.
+    offer = "We provide full relocation and visa sponsorship."
+    facts = _facts(
+        work_arrangement="remote",
+        remote_geo_scope="restricted",
+        restricted_to_countries=["US"],
+        offers_sponsorship="yes",
+        evidence={"offers_sponsorship": offer},
+    )
+    job = Job(description=f"Remote iOS role, US residents. {offer}")
+    assert apply_policy(facts, job)["verdict"] == "fit"
+
+
+def test_restricted_remote_role_without_grounded_sponsorship_still_rejects():
+    facts = _facts(
+        work_arrangement="remote",
+        remote_geo_scope="restricted",
+        restricted_to_countries=["US", "CA"],
+        authorization_blocker="yes",
+        evidence={"authorization_blocker": "must be authorized to work in the US"},
+    )
+    job = Job(description="Remote iOS role. You must be authorized to work in the US.")
+    assert apply_policy(facts, job)["verdict"] == "nonfit"
+
+
+def test_ungrounded_sponsorship_does_not_rescue_a_restricted_remote_role():
+    facts = _facts(
+        work_arrangement="remote",
+        remote_geo_scope="restricted",
+        restricted_to_countries=["US"],
+        offers_sponsorship="yes",
+        evidence={"offers_sponsorship": "we sponsor visas"},  # not in the text
+    )
+    job = Job(description="Remote iOS role for US residents only.")
+    assert apply_policy(facts, job)["verdict"] == "uncertain"
+
+
+def test_accept_reason_does_not_claim_ios_focus_when_it_is_unknown():
+    facts = _facts(
+        platform_focus="unknown", work_arrangement="remote", remote_geo_scope="worldwide"
+    )
+    reason = apply_policy(facts, Job(description="Fully remote worldwide."))["reason"]
+    assert "unconfirmed" in reason
+    assert "Fully remote" in reason
+
+
+def test_accept_reason_states_ios_focus_when_the_facts_confirm_it():
+    facts = _facts(
+        platform_focus="ios_macos", work_arrangement="remote", remote_geo_scope="worldwide"
+    )
+    reason = apply_policy(facts, Job(description="Fully remote worldwide."))["reason"]
+    assert "iOS/macOS" in reason
+    assert "unconfirmed" not in reason

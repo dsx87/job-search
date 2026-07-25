@@ -178,8 +178,14 @@ After delivering the PDF, write a short report:
 - **Email:** consul87@gmail.com
 - **Phone:** injected at build time — keep the `((PHONE))` placeholder in the header verbatim; never substitute a real number.
 - **LinkedIn:** linkedin.com/in/igorpivnyk
-- **Job target:** Remote full-time iOS / macOS developer role
-- **Work preference:** Full-time employment only (no freelance)
+- **Job target:** Remote iOS / macOS developer role
+- **Work preference:** Full-time preferred; fully remote contract, freelance, or
+  part-time roles are also acceptable, as are Israeli roles of any employment
+  type. See `criteria.md` — it is the single source of truth for what counts as a
+  fit, and the pipeline's deterministic policy implements it. (This line used to
+  read "Full-time employment only (no freelance)", which contradicted
+  criteria.md: the pipeline would filter a remote freelance role *in* and then
+  tailor a CV against a profile that said he didn't want it.)
 
 ---
 

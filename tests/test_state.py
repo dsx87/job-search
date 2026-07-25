@@ -745,3 +745,33 @@ def test_eval_markers_do_not_corrupt_delivery_state_or_identities():
     identities = set(job_identity_keys(job))
     assert not any(marker.startswith("eval:") for marker in identities)
     assert any(isinstance(marker, str) and marker.startswith("eval:") for marker in seen)
+
+
+# --- finding N7: the reopen signature must cover the policy ------------
+
+def test_criteria_version_changes_when_the_policy_version_is_bumped(monkeypatch):
+    # Order 4d fingerprints criteria.md, but order 6 moved the decision into
+    # policy.py — criteria.md is now passed to evaluate_job and ignored. Without
+    # POLICY_VERSION in the fingerprint, fixing a policy bug left every
+    # previously-rejected job suppressed forever, and the documented escape hatch
+    # was to edit criteria.md for a change that wasn't in criteria.md.
+    criteria = "same criteria text"
+    before = criteria_version(criteria)
+    monkeypatch.setattr(seen_mod, "POLICY_VERSION", "2")
+    assert criteria_version(criteria) != before
+
+
+def test_bumping_the_policy_version_reopens_a_prior_nonfit(monkeypatch):
+    job = {"url": "https://x.com/a", "title": "iOS Dev", "company": "Acme", "location": "Berlin"}
+    seen = seen_mod.SeenSet()
+    criteria, content = "criteria", "unchanged description"
+    old_signature = evaluation_signature(content, criteria_version(criteria))
+    record_evaluation(seen, job, old_signature, "nonfit", datetime.date(2026, 7, 20))
+    seen.update(job_identity_keys(Job(**job)))
+
+    # Same content, same criteria.md → still suppressed.
+    assert should_reevaluate(seen, job, old_signature) is False
+
+    monkeypatch.setattr(seen_mod, "POLICY_VERSION", "2")
+    bumped = evaluation_signature(content, criteria_version(criteria))
+    assert should_reevaluate(seen, job, bumped) is True

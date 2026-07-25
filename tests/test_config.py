@@ -1,15 +1,15 @@
 """Characterization tests locking the config defaults (must not drift)."""
 # --- module under test (repoint on migration) ---
 from job_search import config
-from job_search.config import ScraperConfig, PipelineConfig
+from job_search.config import PipelineConfig
 
 
 def test_scraper_config_defaults():
+    # sources.fetch and http read these constants directly; the unused
+    # ScraperConfig wrapper was removed on 2026-07-25.
     assert config.HTTP_TIMEOUT_SECONDS == 30
     assert config.MAX_WORKERS == 8
-    sc = ScraperConfig.from_env()
-    assert sc.http_timeout_seconds == 30
-    assert sc.max_workers == 8
+    assert config.MAX_RESPONSE_BYTES == 8 * 1024 * 1024
 
 
 def test_pipeline_config_defaults():
@@ -227,3 +227,32 @@ def test_latex_max_workers_malformed_new_falls_back_to_legacy(monkeypatch):
         monkeypatch.delenv("LATEX_MAX_WORKERS", raising=False)
         monkeypatch.delenv("XELATEX_MAX_WORKERS", raising=False)
         importlib.reload(config)
+
+
+# --- finding 12: worker-count env reads must be crash-proof ------------
+
+def test_worker_counts_fall_back_on_garbage(monkeypatch, capsys):
+    # int(os.environ["EVAL_WORKERS"]) raised on garbage while every other env
+    # read in this module is deliberately crash-proof.
+    monkeypatch.setenv("EVAL_WORKERS", "twelve")
+    monkeypatch.setenv("TAILOR_WORKERS", "")
+    cfg = PipelineConfig.from_env()
+    assert cfg.eval_workers == config.EVAL_WORKERS
+    assert cfg.tailor_workers == config.TAILOR_WORKERS
+    assert "EVAL_WORKERS" in capsys.readouterr().out
+
+
+def test_worker_counts_are_clamped_to_at_least_one(monkeypatch):
+    # 0 or negative reached ThreadPoolExecutor(max_workers=0) and raised there.
+    monkeypatch.setenv("EVAL_WORKERS", "0")
+    monkeypatch.setenv("TAILOR_WORKERS", "-4")
+    cfg = PipelineConfig.from_env()
+    assert cfg.eval_workers == config.EVAL_WORKERS
+    assert cfg.tailor_workers == config.TAILOR_WORKERS
+
+
+def test_valid_worker_counts_are_honored(monkeypatch):
+    monkeypatch.setenv("EVAL_WORKERS", "2")
+    monkeypatch.setenv("TAILOR_WORKERS", "1")
+    cfg = PipelineConfig.from_env()
+    assert (cfg.eval_workers, cfg.tailor_workers) == (2, 1)

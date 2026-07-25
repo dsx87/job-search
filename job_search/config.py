@@ -1,8 +1,11 @@
 """Configuration: frozen dataclasses + from_env(), plus prompt/file loaders.
 
 The module-level constants reproduce the original flat-module globals exactly,
-so defaults are unchanged. ScraperConfig/PipelineConfig wrap them for explicit
-injection; run.py builds a config once and threads it through the stages.
+so defaults are unchanged. PipelineConfig wraps them for explicit injection;
+run.py builds a config once and threads it through the stages. The scraper side
+reads its two constants (HTTP_TIMEOUT_SECONDS, MAX_WORKERS) directly — a
+ScraperConfig wrapper existed here until 2026-07-25 but was never constructed
+outside its own test, so it was removed rather than left as decoration.
 """
 import os
 from dataclasses import dataclass
@@ -10,6 +13,12 @@ from dataclasses import dataclass
 # ── Scraper defaults ──────────────────────────────────────────────────────────
 HTTP_TIMEOUT_SECONDS = 30
 MAX_WORKERS = 8
+
+# Ceiling on a single HTTP response body. An unbounded read() on the 512 MB Pi is
+# one oversized or chunk-streaming response away from an OOM-kill mid-run
+# (finding N10). 8 MB is ~20x the largest legitimate job-board payload observed
+# (a full JSON feed runs a few hundred KB).
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 # Wall-clock budget (seconds) for the whole fetch stage. Any source still
 # running when this elapses is abandoned so a single throttled source
@@ -161,14 +170,27 @@ def _non_empty_env(name: str, default: str) -> str:
     return os.environ.get(name, "").strip() or default
 
 
-@dataclass(frozen=True)
-class ScraperConfig:
-    http_timeout_seconds: int = HTTP_TIMEOUT_SECONDS
-    max_workers: int = MAX_WORKERS
+def _positive_int_env(name: str, default: int) -> int:
+    """Return a positive int from the environment, falling back on anything else.
 
-    @classmethod
-    def from_env(cls) -> "ScraperConfig":
-        return cls()
+    Every other env read in this module is deliberately crash-proof; the worker
+    counts were the exception — ``int(os.environ["EVAL_WORKERS"])`` raised on
+    garbage, and a ``0`` or negative value reached
+    ``ThreadPoolExecutor(max_workers=0)`` and raised there instead (finding 12).
+    A misconfigured tuning knob should not take down a scheduled run.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"Warning: {name}={raw!r} is not an integer; using {default}.")
+        return default
+    if value < 1:
+        print(f"Warning: {name}={value} must be >= 1; using {default}.")
+        return default
+    return value
 
 
 @dataclass(frozen=True)
@@ -230,8 +252,8 @@ class PipelineConfig:
             llm_fallback_api_base=_non_empty_env("LLM_FALLBACK_API_BASE", ""),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
-            eval_workers=int(os.environ.get("EVAL_WORKERS", str(EVAL_WORKERS))),
-            tailor_workers=int(os.environ.get("TAILOR_WORKERS", str(TAILOR_WORKERS))),
+            eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
+            tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
             sources_disable=_split_csv(os.environ.get("SOURCES_DISABLE", "")),
             state_sync=os.environ.get("STATE_SYNC", "") == "1",

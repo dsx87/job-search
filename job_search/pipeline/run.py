@@ -571,9 +571,10 @@ def run_daily(cfg, test: bool = False) -> int:
                 if not should_reevaluate(seen, job, signature):
                     continue
             if first_run:
-                # On first run, silently mark jobs older than 7 days as seen without evaluating.
-                dp = job.date_posted
-                posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
+                # On first run, silently mark jobs older than 7 days as seen
+                # without evaluating. Job normalizes date_posted to a date (or
+                # None) at construction, so no isinstance dance is needed here.
+                posted = job.date_posted
                 if posted is not None and posted < cutoff:
                     seen.update(keys)
                     continue

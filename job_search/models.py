@@ -62,7 +62,15 @@ class Job(Mapping):
         self.location = str(location or "").strip()
         self.url = str(url or "").strip()
         self.source = str(source or "").strip()
-        self.date_posted = date_posted
+        # A datetime is narrowed to its date here so the invariant holds for every
+        # Job, however it was built (finding 11). from_dict deliberately parses
+        # full ISO stamps to datetime, and filter_by_age then compares that to a
+        # date — a TypeError waiting for the first source that stops calling
+        # .date() itself. Normalizing once at the boundary removes the class of
+        # bug rather than adding another isinstance guard at each comparison.
+        self.date_posted = (
+            date_posted.date() if isinstance(date_posted, datetime.datetime) else date_posted
+        )
         self.description = str(description or "")
         self.is_remote = bool(is_remote)
         self.region = region

@@ -10,6 +10,9 @@ on:
     paths:
       - job_search/**
       - tests/**
+      # scripts/ is part of the shipped runtime (run_pipeline.sh, the Pi setup
+      # scripts) and was missing from this filter, so changes there ran no tests.
+      - scripts/**
       - pyproject.toml
       - .github/workflows/tests.yml
   pull_request:
@@ -19,6 +22,14 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
 
+    # The stated floor is 3.9 (Raspberry Pi OS Bullseye) and the README bans
+    # 3.10+ syntax — a rule only the Pi could catch until this leg existed.
+    # 3.12 is what the daily workflow actually runs on.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -26,7 +37,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install pytest
         run: pip install pytest

@@ -2,6 +2,17 @@
 
 http_request grows an explicit ``timeout`` seam (defaulting to the config value)
 so callers/tests can inject it; the default is unchanged.
+
+Two safety properties (findings N5 and N10):
+
+* **TLS is verified.** This used to call ``ssl._create_unverified_context()``
+  for every request, with no recorded reason. Since then the Telegram control bot
+  started reaching ``api.telegram.org`` through here **with the bot token in the
+  URL**, so anyone on the Pi's network path could lift the token and drive /run
+  and /tailor. A source that genuinely needs to skip verification can pass
+  ``verify_tls=False``; hosts in ``_ALWAYS_VERIFY_HOSTS`` ignore that request.
+* **Responses are size-capped.** An unbounded ``read()`` on a 512 MB Pi is one
+  oversized or chunk-streaming response away from an OOM-kill mid-run.
 """
 import json
 import re
@@ -10,7 +21,29 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .config import HTTP_TIMEOUT_SECONDS
+from .config import HTTP_TIMEOUT_SECONDS, MAX_RESPONSE_BYTES
+
+# Hosts where skipping certificate verification is never acceptable, whatever the
+# caller passes: credentials travel in the URL/body.
+_ALWAYS_VERIFY_HOSTS = frozenset({"api.telegram.org"})
+
+
+def read_capped(response, limit=MAX_RESPONSE_BYTES):
+    """Read at most ``limit`` bytes from ``response``.
+
+    ``read(n)`` stops after n bytes instead of buffering an entire (possibly
+    endless) body. Truncation is silent by design: the parsers already tolerate
+    partial documents by failing that one source, and a hard failure here would
+    take down a whole run over one misbehaving board.
+    """
+    return response.read(limit)
+
+
+def _ssl_context(url, verify_tls):
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    if verify_tls or host in _ALWAYS_VERIFY_HOSTS:
+        return ssl.create_default_context()
+    return ssl._create_unverified_context()
 
 
 def build_url(url, params=None):
@@ -32,7 +65,15 @@ def response_text(response, raw):
     return raw.decode(charset, "replace")
 
 
-def http_request(url, params=None, method="GET", json_body=None, headers=None, timeout=HTTP_TIMEOUT_SECONDS):
+def http_request(
+    url,
+    params=None,
+    method="GET",
+    json_body=None,
+    headers=None,
+    timeout=HTTP_TIMEOUT_SECONDS,
+    verify_tls=True,
+):
     request_url = build_url(url, params=params)
     body = None
     request_headers = {
@@ -54,23 +95,23 @@ def http_request(url, params=None, method="GET", json_body=None, headers=None, t
         headers=request_headers,
         method=method,
     )
-    context = ssl._create_unverified_context()
     with urllib.request.urlopen(
         request,
         timeout=timeout,
-        context=context,
+        context=_ssl_context(request_url, verify_tls),
     ) as response:
-        raw = response.read()
+        raw = read_capped(response)
         return response.status, response_text(response, raw)
 
 
-def http_json(url, params=None, method="GET", json_body=None, headers=None):
+def http_json(url, params=None, method="GET", json_body=None, headers=None, verify_tls=True):
     status, text = http_request(
         url,
         params=params,
         method=method,
         json_body=json_body,
         headers=headers,
+        verify_tls=verify_tls,
     )
     return status, json.loads(text)
 

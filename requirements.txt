@@ -1,5 +1,11 @@
+# Pinned to compatible releases (~=) rather than left floating: these are the
+# only third-party dependencies, both are installed fresh on every CI run, and an
+# unpinned breaking upstream release would silently take down the scheduled job
+# search. ~= allows patch/bugfix updates but not a new minor. Bump deliberately,
+# then re-run the daily workflow manually to confirm the sources still parse.
+
 # Optional: enables jobspy, linkedin-global, and linkedin-israel sources.
-python-jobspy
+python-jobspy~=1.1.82
 # Optional: enables the secrettelaviv source (Cloudflare-fronted, needs a real
 # browser). Requires `python -m playwright install chromium` after pip install.
-playwright
+playwright~=1.61.0

@@ -341,9 +341,24 @@ def _normalize_content(content: str) -> str:
     return collapse_ws(_DIGIT_RE.sub(" ", str(content or "").lower()))
 
 
+# Hand-bumped whenever job_search/policy.py changes a verdict for the same facts
+# (finding N7). Order 4d fingerprints the criteria *text*, but order 6 moved the
+# actual decision into policy.py — criteria.md is now passed to evaluate_job and
+# ignored. So fixing a policy bug used to leave every previously-rejected job
+# suppressed forever, and the documented escape hatch was to edit criteria.md for
+# a change that wasn't in criteria.md. Bumping this reopens those jobs instead.
+#
+# 1 → 2026-07-25: baseline, recorded when the policy became part of the signature.
+POLICY_VERSION = "1"
+
+
 def criteria_version(criteria: str) -> str:
-    """Return a short, whitespace-insensitive fingerprint of the fit criteria."""
-    return _short_hash(collapse_ws(criteria))
+    """Return a short, whitespace-insensitive fingerprint of the fit criteria.
+
+    Includes POLICY_VERSION, because the deterministic policy is as much "the
+    criteria" as criteria.md is — it is the half that actually decides.
+    """
+    return _short_hash(collapse_ws(criteria), POLICY_VERSION)
 
 
 def evaluation_signature(content: str, criteria_version: str = "") -> str:

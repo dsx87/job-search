@@ -477,12 +477,14 @@ class LLMClient:
                 f"Primary ({self.primary_label}) unavailable "
                 f"({self._primary_disabled_reason or 'error'}) and no fallback configured."
             )
-        with self._lock:
-            self._fallback_calls += 1
         result = self.fallback.generate(
             prompt, temperature=temperature, json_mode=json_mode, response_schema=response_schema
         )
         with self._lock:
+            # Counted after the call returns, so usage_summary reports requests the
+            # fallback actually served rather than requests we attempted on it
+            # (finding 14) — mirroring how _primary_calls is counted.
+            self._fallback_calls += 1
             self._accumulate(getattr(self.fallback, "last_usage", None))
         return result
 
