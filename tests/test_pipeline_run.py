@@ -1144,6 +1144,42 @@ def test_digest_failure_marks_the_fit_notified_so_the_retry_skips_evaluation(mon
     assert "https://x/match" not in saved[-1]
 
 
+def test_digest_reopened_defer_is_recorded_even_with_nothing_to_bundle(monkeypatch):
+    # Review of PR #7: _register_deferral always queues a pending deferral, but
+    # newly_deferred (and so deferred_entries) only gets jobs whose markers are
+    # NEW. A job deferred in an earlier run, reopened today and still
+    # description-poor, therefore produces an empty digest — and the zero-content
+    # early return used to skip the commit loop entirely. The "deferred"
+    # signature that stops the reopen->defer cycle never landed, so the job
+    # re-paid ensure_job_description's URL fetch every single run, forever.
+    jobs = [Job(title="Sparse", company="Gamma", url="https://x/sparse", description="x" * 200)]
+    telegram, _saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    ensure_calls = []
+    sufficiency = iter([True, False, False, False])
+
+    def ensure(_job):
+        ensure_calls.append(1)
+        return next(sufficiency)
+
+    monkeypatch.setattr(run, "ensure_job_description", ensure)
+    monkeypatch.setattr(
+        run, "evaluate_job", lambda *_a: {"fit": False, "reason": "no", "timezone_note": None}
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    cfg = make_config(digest_delivery=True)
+
+    run.run_daily(cfg)  # run 1: evaluated, non-fit
+    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v2")
+    run.run_daily(cfg)  # run 2: reopened, description-poor -> FIRST deferral, so it bundles
+    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v3")
+    run.run_daily(cfg)  # run 3: reopened again, markers already seen -> nothing to bundle
+    run.run_daily(cfg)  # run 4: unchanged since run 3 -> must NOT reopen
+
+    assert len(telegram.documents) == 1   # only run 2 had anything new to announce
+    assert len(ensure_calls) == 3         # run 4 skipped, thanks to run 3's deferred signature
+
+
 def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):
     job = Job(title="No", company="Acme", url="https://x/no", description="x" * 200)
     telegram, _saved = install_daily_fakes(monkeypatch, [job])

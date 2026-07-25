@@ -2,6 +2,7 @@
 import io
 import json
 import re
+import socket
 import urllib.error
 
 import pytest
@@ -141,6 +142,42 @@ def test_every_run_message_formatter_stays_within_the_cap():
     assert _tags_balanced(bounded)
 
 
+def test_length_is_measured_in_telegram_units_not_python_chars():
+    # Review of PR #7: Telegram counts UTF-16 code units. A non-BMP emoji is 1
+    # Python char but 2 units, so a message that reads as exactly 4096 by len()
+    # can still 400 — the precise failure this module exists to prevent.
+    assert tg.message_length("abc") == 3
+    assert tg.message_length("📄") == 2
+    assert len("📄") == 1
+
+    astral = "📄" * (TELEGRAM_MAX_MESSAGE_CHARS - 10)  # under the char limit, over the real one
+    assert len(astral) < TELEGRAM_MAX_MESSAGE_CHARS
+    bounded = tg.bound_message(astral)
+    assert tg.message_length(bounded) <= TELEGRAM_MAX_MESSAGE_CHARS
+
+
+def test_emoji_heavy_message_is_bounded_on_the_wire(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout: sent.update(payload=json.loads(request.data)) or _Response(),
+    )
+    tg._tg_send_message("token", "chat", "<b>" + "🚀" * 5000 + "</b>")
+
+    text = sent["payload"]["text"]
+    assert tg.message_length(text) <= TELEGRAM_MAX_MESSAGE_CHARS
+    assert _tags_balanced(text)
+
+
+def test_plain_text_caption_is_not_tag_balanced():
+    # A caption is sent as plain text, so a literal "<" or "&" near the cut must
+    # not be treated as markup (which trimmed it oddly).
+    caption = "Digest & report <2026> " + "c" * 2000
+    bounded = tg.bound_message(caption, 1024, html=False)
+    assert tg.message_length(bounded) <= 1024
+    assert bounded.startswith("Digest & report <2026>")
+
+
 # ── send retries ──────────────────────────────────────────────────────────────
 def test_message_retries_a_transient_error_then_succeeds(_no_sleeping, monkeypatch):
     attempts = []
@@ -156,6 +193,23 @@ def test_message_retries_a_transient_error_then_succeeds(_no_sleeping, monkeypat
 
     assert len(attempts) == 2
     assert _no_sleeping == [2]
+
+
+def test_message_retries_a_read_timeout_on_the_39_floor(_no_sleeping, monkeypatch):
+    # socket.timeout only became an alias of TimeoutError in 3.10, and the stated
+    # floor (and the Pi) is 3.9 — so a read timeout during resp.read() would
+    # otherwise skip the retry entirely on the very platform that needs it most.
+    attempts = []
+
+    def urlopen(request, timeout):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise socket.timeout("timed out")
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    tg._tg_send_message("token", "chat", "hello")
+    assert len(attempts) == 2
 
 
 def test_message_retries_a_network_error(_no_sleeping, monkeypatch):

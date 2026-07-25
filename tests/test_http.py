@@ -147,3 +147,23 @@ def test_verbose_source_error(capsys):
 
     verbose_source_error("src", False, RuntimeError("boom"))
     assert capsys.readouterr().out == ""  # silent when not verbose
+
+
+def test_ssl_contexts_are_built_once_and_reused(monkeypatch):
+    # Review of PR #7: ssl.create_default_context() loads the system CA store on
+    # every call, and a full run makes hundreds of requests — real cost on a Pi.
+    monkeypatch.setattr(http_mod, "_CONTEXTS", {})
+    builds = []
+    real = ssl.create_default_context
+
+    def counting():
+        builds.append(1)
+        return real()
+
+    monkeypatch.setattr(ssl, "create_default_context", counting)
+    monkeypatch.setattr(
+        http_mod.urllib.request, "urlopen", lambda r, timeout=None, context=None: _Resp("{}")
+    )
+    for _ in range(5):
+        http_request("https://x/api")
+    assert len(builds) == 1

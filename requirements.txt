@@ -5,6 +5,10 @@
 # then re-run the daily workflow manually to confirm the sources still parse.
 
 # Optional: enables jobspy, linkedin-global, and linkedin-israel sources.
+# NOTE (Pi): the vendored ARMv6 tls-client .so under vendor/ was cross-built
+# against a specific jobspy release, and ~= still admits patch upgrades — so a
+# `pip install -U` on the Pi can drift past what that .so matches. The pin does
+# not cover that interaction; re-check the vendored build after any bump.
 python-jobspy~=1.1.82
 # Optional: enables the secrettelaviv source (Cloudflare-fronted, needs a real
 # browser). Requires `python -m playwright install chromium` after pip install.

@@ -163,6 +163,30 @@ def test_seen_set_index_tracks_every_mutation_path():
     assert seen.markers_for(token) == frozenset()
 
 
+def test_seen_set_index_survives_every_bulk_removal_path():
+    # Review of PR #7: set's C mutators bypass Python overrides, so a mutating
+    # entry point left unhooked silently desynchronizes the index — the key is
+    # gone from the set but markers_for() still reports its markers, which is a
+    # wrong dedup answer with nothing to notice. Nothing calls these today; the
+    # point is that the first caller must not be the one to discover it.
+    token = "a" * 64
+    marker = f"eval:sig:{token}:sig1"
+    keeper = f"delivery:notified:{token}"
+
+    for mutate in (
+        lambda s: s.difference_update({marker}),
+        lambda s: s.__isub__({marker}),
+        lambda s: s.intersection_update({keeper}),
+        lambda s: s.__iand__({keeper}),
+        lambda s: s.symmetric_difference_update({marker}),
+        lambda s: s.__ixor__({marker}),
+    ):
+        seen = seen_mod.SeenSet({marker, keeper})
+        mutate(seen)
+        assert marker not in seen
+        assert seen.markers_for(token) == {keeper}, mutate
+
+
 def test_seen_set_does_not_index_plain_identities():
     # A URL contains colons; it must never be mistaken for a namespaced marker.
     seen = seen_mod.SeenSet({"https://x.com/a:b", "iOS Dev|Acme|Berlin", "deferred:url:x"})

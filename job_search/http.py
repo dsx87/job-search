@@ -39,11 +39,24 @@ def read_capped(response, limit=MAX_RESPONSE_BYTES):
     return response.read(limit)
 
 
+# Built once and reused: ssl.create_default_context() loads the system CA store
+# on every call, and a full run makes hundreds of requests (MAX_WORKERS=8 across
+# ~15 sources, plus a per-description fetch each) — real cost on the Pi. An
+# SSLContext is safe to share across threads. Built lazily so importing this
+# module (the scraper CLI does, just for the timeout constant) stays cheap; a
+# benign race just builds one twice.
+_CONTEXTS = {}
+
+
 def _ssl_context(url, verify_tls):
     host = (urllib.parse.urlparse(url).hostname or "").lower()
-    if verify_tls or host in _ALWAYS_VERIFY_HOSTS:
-        return ssl.create_default_context()
-    return ssl._create_unverified_context()
+    verified = bool(verify_tls) or host in _ALWAYS_VERIFY_HOSTS
+    context = _CONTEXTS.get(verified)
+    if context is None:
+        context = _CONTEXTS[verified] = (
+            ssl.create_default_context() if verified else ssl._create_unverified_context()
+        )
+    return context
 
 
 def build_url(url, params=None):

@@ -42,6 +42,23 @@ def test_india_filter_keeps_a_berlin_role_that_mentions_an_indian_team():
     assert india_exclusion_filter(job) is True
 
 
+def test_india_filter_ignores_prose_about_where_the_company_is():
+    # Review of PR #7: "based in" / "located in" describe companies at least as
+    # often as candidates, and "India-based" modifies a company noun just as
+    # readily. Each of these dropped a Berlin posting — the same silent false
+    # negative the order exists to close, needing one more sentence of prose.
+    for desc in (
+        "Our engineering hub is located in Bangalore.",
+        "Our platform team is based in Pune.",
+        "Our India-based team supports the platform.",
+        "You will work with our Bangalore-based colleagues.",
+        "We have offices located in Hyderabad and Berlin.",
+        "Our Bangalore office only serves internal teams.",
+    ):
+        job = Job(title="Senior iOS Engineer", location="Berlin, Germany", description=desc)
+        assert india_exclusion_filter(job) is True, desc
+
+
 def test_india_filter_still_drops_india_placed_jobs():
     # Location field, title, and an explicit candidate restriction in the body.
     assert india_exclusion_filter(Job(title="iOS Dev", location="Bengaluru")) is False
@@ -55,6 +72,15 @@ def test_india_filter_still_drops_india_placed_jobs():
     assert india_exclusion_filter(
         Job(title="iOS Dev", location="Remote", description="Open to candidates in India only.")
     ) is False
+    for desc in (
+        "The successful applicant will be residing in India.",
+        "This position is based in Hyderabad.",
+        "You will be working from Gurgaon.",
+        "India only.",
+    ):
+        assert india_exclusion_filter(
+            Job(title="iOS Dev", location="Remote", description=desc)
+        ) is False, desc
 
 
 def test_remote_filter_rejects_a_denial_of_remote_work():

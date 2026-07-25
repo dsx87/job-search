@@ -195,6 +195,36 @@ _INDIA_RESTRICTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ...but "based in" and "located in" describe *companies* at least as often as
+# candidates ("Our engineering hub is located in Bangalore"), and "India-based"
+# modifies a company noun just as readily ("our India-based team"). Both drop a
+# Berlin posting — the same silent false negative this filter exists to close,
+# needing only one more sentence of prose. So a match is vetoed when a
+# company-thing noun sits next to it: before the phrase for the verb forms,
+# after it for the "<place>-based <noun>" form.
+_COMPANY_SUBJECT = (
+    r"(?:offices?|teams?|hubs?|cent(?:er|re)s?|entit(?:y|ies)|subsidiar(?:y|ies)|"
+    r"branch(?:es)?|colleagues|staff|presence|headquarters|hq|sites?|studios?|"
+    r"engineers?|developers?|counterparts?|partners?|operations?|division)"
+)
+# Within the ~60 characters before the match ("Our platform team is based in …").
+_COMPANY_SUBJECT_BEFORE_RE = re.compile(
+    _COMPANY_SUBJECT + r"\b(?:\W+\w+){0,3}\W*$", re.IGNORECASE
+)
+# Or directly after it ("India-based team", "Bangalore-based subsidiary").
+_COMPANY_SUBJECT_AFTER_RE = re.compile(r"^\W*" + _COMPANY_SUBJECT + r"\b", re.IGNORECASE)
+
+
+def _india_candidate_restriction(text) -> bool:
+    """True when the description restricts the CANDIDATE to India."""
+    for match in _INDIA_RESTRICTION_RE.finditer(text):
+        before = text[max(0, match.start() - 60):match.start()]
+        after = text[match.end():match.end() + 40]
+        if _COMPANY_SUBJECT_BEFORE_RE.search(before) or _COMPANY_SUBJECT_AFTER_RE.search(after):
+            continue  # describes where the company is, not where the hire must be
+        return True
+    return False
+
 _EXCLUDED_TITLE_RE = re.compile(
     r"\b(?:qa|quality assurance|test engineer|sdet|support engineer|"
     r"technical support|sales|account manager|recruiter|"
@@ -227,7 +257,7 @@ def india_exclusion_filter(job):
     placement = " ".join(part for part in (job.title, job.location) if part).lower()
     if _INDIA_LOCATION_RE.search(placement):
         return False
-    return not _INDIA_RESTRICTION_RE.search(strip_html(job.description).lower())
+    return not _india_candidate_restriction(strip_html(job.description).lower())
 
 
 def role_filter(job):

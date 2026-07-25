@@ -93,8 +93,24 @@ class SeenSet(set):
         """Markers of an indexed "<namespace>:<kind>" family, or None if not indexed."""
         return self._by_kind.get(kind, frozenset()) if kind in _INDEXED_KINDS else None
 
-    # ── mutators (set's C implementations bypass Python overrides, so each
-    #    mutating entry point has to be named explicitly) ─────────────────────
+    def _reindex(self) -> None:
+        """Rebuild both indexes from scratch (for bulk removals)."""
+        self._by_token.clear()
+        self._by_kind.clear()
+        for value in self:
+            self._index(value)
+
+    # ── mutators ─────────────────────────────────────────────────────────────
+    # set's C implementations bypass Python overrides, so EVERY mutating entry
+    # point has to be named explicitly — including the ones nothing calls today.
+    # A missed one is silent: the set loses a key while _by_token keeps it, and
+    # markers_for() then answers with markers for a key that is no longer there,
+    # i.e. a wrong dedup answer with no symptom to notice. The bulk removals
+    # below reindex rather than diff, because they never run in the hot path.
+    #
+    # Note that copy(), |, - and friends return a plain `set`, not a SeenSet, so
+    # anything derived that way drops to the full-scan fallback — correct, just
+    # slower.
     def add(self, value):
         super().add(value)
         self._index(value)
@@ -125,6 +141,30 @@ class SeenSet(set):
         super().clear()
         self._by_token.clear()
         self._by_kind.clear()
+
+    def difference_update(self, *others):
+        super().difference_update(*others)
+        self._reindex()
+
+    def intersection_update(self, *others):
+        super().intersection_update(*others)
+        self._reindex()
+
+    def symmetric_difference_update(self, other):
+        super().symmetric_difference_update(other)
+        self._reindex()
+
+    def __isub__(self, other):
+        self.difference_update(other)
+        return self
+
+    def __iand__(self, other):
+        self.intersection_update(other)
+        return self
+
+    def __ixor__(self, other):
+        self.symmetric_difference_update(other)
+        return self
 
 
 def _markers_for_tokens(seen, tokens):

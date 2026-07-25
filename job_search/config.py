@@ -70,11 +70,21 @@ LLM_MODEL_SHUTDOWN_WARN_DAYS = 120
 # Transient HTTP statuses a provider retries internally before giving up.
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
-# Statuses that mean "this provider will never serve this model/request" — a
-# retired or misspelled model (404), or a request the endpoint rejects outright
-# (400). Retrying or re-attempting per job is pure waste, so the primary is
-# disabled for the rest of the run after one loud message.
-LLM_MODEL_REJECT_STATUS = {400, 404}
+# Statuses that mean "this model does not exist here" — a retired or misspelled
+# model. Nothing about the next request will change that, so re-attempting per
+# job is pure waste: the primary is disabled for the rest of the run after one
+# loud message.
+LLM_MODEL_REJECT_STATUS = {404}
+
+# Statuses that mean "this REQUEST was rejected". 400 is deliberately NOT in the
+# set above: Gemini returns INVALID_ARGUMENT for per-request conditions (an
+# over-long prompt, a schema the model dislikes, a body it won't accept), and
+# this pipeline feeds it arbitrary scraped job descriptions. Letting one
+# pathological posting move every remaining job onto the fallback would be a
+# cost and quality shift triggered by a single bad input, so a 400 falls back for
+# that request only — but it is still called out once, because a bad model name
+# surfaces as a 400 on some providers.
+LLM_REQUEST_REJECT_STATUS = {400}
 
 # Statuses that count toward the primary circuit-breaker (429 rate limit,
 # 503 overloaded). A post-retry error with one of these codes increments the

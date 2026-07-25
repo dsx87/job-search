@@ -718,10 +718,32 @@ def test_model_rejected_404_disables_primary_after_one_loud_message(capsys):
     assert output.count("Primary model rejected") == 1  # loud once, not per job
 
 
-def test_model_rejected_400_is_treated_the_same():
-    c = _client([_http_error(400)], ["F"])
-    assert c.generate("p") == "F"
-    assert c._primary_disabled is True
+def test_request_rejected_400_falls_back_without_disabling_the_primary(capsys):
+    # Review of PR #7: 400 is NOT "this model is gone". Gemini returns
+    # INVALID_ARGUMENT for per-request conditions, and this pipeline feeds it
+    # arbitrary scraped descriptions — so one pathological posting must not move
+    # every remaining job onto the fallback.
+    c = _client([_http_error(400), "G2"], ["F1"])
+
+    assert c.generate("p1") == "F1"
+    assert c._primary_disabled is False
+    assert c.generate("p2") == "G2"      # the primary is still in play
+
+    output = capsys.readouterr().out
+    assert "check LLM_PRIMARY_MODEL" in output   # ...but a bad model name is still diagnosable
+
+
+def test_request_rejection_is_reported_only_once_per_run(capsys):
+    c = _client([_http_error(400), _http_error(400)], ["F1", "F2"])
+    c.generate("p1")
+    c.generate("p2")
+    assert capsys.readouterr().out.count("rejected a request") == 1
+
+
+def test_request_rejected_without_fallback_reraises_the_original_error():
+    c = LLMClient(_FakeProvider([_http_error(400)]))
+    with pytest.raises(urllib.error.HTTPError):
+        c.generate("p")
 
 
 def test_model_rejected_without_fallback_raises_with_the_cause():

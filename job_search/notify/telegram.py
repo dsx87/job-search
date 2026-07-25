@@ -18,6 +18,7 @@ than at each of the many call sites that build a message:
 """
 import json
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -62,18 +63,31 @@ def _open_tags(text):
     return stack
 
 
-def _safe_cut(text, budget):
-    """Truncate to at most ``budget`` chars without splitting a tag or an entity."""
+def message_length(text) -> int:
+    """Length as Telegram counts it: UTF-16 code units, not Python characters.
+
+    An emoji outside the BMP is 2 units but 1 Python char, and both scraped job
+    titles and LLM-written reasons carry them (the pipeline's own 📄/⚠️ prefixes
+    included). Measuring in characters means a message that reads as exactly
+    4096 can still be rejected — the precise failure this module exists to
+    prevent.
+    """
+    return len(str(text or "").encode("utf-16-le")) // 2
+
+
+def _safe_cut(text, budget, html=True):
+    """Truncate to at most ``budget`` units without splitting a tag or an entity."""
     if budget <= 0:
         return ""
     head = text[:budget]
-    # Never end inside a tag or an entity: back off to before the opener.
-    last_open = head.rfind("<")
-    if last_open > head.rfind(">"):
-        head = head[:last_open]
-    last_amp = head.rfind("&")
-    if last_amp > head.rfind(";") and len(head) - last_amp <= 10:
-        head = head[:last_amp]
+    if html:
+        # Never end inside a tag or an entity: back off to before the opener.
+        last_open = head.rfind("<")
+        if last_open > head.rfind(">"):
+            head = head[:last_open]
+        last_amp = head.rfind("&")
+        if last_amp > head.rfind(";") and len(head) - last_amp <= 10:
+            head = head[:last_amp]
     # Prefer a line break, but only if it doesn't cost most of the message.
     newline = head.rfind("\n")
     if newline >= budget // 2:
@@ -81,29 +95,37 @@ def _safe_cut(text, budget):
     return head.rstrip()
 
 
-def bound_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_CHARS) -> str:
-    """Return ``text`` trimmed to ``limit`` characters, keeping the HTML valid.
+def bound_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_CHARS, html: bool = True) -> str:
+    """Return ``text`` trimmed to ``limit`` Telegram units, keeping the HTML valid.
 
     Cuts on a line boundary when one is available, never inside a tag or an HTML
     entity, and re-closes whatever tags the cut left open — an unbalanced or
     half-written tag is itself a 400 from Telegram, so a naive slice would just
     trade one failure for another. The closing tags count against the limit, and
-    cutting can itself change which tags are open, so the budget is re-solved a
-    few times; if it somehow doesn't settle, the tags are stripped instead, which
-    is always both valid and shorter.
+    both the cut and any astral characters shift the true length, so the budget
+    is re-solved a few times; if it somehow doesn't settle, the tags are stripped
+    instead, which is always both valid and shorter.
+
+    ``html=False`` for plain-text fields (document captions), which have no tags
+    to balance and no entities to protect.
     """
     text = str(text or "")
-    if len(text) <= limit:
+    if message_length(text) <= limit:
         return text
 
-    room = max(0, limit - len(_TRUNCATION_SUFFIX))
+    room = max(0, limit - message_length(_TRUNCATION_SUFFIX))
     budget = room
     for _attempt in range(8):
-        head = _safe_cut(text, budget)
-        closers = "".join(f"</{tag}>" for tag in reversed(_open_tags(head)))
-        if len(head) + len(closers) <= room:
+        head = _safe_cut(text, budget, html=html)
+        closers = (
+            "".join(f"</{tag}>" for tag in reversed(_open_tags(head))) if html else ""
+        )
+        over = message_length(head) + message_length(closers) - room
+        if over <= 0:
             return head + closers + _TRUNCATION_SUFFIX
-        budget = room - len(closers)
+        # Shrink by the actual overshoot, so both the closers and any astral
+        # characters are paid for in one step.
+        budget = max(0, budget - over)
     plain = re.sub(r"<[^>]*>", "", text)[:room].rstrip()
     return plain + _TRUNCATION_SUFFIX
 
@@ -125,7 +147,10 @@ def _send_with_retry(send, label: str) -> None:
     statuses and network errors, re-raise on the last attempt so the caller's
     failure handling still runs. A 400 (bad request — malformed HTML, oversized
     payload) is permanent and is never retried. ``HTTPError`` must be caught
-    before ``URLError`` — it is a subclass.
+    before ``URLError`` — it is a subclass. ``socket.timeout`` is listed
+    explicitly because it only became an alias of ``TimeoutError`` in 3.10, and
+    the stated floor (and the Pi) is 3.9 — without it, a read timeout during
+    ``resp.read()`` would skip the retry entirely.
     """
     delays = TELEGRAM_RETRY_BACKOFF
     attempts = len(delays)
@@ -142,7 +167,7 @@ def _send_with_retry(send, label: str) -> None:
                 f"{delay:g}s (attempt {attempt}/{attempts})...",
                 flush=True,
             )
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             if attempt == attempts:
                 raise
             reason = getattr(exc, "reason", exc)
@@ -188,8 +213,10 @@ def _tg_send_document(bot_token: str, chat_id: str, filename: str, content: byte
 
     body = (
         part_field("chat_id", chat_id)
-        # Captions cap at 1024, not 4096, and are sent as plain text here.
-        + part_field("caption", bound_message(caption, 1024))
+        # Captions cap at 1024, not 4096, and are sent as plain text here — so
+        # no tag balancing, which would otherwise trim oddly around a literal
+        # "&" or "<" in the caption.
+        + part_field("caption", bound_message(caption, 1024, html=False))
         + (
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'

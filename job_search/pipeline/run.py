@@ -293,6 +293,17 @@ def _digest_caption(n_fits, n_review, n_deferred, date) -> str:
 _TELEGRAM_DOC_LIMIT = 50 * 1024 * 1024
 
 
+def _commit_deferrals(seen, deferrals, today) -> None:
+    """Record queued deferrals: markers to suppress repeat notices, plus the
+    signature that stops a reopened job from re-deferring every run."""
+    for markers, job, signature in deferrals:
+        seen.update(markers)
+        if signature is not None:
+            record_evaluation(seen, job, signature, "deferred", today)
+    if deferrals:
+        save_seen_jobs(seen)
+
+
 def _deliver_digest(
     llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
     source_warning, telegram, signature_for, deferrals=(),
@@ -336,7 +347,16 @@ def _deliver_digest(
     deferred_entries = [DeferredEntry(job=job) for job in newly_deferred]
 
     if not (fit_entries or review_entries or deferred_entries):
-        # Nothing to show — keep the lightweight text completion notice.
+        # Nothing to bundle. Any pending deferral still has to be committed:
+        # reaching here with a non-empty `deferrals` means every one of them had
+        # markers already in `seen` (that is exactly why it isn't in
+        # newly_deferred / deferred_entries), so its notice went out in an
+        # earlier run and there is nothing left to wait for. Skipping them —
+        # which is what happened before this early return committed them — loses
+        # the "deferred" signature that stops the reopen→defer cycle, and the job
+        # re-pays the description fetch every run forever.
+        _commit_deferrals(seen, deferrals, today)
+        # Keep the lightweight text completion notice.
         try:
             telegram.send_message(_format_run_summary(stats, source_warning))
         except Exception as exc:
@@ -413,12 +433,9 @@ def _deliver_digest(
         sig = signature_for(job)
         if sig is not None:
             record_evaluation(seen, job, sig, "uncertain", today)
-    for markers, job, signature in deferrals:
-        seen.update(markers)
-        if signature is not None:
-            record_evaluation(seen, job, signature, "deferred", today)
-    if uncertain or deferrals:
+    if uncertain:
         save_seen_jobs(seen)
+    _commit_deferrals(seen, deferrals, today)
 
 
 def run_daily(cfg, test: bool = False) -> int:
