@@ -184,24 +184,33 @@ _INDIA_LOCATION_RE = re.compile(
 # for a bare place name (the pre-2026-07-25 behavior) dropped Berlin roles that
 # happened to name a Bangalore team — a silent false negative that never showed
 # up in any count. See audit finding 10.
+# Two kinds of phrasing, because only one of them is ambiguous:
+#
+# `candidate` — the subject is explicitly the person being hired ("candidates in
+#   India", "this role is based in Pune"). Never vetoed.
+# `ambiguous` — a bare placement verb ("based in", "located in", "work from").
+#   These describe *companies* at least as often as candidates ("Our engineering
+#   hub is located in Bangalore"), so they are subject to the veto below.
 _INDIA_RESTRICTION_RE = re.compile(
-    r"(?:based (?:in|out of)|located (?:in|at)|residing in|reside in|resident of|"
-    r"work(?:ing)? from|work(?:ing)? in|relocat(?:e|ing) to|"
-    r"candidates? (?:in|from|based in)|applicants? (?:in|from|based in)|"
-    r"open to candidates in|hiring in|"
-    r"(?:role|position|job) is (?:based )?in)"
+    # "hiring in" is deliberately NOT here: "our backend team is hiring in India"
+    # describes the company recruiting elsewhere, so it needs the veto below.
+    r"(?P<candidate>candidates? (?:in|from|based in)|applicants? (?:in|from|based in)|"
+    r"open to candidates in|(?:role|position|job) is (?:based )?in)"
     r"\s+(?:the\s+)?" + _INDIA_PLACE + r"(?![a-z])"
-    r"|(?<![a-z])" + _INDIA_PLACE + r"\s*(?:[-–,]\s*)?(?:based|only)(?![a-z])",
+    r"|(?P<ambiguous>based (?:in|out of)|located (?:in|at)|residing in|reside in|"
+    r"resident of|work(?:ing)? from|work(?:ing)? in|relocat(?:e|ing) to|hiring in)"
+    r"\s+(?:the\s+)?" + _INDIA_PLACE + r"(?![a-z])"
+    r"|(?P<modifier>(?<![a-z])" + _INDIA_PLACE + r"\s*(?:[-–,]\s*)?(?:based|only)(?![a-z]))",
     re.IGNORECASE,
 )
 
-# ...but "based in" and "located in" describe *companies* at least as often as
-# candidates ("Our engineering hub is located in Bangalore"), and "India-based"
-# modifies a company noun just as readily ("our India-based team"). Both drop a
-# Berlin posting — the same silent false negative this filter exists to close,
-# needing only one more sentence of prose. So a match is vetoed when a
-# company-thing noun sits next to it: before the phrase for the verb forms,
-# after it for the "<place>-based <noun>" form.
+# Nouns that place the COMPANY somewhere ("our platform team is based in Pune",
+# "our India-based subsidiary"). A match next to one of these describes where the
+# employer is, not where the hire must be — and dropping the posting for it is
+# the same silent false negative this filter exists to close.
+#
+# Note that several of these ("team", "engineers", "staff") also describe the
+# person being hired, which is why the requirement test below overrides the veto.
 _COMPANY_SUBJECT = (
     r"(?:offices?|teams?|hubs?|cent(?:er|re)s?|entit(?:y|ies)|subsidiar(?:y|ies)|"
     r"branch(?:es)?|colleagues|staff|presence|headquarters|hq|sites?|studios?|"
@@ -214,14 +223,80 @@ _COMPANY_SUBJECT_BEFORE_RE = re.compile(
 # Or directly after it ("India-based team", "Bangalore-based subsidiary").
 _COMPANY_SUBJECT_AFTER_RE = re.compile(r"^\W*" + _COMPANY_SUBJECT + r"\b", re.IGNORECASE)
 
+# A modal of OBLIGATION immediately before the phrase makes it a requirement on
+# the hire whatever noun precedes it: "Developers must be based in India" is a
+# restriction, while "Our developers are based in India" is a fact about the
+# company. Without this the veto swallowed genuine restrictions whenever they
+# happened to name the role ("the successful engineer must be based in India").
+#
+# "will" is deliberately absent: it is future tense, not obligation, and reads
+# just as naturally with a company subject ("our platform team will be based in
+# Pune") — including it let that sentence override the veto and drop the job.
+# Nothing is lost, because a sentence with no company noun ("you will be working
+# from Gurgaon") is treated as a restriction anyway.
+# The modal must be bound DIRECTLY to the placement phrase — only a copula and
+# an adverb may sit between. A looser gap let the modal jump over an intervening
+# verb and its object: "You must work with teams based in India" is a statement
+# about colleagues, not a restriction, but a 20-character gap reached across
+# "work with teams" and overrode the veto.
+_CANDIDATE_REQUIREMENT_RE = re.compile(
+    r"\b(?:must|shall|should|needs? to|required to|have to|has to|expected to)"
+    r"\s+(?:currently\s+|already\s+|also\s+|ideally\s+|preferably\s+)?(?:be\s+)?$",
+    re.IGNORECASE,
+)
+
+# A negation between the subject and the phrase inverts its meaning: "must NOT be
+# based in India" and "we are NOT hiring in Bangalore" both say the opposite of a
+# restriction, yet each contains one verbatim. The trailing character class stops
+# at any punctuation, so the negation has to be in the same clause — "we do not
+# have an office in Berlin. Candidates must be based in India" is still a
+# restriction.
+_NEGATION_NEAR_RE = re.compile(
+    r"\b(?:not|never|no longer|cannot|can't|won't|isn't|aren't|don't|doesn't)"
+    r"\b[a-z\s']{0,20}$",
+    re.IGNORECASE,
+)
+
+# ...unless the negation belongs to an EXCLUSION, where the sentence as a whole
+# still restricts the candidate to India: "candidates not based in India should
+# not apply" is an India-only posting stated backwards. Bounded to the same
+# clause, like the negation window itself.
+_INELIGIBILITY_AFTER_RE = re.compile(
+    r"^[^.;]{0,40}\b(?:should not apply|need not apply|do not apply|"
+    r"will not be considered|won't be considered|do(?:es)? not qualify|"
+    r"are not eligible|is not eligible|cannot apply|are not considered)\b",
+    re.IGNORECASE,
+)
+
 
 def _india_candidate_restriction(text) -> bool:
     """True when the description restricts the CANDIDATE to India."""
     for match in _INDIA_RESTRICTION_RE.finditer(text):
+        group = match.lastgroup
         before = text[max(0, match.start() - 60):match.start()]
-        after = text[match.end():match.end() + 40]
-        if _COMPANY_SUBJECT_BEFORE_RE.search(before) or _COMPANY_SUBJECT_AFTER_RE.search(after):
-            continue  # describes where the company is, not where the hire must be
+        after = text[match.end():match.end() + 60]
+        # Checked for every group, and first: a negation makes the phrase say the
+        # opposite of what it literally reads as — unless it is the negated half
+        # of an exclusion ("...not based in India should not apply"), which is an
+        # India-only requirement stated backwards.
+        if _NEGATION_NEAR_RE.search(before):
+            if _INELIGIBILITY_AFTER_RE.search(after):
+                return True
+            continue
+        if group == "candidate":
+            return True  # the subject is unambiguous; no veto applies
+        if group == "ambiguous":
+            # A modal of obligation settles it regardless of the preceding noun.
+            # (Only here: in "you will work with our Bangalore-based colleagues"
+            # the modal belongs to a different verb entirely, so for the modifier
+            # form below the FOLLOWING noun is the reliable signal.)
+            if _CANDIDATE_REQUIREMENT_RE.search(before):
+                return True
+            if _COMPANY_SUBJECT_BEFORE_RE.search(before):
+                continue  # where the company is, not where the hire must be
+            return True
+        if _COMPANY_SUBJECT_AFTER_RE.search(after) or _COMPANY_SUBJECT_BEFORE_RE.search(before):
+            continue  # "our India-based team", "our Bangalore-based colleagues"
         return True
     return False
 

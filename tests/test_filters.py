@@ -42,6 +42,98 @@ def test_india_filter_keeps_a_berlin_role_that_mentions_an_indian_team():
     assert india_exclusion_filter(job) is True
 
 
+def test_india_filter_veto_does_not_swallow_a_stated_requirement():
+    # The company-noun veto over-corrected: several of those nouns also name the
+    # person being hired, so "Developers must be based in India" was vetoed and
+    # the India-only job survived the filter. A modal of obligation settles it —
+    # "must be based in" is a requirement, "are based in" is a description.
+    for desc in (
+        "Developers must be based in India.",
+        "The successful engineer must be based in India.",
+        "Candidates joining our platform team must be based in India.",
+        "All staff for this role must be based in India.",
+        "The engineer should be located in Bengaluru.",
+        "Team members are required to be based in Pune.",
+    ):
+        job = Job(title="iOS Dev", location="Remote", description=desc)
+        assert india_exclusion_filter(job) is False, desc
+
+    # ...but the modal must not leak into the "<place>-based <noun>" form, where
+    # it usually belongs to a different verb entirely.
+    for desc in (
+        "You will work with our Bangalore-based colleagues.",
+        "You will partner with our Pune-based delivery centre.",
+        "Our engineers are based in India.",
+    ):
+        job = Job(title="iOS Dev", location="Berlin, Germany", description=desc)
+        assert india_exclusion_filter(job) is True, desc
+
+
+def test_india_filter_reads_negation_and_future_tense_correctly():
+    # Codex review: three phrasings that each contain a restriction verbatim
+    # while saying the opposite of one. All three dropped a Berlin posting.
+    for desc in (
+        # "will" is future tense, not obligation — it reads just as naturally
+        # with a company subject, so it must not override the company-noun veto.
+        "Our platform team will be based in Pune.",
+        "Our engineering team will be located in Bangalore.",
+        # A negation between the subject and the phrase inverts it.
+        "Developers must not be based in India.",
+        "Staff should not be located in Pune.",
+        "Our team is not hiring in India.",
+        "We are no longer hiring in Bangalore.",
+    ):
+        job = Job(title="iOS Dev", location="Berlin, Germany", description=desc)
+        assert india_exclusion_filter(job) is True, desc
+
+    # The negation has to be in the same clause: punctuation ends the window, so
+    # an earlier unrelated "not" cannot rescue a real restriction.
+    job = Job(
+        title="iOS Dev",
+        location="Remote",
+        description="We do not have an office in Berlin. Candidates must be based in India.",
+    )
+    assert india_exclusion_filter(job) is False
+
+
+def test_india_filter_binds_the_modal_to_the_placement_phrase():
+    # Codex review: the modal's gap reached across an intervening verb and its
+    # object, so a sentence about colleagues became a restriction on the hire.
+    for desc in (
+        "You must work with teams based in India.",
+        "You must collaborate with engineers based in Pune.",
+    ):
+        job = Job(title="iOS Dev", location="Berlin, Germany", description=desc)
+        assert india_exclusion_filter(job) is True, desc
+
+
+def test_india_filter_treats_company_hiring_elsewhere_as_company_prose():
+    # "hiring in" reads as the company recruiting elsewhere at least as often as
+    # a restriction, so it belongs with the vetoed phrasings, not the
+    # unambiguous candidate ones.
+    job = Job(
+        title="iOS Dev",
+        location="Berlin, Germany",
+        description="Our backend team is hiring in India, while this mobile role is based in Berlin.",
+    )
+    assert india_exclusion_filter(job) is True
+    # ...but with no company subject it is still an India hire.
+    assert india_exclusion_filter(
+        Job(title="iOS Dev", location="Remote", description="We are hiring in India.")
+    ) is False
+
+
+def test_india_filter_catches_a_restriction_stated_as_an_exclusion():
+    # Codex review: the negation guard read these as the opposite of a
+    # restriction, when the sentence as a whole is India-only stated backwards.
+    for desc in (
+        "Candidates not based in India should not apply.",
+        "Applicants not located in India will not be considered.",
+    ):
+        job = Job(title="iOS Dev", location="Remote", description=desc)
+        assert india_exclusion_filter(job) is False, desc
+
+
 def test_india_filter_ignores_prose_about_where_the_company_is():
     # Review of PR #7: "based in" / "located in" describe companies at least as
     # often as candidates, and "India-based" modifies a company noun just as
