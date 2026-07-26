@@ -21,7 +21,7 @@ from ..digest import (
     digest_filename,
 )
 from ..identity import job_identity_keys, normalize_url
-from ..llm.clients import LLMClient
+from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
@@ -30,6 +30,7 @@ from ..sources.fetch import fetch_jobs_with_health, select_sources
 from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
+    SeenSet,
     acknowledge_block_alert,
     criteria_version,
     delivery_retry_state,
@@ -41,6 +42,7 @@ from ..state.seen_jobs import (
     record_evaluation,
     save_seen_jobs,
     should_reevaluate,
+    state_size_summary,
 )
 from .stages import (
     _format_deferred_notification,
@@ -231,7 +233,7 @@ def run_seed(cfg) -> int:
         return 1
     raw_jobs = report.jobs
     seen_raw = load_seen_jobs()
-    seen = seen_raw if seen_raw is not None else set()
+    seen = seen_raw if seen_raw is not None else SeenSet()
     added = 0
     for j in raw_jobs:
         keys = job_identity_keys(j)
@@ -252,7 +254,7 @@ def run_list(cfg) -> int:
         return 1
     raw_jobs = report.jobs
     seen_raw = load_seen_jobs()
-    seen = seen_raw if seen_raw is not None else set()
+    seen = seen_raw if seen_raw is not None else SeenSet()
     new_jobs = [j for j in raw_jobs if seen.isdisjoint(job_identity_keys(j))]
     print(f"{len(new_jobs)} new job(s):\n")
     for j in new_jobs:
@@ -291,15 +293,32 @@ def _digest_caption(n_fits, n_review, n_deferred, date) -> str:
 _TELEGRAM_DOC_LIMIT = 50 * 1024 * 1024
 
 
+def _commit_deferrals(seen, deferrals, today) -> None:
+    """Record queued deferrals: markers to suppress repeat notices, plus the
+    signature that stops a reopened job from re-deferring every run."""
+    for markers, job, signature in deferrals:
+        seen.update(markers)
+        if signature is not None:
+            record_evaluation(seen, job, signature, "deferred", today)
+    if deferrals:
+        save_seen_jobs(seen)
+
+
 def _deliver_digest(
     llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
-    source_warning, telegram, signature_for,
+    source_warning, telegram, signature_for, deferrals=(),
 ):
     """Bundle a run into ONE ZIP (HTML dashboard + tailored CVs) and send it once.
 
     On a successful send every included fit is marked delivered/seen exactly as
     the per-job path does; on a failed send each fit records a delivery failure
     so it retries next run (the day+1/day+2/block-after-3 machinery is reused).
+
+    ``deferrals`` is the list of (markers, job, signature) tuples for jobs whose
+    deferral is *announced by this ZIP*. Like the review section, they are only
+    committed to ``seen`` once the send succeeds — recording them earlier marks
+    the jobs "already announced" while the notice is still undelivered
+    (finding N9).
     """
     fit_jobs = [job for job, _payload, _rs, _ev in prepared]
     review_jobs = [job for job, _ev in uncertain]
@@ -328,7 +347,16 @@ def _deliver_digest(
     deferred_entries = [DeferredEntry(job=job) for job in newly_deferred]
 
     if not (fit_entries or review_entries or deferred_entries):
-        # Nothing to show — keep the lightweight text completion notice.
+        # Nothing to bundle. Any pending deferral still has to be committed:
+        # reaching here with a non-empty `deferrals` means every one of them had
+        # markers already in `seen` (that is exactly why it isn't in
+        # newly_deferred / deferred_entries), so its notice went out in an
+        # earlier run and there is nothing left to wait for. Skipping them —
+        # which is what happened before this early return committed them — loses
+        # the "deferred" signature that stops the reopen→defer cycle, and the job
+        # re-pays the description fetch every run forever.
+        _commit_deferrals(seen, deferrals, today)
+        # Keep the lightweight text completion notice.
         try:
             telegram.send_message(_format_run_summary(stats, source_warning))
         except Exception as exc:
@@ -339,7 +367,9 @@ def _deliver_digest(
         date=today,
         stats=stats,
         source_warning=source_warning,
-        usage_summary=llm.usage_summary(),
+        # The state-size line rides along here so the growth trend is visible in
+        # the archive itself, not only in a CI log nobody reads.
+        usage_summary=" ".join((llm.usage_summary(), state_size_summary(seen))),
         fits=fit_entries,
         review=review_entries,
         deferred=deferred_entries,
@@ -362,6 +392,13 @@ def _deliver_digest(
         for job, _payload, _rs, _ev in prepared:
             stats.delivery_failed += 1
             _record_fit_failure(seen, stats, job, "delivery", today, telegram)
+            # Mark notified so the retry takes the known-fit route: the fallback
+            # run summary below names each pending fit, and without this the next
+            # run re-pays fact extraction, bullet selection AND pdflatex from
+            # scratch for a job it already knows is a fit (finding N9).
+            mark_delivery_notified(seen, **job)
+        if prepared:
+            save_seen_jobs(seen)
         # Never leave the user in silence — the ZIP was the only delivery, so
         # fall back to the text run summary (which reports the delivery failures
         # and the pending retries).
@@ -371,19 +408,26 @@ def _deliver_digest(
             print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
         return
 
-    for job, _payload, _rs, _ev in prepared:
-        stats.notification_sent += 1
+    for job, _payload, retry_state, _ev in prepared:
+        # Only count a notification the user is actually seeing for the first
+        # time; a retried fit was announced in an earlier run, and the legacy
+        # path avoids double-counting the same way (finding N9).
+        stats.notification_sent += int(not (retry_state and retry_state.notified))
         stats.cv_sent += 1
         mark_delivery_notified(seen, **job)
         seen.update(job_identity_keys(job))
         sig = signature_for(job)
         if sig is not None:
             record_evaluation(seen, job, sig, "fit", today)
+    # One write for the whole batch rather than one per fit: save_seen_jobs
+    # re-sorts and rewrites the entire file, and every key here is union-safe, so
+    # a crash mid-loop is already covered by the retry ladder.
+    if prepared:
         save_seen_jobs(seen)
 
-    # The review section rode on this same (now-delivered) ZIP, so it is finally
-    # safe to mark the uncertain jobs seen — a failed send above returns early and
-    # leaves them unseen to re-surface next run.
+    # The review and deferral sections rode on this same (now-delivered) ZIP, so
+    # it is finally safe to record them — a failed send above returns early and
+    # leaves them unrecorded to re-surface next run.
     for job, evaluation in uncertain:
         seen.update(job_identity_keys(job))
         sig = signature_for(job)
@@ -391,6 +435,7 @@ def _deliver_digest(
             record_evaluation(seen, job, sig, "uncertain", today)
     if uncertain:
         save_seen_jobs(seen)
+    _commit_deferrals(seen, deferrals, today)
 
 
 def run_daily(cfg, test: bool = False) -> int:
@@ -412,11 +457,22 @@ def run_daily(cfg, test: bool = False) -> int:
     state_mutation_allowed = False
     try:
         llm = LLMClient.from_config(cfg)
+        shutdown_note = model_shutdown_warning(cfg.llm_primary_model)
+        if shutdown_note:
+            print(shutdown_note, flush=True)
         if not cfg.llm_fallback_api_key:
             print(
                 "Note: no LLM fallback configured (LLM_FALLBACK_API_KEY / OPENAI_API_KEY unset).",
                 flush=True,
             )
+            if shutdown_note:
+                # Without a fallback, a retired primary is a total outage: every
+                # job fails evaluation and the run delivers nothing.
+                print(
+                    "  ⚠️ With no fallback, a retired primary model means the run "
+                    "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
+                    flush=True,
+                )
         criteria = load_criteria()
         crit_ver = criteria_version(criteria)
         tailoring_instructions = load_tailoring_instructions()
@@ -463,7 +519,11 @@ def run_daily(cfg, test: bool = False) -> int:
 
         seen_raw = load_seen_jobs()
         first_run = seen_raw is None
-        seen = seen_raw if seen_raw is not None else set()
+        seen = seen_raw if seen_raw is not None else SeenSet()
+        # Reported, never pruned: the eval:* markers are order 4d's reopen
+        # history. Logging the growth every run means a future pruning decision
+        # rests on real numbers.
+        print(state_size_summary(seen), flush=True)
         _drain_block_alerts(seen, telegram)
 
         today = _today()
@@ -476,6 +536,9 @@ def run_daily(cfg, test: bool = False) -> int:
         fits = []
         uncertain = []
         newly_deferred = []
+        # (markers, job, signature) triples awaiting the digest send; empty on the
+        # legacy path, which commits them immediately (see _register_deferral).
+        pending_deferrals = []
         candidate_count = 0
         # Content/criteria signature per identity, captured from the RAW scraped
         # description before ensure_job_description mutates it, so the same value
@@ -485,6 +548,32 @@ def run_daily(cfg, test: bool = False) -> int:
         def _signature_for(job):
             keys = job_identity_keys(job)
             return job_signatures.get(keys[0]) if keys else None
+
+        def _register_deferral(job, signature=None):
+            """Record one insufficient-description deferral.
+
+            The deferral markers suppress repeat notices, so committing them
+            before the notice is delivered would silence a job the user never
+            heard about. On the digest path they therefore wait for a successful
+            ZIP send (finding N9); the legacy path sends its own message right
+            after this loop, so it commits immediately as before.
+
+            ``signature`` is only meaningful for a *reopened* (already-seen) job,
+            where a deferred verdict stops the reopen→defer loop next run. For a
+            brand-new deferral it is inert and would grow state every run.
+            """
+            stats.deferred += 1
+            markers = _deferred_markers(job)
+            if not markers or markers.isdisjoint(seen):
+                newly_deferred.append(job)
+            reopened = not seen.isdisjoint(job_identity_keys(job))
+            signature = signature if reopened else None
+            if cfg.digest_delivery:
+                pending_deferrals.append((markers, job, signature))
+                return
+            seen.update(markers)
+            if signature is not None:
+                record_evaluation(seen, job, signature, "deferred", today)
 
         for value in raw_jobs:
             job = coerce_job(value)
@@ -499,9 +588,10 @@ def run_daily(cfg, test: bool = False) -> int:
                 if not should_reevaluate(seen, job, signature):
                     continue
             if first_run:
-                # On first run, silently mark jobs older than 7 days as seen without evaluating.
-                dp = job.date_posted
-                posted = dp.date() if isinstance(dp, datetime.datetime) else dp  # may be date or None
+                # On first run, silently mark jobs older than 7 days as seen
+                # without evaluating. Job normalizes date_posted to a date (or
+                # None) at construction, so no isinstance dance is needed here.
+                posted = job.date_posted
                 if posted is not None and posted < cutoff:
                     seen.update(keys)
                     continue
@@ -516,11 +606,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 continue
             if retry_state.notified:
                 if not ensure_job_description(job):
-                    stats.deferred += 1
-                    markers = _deferred_markers(job)
-                    if not markers or markers.isdisjoint(seen):
-                        newly_deferred.append(job)
-                    seen.update(markers)
+                    _register_deferral(job)
                     continue
                 stats.retry_attempts += int(retry_state.attempt > 0)
                 stats.known_fit_retries += 1
@@ -557,20 +643,7 @@ def run_daily(cfg, test: bool = False) -> int:
                         )
                         continue
                     if evaluation is None:
-                        stats.deferred += 1
-                        markers = _deferred_markers(job)
-                        if not markers or markers.isdisjoint(seen):
-                            newly_deferred.append(job)
-                        seen.update(markers)
-                        # Only a reopened (already-seen) job benefits from a
-                        # deferred signature: it stops the reopen→defer loop next
-                        # run. Brand-new pure-deferred jobs never reach
-                        # should_reevaluate (their plain keys aren't in seen), so
-                        # recording there is inert and would grow state per run.
-                        if not seen.isdisjoint(job_identity_keys(job)):
-                            signature = _signature_for(job)
-                            if signature is not None:
-                                record_evaluation(seen, job, signature, "deferred", today)
+                        _register_deferral(job, _signature_for(job))
                         continue
                     stats.retry_attempts += int(retry_state.attempt > 0)
                     stats.evaluated += 1
@@ -700,7 +773,7 @@ def run_daily(cfg, test: bool = False) -> int:
             # inside _deliver_digest.
             _deliver_digest(
                 llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
-                source_warning, telegram, _signature_for,
+                source_warning, telegram, _signature_for, pending_deferrals,
             )
         else:
             # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per

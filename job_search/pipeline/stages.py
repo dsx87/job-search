@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instructions
+from ..http import read_capped
 from ..latex.compile import compile_with_fixes
 from ..llm.eval import evaluate_job
 from ..llm.tailor import tailor_resume
@@ -124,7 +125,10 @@ def fetch_job_text_from_url(url: str) -> str:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             charset = resp.headers.get_content_charset() or "utf-8"
-            body = resp.read().decode(charset, errors="replace")
+            # Capped read: this follows arbitrary posting URLs, so an oversized
+            # or chunk-streaming response would otherwise be an OOM-kill mid-run
+            # on the Pi (finding N10). A truncated page still yields usable text.
+            body = read_capped(resp).decode(charset, errors="replace")
     except Exception as exc:
         print(f"    URL fetch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return ""

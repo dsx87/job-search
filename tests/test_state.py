@@ -7,6 +7,8 @@ import json
 import datetime
 import hashlib
 
+import pytest
+
 # --- modules under test (repoint on migration) ---
 from job_search.state import seen_jobs as seen_mod
 from job_search.state import seen_merge
@@ -16,6 +18,7 @@ from job_search.state.seen_jobs import (
     criteria_version,
     delivery_identity_tokens,
     delivery_retry_state,
+    dump_keys,
     evaluation_signature,
     lifecycle_record,
     load_seen_jobs,
@@ -56,6 +59,179 @@ def test_seen_jobs_roundtrip_and_format(tmp_path, monkeypatch):
     # exact on-disk format the workflow merge relies on
     assert path.read_text() == json.dumps(["a", "b", "c"], indent=2)
     assert load_seen_jobs() == {"a", "b", "c"}
+
+
+def test_save_seen_jobs_is_atomic_and_leaves_no_temp_files(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    save_seen_jobs({"a"})
+    save_seen_jobs({"a", "b"})
+    assert load_seen_jobs() == {"a", "b"}
+    assert [p.name for p in tmp_path.iterdir()] == ["seen.json"]
+
+
+def test_save_seen_jobs_survives_a_torn_write(tmp_path, monkeypatch):
+    # finding N4: `open(..., "w")` truncates first, so a SIGKILL / OOM-kill /
+    # power cut mid-write left truncated JSON and every later run raised
+    # JSONDecodeError on the only dedup memory the system has. With tmp+rename,
+    # a crashed write leaves the previous file exactly as it was.
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    save_seen_jobs({"first", "second"})
+    before = path.read_text()
+
+    def _die(*_args, **_kwargs):
+        raise KeyboardInterrupt("killed mid-write")
+
+    monkeypatch.setattr(seen_mod.json, "dump", _die)
+    with pytest.raises(KeyboardInterrupt):
+        save_seen_jobs({"third"})
+
+    assert path.read_text() == before
+    assert load_seen_jobs() == {"first", "second"}
+    # ...and the partial temp file is not left behind to accumulate.
+    assert [p.name for p in tmp_path.iterdir()] == ["seen.json"]
+
+
+# ── finding N1: the marker index (SeenSet) ───────────────────────────────────
+
+
+def _marker_state_fixture():
+    """A job plus a seen set carrying its markers and a lot of unrelated noise."""
+    job = {"url": "https://x.com/a", "title": "iOS Dev", "company": "Acme", "location": "Berlin"}
+    keys = set()
+    for i in range(500):
+        token = delivery_identity_tokens(url=f"https://other.com/{i}")[0]
+        keys |= {
+            f"https://other.com/{i}",
+            f"eval:sig:{token}:{i:016x}",
+            f"eval:verdict:{token}:{i:016x}:nonfit",
+            f"delivery:notified:{token}",
+        }
+    return job, keys
+
+
+def test_seen_set_answers_marker_queries_identically_to_a_plain_set():
+    # The index must be an optimization only — same answers, either container.
+    job, noise = _marker_state_fixture()
+    today = datetime.date(2026, 7, 25)
+
+    plain = set(noise)
+    indexed = seen_mod.SeenSet(noise)
+    for container in (plain, indexed):
+        mark_delivery_notified(container, **job)
+        record_delivery_failure(container, job, today, "delivery")
+        record_evaluation(container, job, "sig-abc", "nonfit", today)
+
+    assert delivery_retry_state(plain, **job) == delivery_retry_state(indexed, **job)
+    assert lifecycle_record(plain, **job) == lifecycle_record(indexed, **job)
+    assert pending_block_alerts(plain) == pending_block_alerts(indexed)
+    assert set(plain) == set(indexed)
+
+
+def test_seen_set_index_only_examines_the_job_s_own_markers():
+    # The point of the index: cost stops scaling with the size of the seen set.
+    job, noise = _marker_state_fixture()
+    indexed = seen_mod.SeenSet(noise)
+    mark_delivery_notified(indexed, **job)
+
+    tokens = set(delivery_identity_tokens(**job))
+    examined = set()
+    for token in tokens:
+        examined |= indexed.markers_for(token)
+    assert examined == {f"delivery:notified:{token}" for token in tokens}
+    assert len(examined) < len(indexed) / 100
+
+
+def test_seen_set_index_tracks_every_mutation_path():
+    seen = seen_mod.SeenSet()
+    token = "a" * 64
+    seen.add(f"delivery:notified:{token}")
+    seen.update({f"eval:sig:{token}:sig1"})
+    seen |= {f"eval:last:{token}:2026-07-25"}
+    assert seen.markers_for(token) == {
+        f"delivery:notified:{token}",
+        f"eval:sig:{token}:sig1",
+        f"eval:last:{token}:2026-07-25",
+    }
+
+    seen.discard(f"eval:sig:{token}:sig1")
+    seen.remove(f"eval:last:{token}:2026-07-25")
+    assert seen.markers_for(token) == {f"delivery:notified:{token}"}
+
+    seen.clear()
+    assert seen.markers_for(token) == frozenset()
+
+
+def test_seen_set_index_survives_every_bulk_removal_path():
+    # Review of PR #7: set's C mutators bypass Python overrides, so a mutating
+    # entry point left unhooked silently desynchronizes the index — the key is
+    # gone from the set but markers_for() still reports its markers, which is a
+    # wrong dedup answer with nothing to notice. Nothing calls these today; the
+    # point is that the first caller must not be the one to discover it.
+    token = "a" * 64
+    marker = f"eval:sig:{token}:sig1"
+    keeper = f"delivery:notified:{token}"
+
+    for mutate in (
+        lambda s: s.difference_update({marker}),
+        lambda s: s.__isub__({marker}),
+        lambda s: s.intersection_update({keeper}),
+        lambda s: s.__iand__({keeper}),
+        lambda s: s.symmetric_difference_update({marker}),
+        lambda s: s.__ixor__({marker}),
+    ):
+        seen = seen_mod.SeenSet({marker, keeper})
+        mutate(seen)
+        assert marker not in seen
+        assert seen.markers_for(token) == {keeper}, mutate
+
+
+def test_seen_set_does_not_index_plain_identities():
+    # A URL contains colons; it must never be mistaken for a namespaced marker.
+    seen = seen_mod.SeenSet({"https://x.com/a:b", "iOS Dev|Acme|Berlin", "deferred:url:x"})
+    assert seen.markers_for("//x.com/a") == frozenset()
+    assert seen.markers_of_kind("deferred:url") is None
+
+
+def test_block_alerts_survive_a_plain_set_without_the_index():
+    # Every consumer keeps the full-scan fallback, so old call sites still work.
+    job = {"url": "https://x.com/a", "title": "iOS Dev", "company": "Acme", "location": "Berlin"}
+    plain = set()
+    today = datetime.date(2026, 7, 25)
+    for _ in range(3):
+        record_delivery_failure(plain, job, today, "delivery")
+    alerts = pending_block_alerts(plain)
+    assert len(alerts) == 1
+    assert alerts[0][1]["title"] == "iOS Dev"
+
+
+def test_load_seen_jobs_returns_an_indexed_set(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    token = "b" * 64
+    save_seen_jobs({"https://x.com/a", f"delivery:notified:{token}"})
+    loaded = load_seen_jobs()
+    assert isinstance(loaded, seen_mod.SeenSet)
+    assert loaded.markers_for(token) == {f"delivery:notified:{token}"}
+
+
+def test_state_size_summary_splits_identities_from_markers(tmp_path, monkeypatch):
+    path = tmp_path / "seen.json"
+    monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))
+    token = "c" * 64
+    save_seen_jobs({"https://x.com/a", "https://x.com/b", f"eval:sig:{token}:s"})
+    summary = seen_mod.state_size_summary(load_seen_jobs())
+    assert "3 seen key(s)" in summary
+    assert "2 identities" in summary
+    assert "1 markers" in summary
+    assert "KB on disk" in summary
+
+
+def test_dump_keys_writes_the_canonical_format_to_any_path(tmp_path):
+    target = tmp_path / "elsewhere.json"
+    dump_keys(str(target), {"b", "a"})
+    assert target.read_text() == json.dumps(["a", "b"], indent=2)
 
 
 def test_delivery_identity_tokens_use_full_sha256_for_url_and_meaningful_job_key():
@@ -593,3 +769,33 @@ def test_eval_markers_do_not_corrupt_delivery_state_or_identities():
     identities = set(job_identity_keys(job))
     assert not any(marker.startswith("eval:") for marker in identities)
     assert any(isinstance(marker, str) and marker.startswith("eval:") for marker in seen)
+
+
+# --- finding N7: the reopen signature must cover the policy ------------
+
+def test_criteria_version_changes_when_the_policy_version_is_bumped(monkeypatch):
+    # Order 4d fingerprints criteria.md, but order 6 moved the decision into
+    # policy.py — criteria.md is now passed to evaluate_job and ignored. Without
+    # POLICY_VERSION in the fingerprint, fixing a policy bug left every
+    # previously-rejected job suppressed forever, and the documented escape hatch
+    # was to edit criteria.md for a change that wasn't in criteria.md.
+    criteria = "same criteria text"
+    before = criteria_version(criteria)
+    monkeypatch.setattr(seen_mod, "POLICY_VERSION", "2")
+    assert criteria_version(criteria) != before
+
+
+def test_bumping_the_policy_version_reopens_a_prior_nonfit(monkeypatch):
+    job = {"url": "https://x.com/a", "title": "iOS Dev", "company": "Acme", "location": "Berlin"}
+    seen = seen_mod.SeenSet()
+    criteria, content = "criteria", "unchanged description"
+    old_signature = evaluation_signature(content, criteria_version(criteria))
+    record_evaluation(seen, job, old_signature, "nonfit", datetime.date(2026, 7, 20))
+    seen.update(job_identity_keys(Job(**job)))
+
+    # Same content, same criteria.md → still suppressed.
+    assert should_reevaluate(seen, job, old_signature) is False
+
+    monkeypatch.setattr(seen_mod, "POLICY_VERSION", "2")
+    bumped = evaluation_signature(content, criteria_version(criteria))
+    assert should_reevaluate(seen, job, bumped) is True

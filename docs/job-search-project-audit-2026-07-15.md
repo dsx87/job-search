@@ -10,7 +10,7 @@
 |---|---|---|
 | 1 | Completed before this change | Findings 1–2; commits `4109cab`, `ac7d314`, `ccae58a`, with follow-ups `80374ca`, `a2dd063`, `fe4fe77`, `60dc777` |
 | 2 | Completed before this change | Findings 3–5; commits `30b75e2`, `ceb37d3`, `b0f8d9f`, `43f884a`, `2218938`, `4306581`, with documentation in `a9cf42f` |
-| 3 | Completed in this change | Configurable provider model/API-base plumbing and Gemini 3.5 Flash migration, including Gemini 3's recommended default temperature. Benchmark explicitly waived by user; offline request-contract coverage used. |
+| 3 | Partially completed — **see the 2026-07-25 correction below** | Configurable provider model/API-base plumbing landed and is in use. The Gemini 3.5 Flash migration was later **deliberately reverted** (commit `08a12a2`), so finding 6's dated shutdown risk is **still open**. Benchmark explicitly waived by user; offline request-contract coverage used. |
 | 4a | Completed in this change | Canonical `Job` contract used end to end; commit `ef8e276` |
 | 4b | Completed in this change | Canonical job identities shared across filtering, state, delivery, sources, and TUI; commits `b65f2d8`, `211bfa7` |
 | 4c | Completed in this change | End-to-end source-health reporting, fatal-outage safeguards, and partial-refresh retention; commit `fb2554b` |
@@ -110,7 +110,7 @@ All three paths were confirmed with controlled in-memory tests.
 
 Recommended change: unresolved factual violations, compilation errors, unknown page counts, or multi-page results should block automated delivery or enter a manual-review queue.
 
-### 6. The primary model is hardcoded and nearing shutdown — resolved in order 3
+### 6. The primary model is hardcoded and nearing shutdown — **half resolved; see the correction at the end of this section**
 
 `gemini-2.5-flash` is hardcoded in the client. Although `PipelineConfig` exposes model and API-base fields, they are never passed to the client.
 
@@ -122,6 +122,18 @@ Evidence:
 Google currently lists `gemini-2.5-flash` for shutdown on October 16, 2026, with `gemini-3.5-flash` as the recommended replacement: [official Gemini deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations?hl=en).
 
 Recommended change: make model selection effective end-to-end and benchmark the replacement against a fixed labeled set before migration.
+
+> **Correction (2026-07-25).** Only the plumbing half of this finding is
+> resolved. `LLMClient.from_config` does thread scheme/model/base from config, but
+> commit `08a12a2` deliberately flipped the primary *back* to `gemini-2.5-flash`
+> ("steadier than 3.5") — a quality call, not a regression. The **October 16, 2026
+> shutdown risk is therefore still open**, and this table previously asserted
+> otherwise. Mitigations landed on 2026-07-25 rather than a forced migration:
+> `LLM_MODEL_SHUTDOWN_DATES` in `config.py` records the date; the run log and the
+> digest footer warn from 120 days out; and `LLM_MODEL_REJECT_STATUS` (400/404)
+> makes a retired model fail loudly once and disable the primary for the run
+> instead of paying a doomed request per job. Note the fallback key is what turns
+> a shutdown into a degraded run rather than a total outage.
 
 ## Search precision and deduplication
 

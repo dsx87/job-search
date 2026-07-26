@@ -857,6 +857,19 @@ def _read_digest(telegram):
     return name, zf, zf.read("index.html").decode("utf-8")
 
 
+def _capture_digest_contexts(monkeypatch):
+    """Record each DigestContext handed to build_digest_zip, still building the ZIP."""
+    real = run.build_digest_zip
+    contexts = []
+
+    def spy(ctx):
+        contexts.append(ctx)
+        return real(ctx)
+
+    monkeypatch.setattr(run, "build_digest_zip", spy)
+    return contexts
+
+
 def _install_digest_fit(monkeypatch, pdf=b"PDFDATA", summary="One-line summary."):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
@@ -1020,6 +1033,151 @@ def test_digest_caption_counts_delivered_fits_not_found_fits(monkeypatch):
     _n, _zf, html = _read_digest(telegram)
     assert "Good" in html
     assert "Bad" not in html  # the failed fit is not in the bundle
+
+
+def test_digest_success_commits_deferral_markers(monkeypatch):
+    sparse = Job(title="Sparse", company="Gamma", url="https://x/sparse", description="tiny")
+    telegram, saved = install_daily_fakes(monkeypatch, [sparse])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert len(telegram.documents) == 1
+    assert any(marker.startswith("deferred:") for marker in saved[-1])
+
+
+def test_digest_failure_does_not_commit_deferral_markers(monkeypatch):
+    # finding N9: the deferral markers suppress repeat notices, and they were
+    # committed in the candidate/eval loops — BEFORE the ZIP that announces them
+    # was sent. A failed send therefore recorded the job as "already announced"
+    # and the notice was never delivered. The review section already waited for a
+    # successful send; deferrals now do too.
+    sparse = Job(title="Sparse", company="Gamma", url="https://x/sparse", description="tiny")
+    telegram = FakeTelegram()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("upload down")
+
+    telegram.send_document = boom
+    _t, saved = install_daily_fakes(monkeypatch, [sparse], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert not any(marker.startswith("deferred:") for marker in saved[-1])
+    assert not any(m.startswith("eval:verdict:") and m.endswith(":deferred") for m in saved[-1])
+
+
+def test_legacy_path_still_commits_deferral_markers_immediately(monkeypatch):
+    # The legacy path sends its own deferred-jobs message, so it must keep
+    # committing right away — otherwise repeat notices come back.
+    sparse = Job(title="Sparse", company="Gamma", url="https://x/sparse", description="tiny")
+    telegram, saved = install_daily_fakes(monkeypatch, [sparse])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
+
+    run.run_daily(make_config(digest_delivery=False))
+
+    assert any("posting deferred" in m for m in telegram.messages)
+    assert any(marker.startswith("deferred:") for marker in saved[-1])
+
+
+def test_digest_does_not_recount_a_notification_for_a_retried_fit(monkeypatch):
+    # finding N9: _deliver_digest counted a notification for EVERY prepared fit,
+    # including ones announced in an earlier run. The legacy path avoids this by
+    # threading notification_already_sent into send_fit.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    seen = set()
+    mark_delivery_notified(seen, url="https://x/match", title="Match", company="Acme", location="")
+    record_delivery_failure(
+        seen,
+        {"url": "https://x/match", "title": "Match", "company": "Acme", "location": ""},
+        datetime.date(2026, 7, 20),
+        "delivery",
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "prepare_retry_fit",
+        lambda *_a: {"title": "Match", "company": "Acme", "message": "m", "pdf_bytes": b"PDF"},
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+
+    contexts = _capture_digest_contexts(monkeypatch)
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert len(telegram.documents) == 1
+    stats = contexts[-1].stats
+    assert stats.notification_sent == 0  # already announced in an earlier run
+    assert stats.cv_sent == 1            # ...but the CV did land today
+
+
+def test_digest_failure_marks_the_fit_notified_so_the_retry_skips_evaluation(monkeypatch):
+    # finding N9: a digest-failed fit was never marked notified, so the next run
+    # re-ran fact extraction, bullet selection AND pdflatex from scratch. The
+    # fallback run summary names each pending fit, so "notified" is accurate.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("upload down")
+
+    telegram.send_document = boom
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    tokens = delivery_identity_tokens(
+        url="https://x/match", title="Match", company="Acme", location="",
+    )
+    assert any(f"delivery:notified:{token}" in saved[-1] for token in tokens)
+    # ...and the job itself is still unseen, so it does come back.
+    assert "https://x/match" not in saved[-1]
+
+
+def test_digest_reopened_defer_is_recorded_even_with_nothing_to_bundle(monkeypatch):
+    # Review of PR #7: _register_deferral always queues a pending deferral, but
+    # newly_deferred (and so deferred_entries) only gets jobs whose markers are
+    # NEW. A job deferred in an earlier run, reopened today and still
+    # description-poor, therefore produces an empty digest — and the zero-content
+    # early return used to skip the commit loop entirely. The "deferred"
+    # signature that stops the reopen->defer cycle never landed, so the job
+    # re-paid ensure_job_description's URL fetch every single run, forever.
+    jobs = [Job(title="Sparse", company="Gamma", url="https://x/sparse", description="x" * 200)]
+    telegram, _saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    ensure_calls = []
+    sufficiency = iter([True, False, False, False])
+
+    def ensure(_job):
+        ensure_calls.append(1)
+        return next(sufficiency)
+
+    monkeypatch.setattr(run, "ensure_job_description", ensure)
+    monkeypatch.setattr(
+        run, "evaluate_job", lambda *_a: {"fit": False, "reason": "no", "timezone_note": None}
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    cfg = make_config(digest_delivery=True)
+
+    run.run_daily(cfg)  # run 1: evaluated, non-fit
+    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v2")
+    run.run_daily(cfg)  # run 2: reopened, description-poor -> FIRST deferral, so it bundles
+    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v3")
+    run.run_daily(cfg)  # run 3: reopened again, markers already seen -> nothing to bundle
+    run.run_daily(cfg)  # run 4: unchanged since run 3 -> must NOT reopen
+
+    assert len(telegram.documents) == 1   # only run 2 had anything new to announce
+    assert len(ensure_calls) == 3         # run 4 skipped, thanks to run 3's deferred signature
 
 
 def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):

@@ -3,7 +3,16 @@ import datetime as dt
 from dataclasses import is_dataclass
 
 # --- modules under test (repoint on migration) ---
-from job_search.models import Job, Region, REGION_MAP, REGION_LABELS, coerce_job, job_to_dict, merge_jobs
+from job_search.models import (
+    REGION_LABELS,
+    REGION_MAP,
+    Job,
+    Region,
+    _best_date,
+    coerce_job,
+    job_to_dict,
+    merge_jobs,
+)
 
 
 def test_job_defaults():
@@ -75,8 +84,27 @@ def test_job_complete_dict_round_trip_normalizes_date_region_and_ignores_extras(
 def test_job_from_dict_accepts_datetime_and_unknown_region():
     posted = dt.datetime(2024, 1, 2, 3, 4, 5)
 
-    assert Job.from_dict({"date_posted": posted}).date_posted is posted
+    # finding 11: a datetime is narrowed to a date at construction, so every Job
+    # satisfies the invariant filter_by_age and the first-run cutoff assume. It
+    # used to be preserved as a datetime, which made rules.filter_by_age compare
+    # datetime >= date and raise TypeError.
+    assert Job.from_dict({"date_posted": posted}).date_posted == dt.date(2024, 1, 2)
     assert Job.from_dict({"region": "somewhere"}).region is Region.UNKNOWN
+
+
+def test_job_date_posted_is_always_a_plain_date():
+    assert Job(date_posted=dt.datetime(2024, 6, 1, 12, 0)).date_posted == dt.date(2024, 6, 1)
+    assert Job(date_posted=dt.date(2024, 6, 1)).date_posted == dt.date(2024, 6, 1)
+    assert Job(date_posted=None).date_posted is None
+
+
+def test_filter_by_age_accepts_a_datetime_valued_source_date():
+    from job_search.filters.rules import filter_by_age
+
+    # The reproduction from finding 11, now harmless because Job normalizes.
+    fresh = Job(date_posted=dt.datetime.now())
+    stale = Job(date_posted=dt.datetime.now() - dt.timedelta(days=30))
+    assert filter_by_age([fresh, stale], 7) == [fresh]
 
 
 def test_job_serialized_skill_lists_are_independent():
@@ -190,9 +218,14 @@ def test_merge_jobs_date_posted_prefers_present_then_more_recent():
 def test_merge_jobs_date_posted_mixes_date_and_datetime_without_error():
     a_date = dt.date(2024, 1, 1)
     a_datetime = dt.datetime(2024, 6, 1, 12, 0, 0)
-    # datetime is later than the date -> datetime wins, and no TypeError is raised
-    assert merge_jobs(Job(date_posted=a_date), Job(date_posted=a_datetime)).date_posted == a_datetime
-    assert merge_jobs(Job(date_posted=a_datetime), Job(date_posted=a_date)).date_posted == a_datetime
+    # A datetime-valued source date is narrowed on construction (finding 11), so
+    # the later day still wins and no TypeError is possible in either order.
+    later = dt.date(2024, 6, 1)
+    assert merge_jobs(Job(date_posted=a_date), Job(date_posted=a_datetime)).date_posted == later
+    assert merge_jobs(Job(date_posted=a_datetime), Job(date_posted=a_date)).date_posted == later
+    # _best_date itself stays defensive for raw values that never passed through Job.
+    assert _best_date(a_date, a_datetime) is a_datetime
+    assert _best_date(a_datetime, a_date) is a_datetime
 
 
 def test_merge_jobs_is_remote_is_or_of_inputs():

@@ -131,6 +131,13 @@ LINKEDIN_GLOBAL_LOCATIONS = [
     ("Canada", 25),
 ]
 
+# Lookback window for the LinkedIn searches. 48 h matched the daily cadence but
+# left no slack: any outage longer than two days is a permanent gap, because a
+# posting older than the window is never offered again. A week costs nothing —
+# already-seen postings are dropped by the dedup state before evaluation, and
+# filters.filter_by_age still enforces the real freshness rule.
+LINKEDIN_HOURS_OLD = 168
+
 
 @register(
     "LinkedIn iOS/Swift jobs globally (Remote + key relocation countries) via JobSpy. "
@@ -164,7 +171,7 @@ class LinkedInGlobalSource(BaseSource):
                         search_term=query,
                         location=location,
                         results_wanted=results_wanted,
-                        hours_old=48,
+                        hours_old=LINKEDIN_HOURS_OLD,
                         linkedin_fetch_description=True,
                     )
                     self._attempt_succeeded()
@@ -230,7 +237,7 @@ class LinkedInIsraelSource(BaseSource):
                     search_term=query,
                     location="Israel",
                     results_wanted=25,
-                    hours_old=48,
+                    hours_old=LINKEDIN_HOURS_OLD,
                     linkedin_fetch_description=True,
                 )
                 self._attempt_succeeded()

@@ -68,8 +68,11 @@ class FakeHTTPResponse:
 
         return _H()
 
-    def read(self):
-        return self._body
+    def read(self, amt=None):
+        # Mirrors http.client.HTTPResponse.read(amt): the production helpers cap
+        # the read size (config.MAX_RESPONSE_BYTES) so an endless body can't OOM
+        # the Pi, so the fake has to accept the argument too.
+        return self._body if amt is None else self._body[:amt]
 
     def __enter__(self):
         return self

@@ -18,6 +18,7 @@ import subprocess
 import sys
 
 from ..config import SEEN_JOBS_FILE
+from .seen_jobs import dump_keys
 from .seen_merge import merge_refs
 
 STATE_DIR = ".state"          # dedicated checkout of the `state` branch
@@ -41,8 +42,25 @@ def _count(path):
         return "?"
 
 
+def _keys_from_file(path):
+    """Keys in a seen_jobs.json file, or an empty set when absent/unreadable."""
+    try:
+        with open(path) as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
 def pull_state(state_dir=STATE_DIR, branch=STATE_BRANCH, seen_file=SEEN_JOBS_FILE) -> bool:
-    """Refresh seen_file from origin/<branch>. Returns True on success.
+    """Merge origin/<branch>'s keys INTO seen_file. Returns True on success.
+
+    A union, not an overwrite. push_state promises that a failed push leaves the
+    state local and "will retry next run" — but this ran first next run, and
+    before 2026-07-25 it was ``reset --hard`` + ``copyfile``, which deleted
+    exactly the keys that were waiting to be retried (finding N2). Losing them
+    means re-notified jobs, duplicate CVs, and a reset retry ladder. Set-union is
+    the same semantics push_state already uses on a rejected push, so the two
+    directions now agree.
 
     Missing checkout / offline remote / any git error → log a skip and return
     False, leaving seen_file untouched so the run uses the local baseline."""
@@ -50,17 +68,28 @@ def pull_state(state_dir=STATE_DIR, branch=STATE_BRANCH, seen_file=SEEN_JOBS_FIL
         print(f"[state] pull skipped (no {state_dir} checkout); using local {seen_file} "
               f"({_count(seen_file)} keys)", file=sys.stderr)
         return False
+    local = _keys_from_file(seen_file)
     try:
         if _run(state_dir, "fetch", "--quiet", "--depth", "1", "origin", branch).returncode != 0:
             raise RuntimeError("fetch failed")
         if _run(state_dir, "reset", "--hard", "--quiet", f"origin/{branch}").returncode != 0:
             raise RuntimeError("reset failed")
-        shutil.copyfile(os.path.join(state_dir, seen_file), seen_file)
+        remote_path = os.path.join(state_dir, seen_file)
+        with open(remote_path) as f:
+            remote = set(json.load(f))
+        merged = local | remote
+        # Only rewrite when the union actually differs from what is on disk, so a
+        # no-op pull can't disturb the file the run is about to read.
+        if merged != local:
+            dump_keys(seen_file, merged)
     except Exception:
         print(f"[state] pull skipped (no remote/key or offline); using local {seen_file} "
               f"({_count(seen_file)} keys)", file=sys.stderr)
         return False
-    print(f"[state] pulled {_count(seen_file)} keys from origin/{branch}")
+    local_only = len(local - remote)
+    detail = f" (kept {local_only} local-only key(s))" if local_only else ""
+    print(f"[state] pulled {len(remote)} keys from origin/{branch}; "
+          f"{_count(seen_file)} after union{detail}")
     return True
 
 
@@ -108,8 +137,7 @@ def push_state(state_dir=STATE_DIR, branch=STATE_BRANCH, seen_file=SEEN_JOBS_FIL
             # resetting HEAD onto it. merge_refs reads each ref via `git show`.
             merged = merge_refs(["HEAD", f"origin/{branch}"], filename=seen_file, repo_dir=state_dir)
             _run(state_dir, "reset", "--hard", "--quiet", f"origin/{branch}")
-            with open(dst, "w") as f:
-                json.dump(merged, f, indent=2)  # byte-identical to save_seen_jobs format
+            dump_keys(dst, merged)  # byte-identical to save_seen_jobs format
             _run(state_dir, "add", seen_file)
             if _run(state_dir, "diff", "--cached", "--quiet").returncode == 0:
                 print("[state] remote already has all our keys; nothing to push")

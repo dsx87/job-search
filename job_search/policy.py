@@ -79,6 +79,11 @@ def apply_policy(facts, job) -> dict:
             "Seniority may be junior, but it is not clearly stated (unverified) — review.",
         )
 
+    # An accept reason must not assert more than the facts do. platform_focus
+    # "unknown" reaches the accepting branches below (only cross_platform/other
+    # reject), and those used to report "iOS/macOS role" regardless (finding 15).
+    focus = "iOS/macOS" if platform == "ios_macos" else "iOS/macOS focus unconfirmed"
+
     arrangement = facts.get("work_arrangement")
     if is_israel_job(job):
         if arrangement in ("hybrid", "onsite") and facts.get("office_days_4plus") == "yes":
@@ -87,7 +92,9 @@ def apply_policy(facts, job) -> dict:
                 "Israeli role requires 4+ office days per week.",
                 "Israeli role may require 4+ office days, but it is unclear (unverified) — review.",
             )
-        return _decision("fit", "Israeli iOS/macOS role meeting office-attendance criteria.", tz)
+        return _decision(
+            "fit", f"Israeli role ({focus}) meeting office-attendance criteria.", tz
+        )
 
     # Residency restriction carried in the authoritative location field: a
     # source-marked remote role tied to a geography that excludes Israel is
@@ -123,6 +130,21 @@ def apply_policy(facts, job) -> dict:
 
     if arrangement == "remote":
         if facts.get("remote_geo_scope") == "restricted":
+            # criteria.md: "Skip a remote role that is restricted to a specific
+            # country or region Igor cannot work from ... UNLESS it offers
+            # relocation/visa sponsorship." The location-based branch above
+            # honored that exception; this description-based one ignored it, so
+            # the same job got opposite verdicts depending on where the
+            # restriction was written down (finding 15).
+            if facts.get("offers_sponsorship") == "yes" and _grounded(
+                facts, "offers_sponsorship", text
+            ):
+                return _decision(
+                    "fit",
+                    f"Remote role ({focus}) with a residency restriction, but "
+                    "relocation/visa sponsorship is offered.",
+                    tz,
+                )
             countries = [c.upper() for c in facts.get("restricted_to_countries") or []]
             if countries and set(countries) <= _US_CA_GROUP:
                 grounded = _grounded(facts, "authorization_blocker", text) or _grounded(
@@ -142,7 +164,7 @@ def apply_policy(facts, job) -> dict:
                     tz,
                 )
             return _decision("uncertain", "Remote role with an unclear residency restriction — verify eligibility.", tz)
-        return _decision("fit", "Fully remote iOS/macOS role.", tz)
+        return _decision("fit", f"Fully remote role ({focus}).", tz)
 
     if facts.get("authorization_blocker") == "yes":
         return reject(

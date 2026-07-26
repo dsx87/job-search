@@ -1,8 +1,11 @@
 """Configuration: frozen dataclasses + from_env(), plus prompt/file loaders.
 
 The module-level constants reproduce the original flat-module globals exactly,
-so defaults are unchanged. ScraperConfig/PipelineConfig wrap them for explicit
-injection; run.py builds a config once and threads it through the stages.
+so defaults are unchanged. PipelineConfig wraps them for explicit injection;
+run.py builds a config once and threads it through the stages. The scraper side
+reads its two constants (HTTP_TIMEOUT_SECONDS, MAX_WORKERS) directly — a
+ScraperConfig wrapper existed here until 2026-07-25 but was never constructed
+outside its own test, so it was removed rather than left as decoration.
 """
 import os
 from dataclasses import dataclass
@@ -10,6 +13,12 @@ from dataclasses import dataclass
 # ── Scraper defaults ──────────────────────────────────────────────────────────
 HTTP_TIMEOUT_SECONDS = 30
 MAX_WORKERS = 8
+
+# Ceiling on a single HTTP response body. An unbounded read() on the 512 MB Pi is
+# one oversized or chunk-streaming response away from an OOM-kill mid-run
+# (finding N10). 8 MB is ~20x the largest legitimate job-board payload observed
+# (a full JSON feed runs a few hundred KB).
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 # Wall-clock budget (seconds) for the whole fetch stage. Any source still
 # running when this elapses is abandoned so a single throttled source
@@ -32,13 +41,50 @@ OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
 # A provider is a wire-protocol *scheme* (gemini | openai | anthropic) + model +
 # API key (+ optional base). Switching providers is a config edit — no code
 # change. See job_search.llm.clients for the schemes and the factory.
+#
+# Primary model choice (recorded deliberately, 2026-07-25): gemini-2.5-flash is
+# kept over the 3.x lineage because 2.5 proved steadier on this workload — see
+# commit 08a12a2. That is a quality call, not an oversight, and it carries a
+# dated risk: Google has scheduled 2.5-flash for shutdown (see
+# LLM_MODEL_SHUTDOWN_DATES). Revisit before that date; if a 3.x successor has
+# since become steady enough, switch LLM_PRIMARY_MODEL here (or pin it per-runner
+# via the LLM_PRIMARY_MODEL env var / workflow variable) and update the README +
+# docs/deploy-rpi.md examples alongside it.
 LLM_PRIMARY_SCHEME = "gemini"
 LLM_PRIMARY_MODEL = "gemini-2.5-flash"
 LLM_FALLBACK_SCHEME = "openai"          # OpenAI-compatible: also Groq, DeepSeek, xAI, … via api_base
 LLM_FALLBACK_MODEL = "gpt-5.4-mini"
 
+# Announced provider shutdown dates (ISO) for models this repo defaults to. A
+# retired model does not degrade — it starts answering 404, which is neither
+# retryable nor a circuit-break status, so without this the only symptom would be
+# a doomed primary request per job. Surfaced ahead of time in the run log and the
+# digest footer (see llm.clients.model_shutdown_warning) so the date is visible
+# while there is still time to act.
+LLM_MODEL_SHUTDOWN_DATES = {
+    "gemini-2.5-flash": "2026-10-16",
+}
+# How far ahead of a shutdown date the warning starts appearing.
+LLM_MODEL_SHUTDOWN_WARN_DAYS = 120
+
 # Transient HTTP statuses a provider retries internally before giving up.
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# Statuses that mean "this model does not exist here" — a retired or misspelled
+# model. Nothing about the next request will change that, so re-attempting per
+# job is pure waste: the primary is disabled for the rest of the run after one
+# loud message.
+LLM_MODEL_REJECT_STATUS = {404}
+
+# Statuses that mean "this REQUEST was rejected". 400 is deliberately NOT in the
+# set above: Gemini returns INVALID_ARGUMENT for per-request conditions (an
+# over-long prompt, a schema the model dislikes, a body it won't accept), and
+# this pipeline feeds it arbitrary scraped job descriptions. Letting one
+# pathological posting move every remaining job onto the fallback would be a
+# cost and quality shift triggered by a single bad input, so a 400 falls back for
+# that request only — but it is still called out once, because a bad model name
+# surfaces as a 400 on some providers.
+LLM_REQUEST_REJECT_STATUS = {400}
 
 # Statuses that count toward the primary circuit-breaker (429 rate limit,
 # 503 overloaded). A post-retry error with one of these codes increments the
@@ -101,6 +147,24 @@ if LATEX_MAX_WORKERS < 1:
 # Minimum job-description length before we trust it for evaluation or tailoring.
 MIN_JOB_TEXT_LEN = 200
 
+# ── Telegram delivery limits / retries ────────────────────────────────────────
+# Telegram's sendMessage text cap. Enforced in notify.telegram at the client
+# boundary: an overlong message is a 400, and some callers have already marked
+# their jobs seen by the time it raises (finding N6).
+TELEGRAM_MAX_MESSAGE_CHARS = 4096
+
+# Backoff between transient-failure retries of a Telegram send. Delivery is the
+# most expensive thing in the run to lose — in digest mode one blip on the single
+# ZIP send defers every fit for a day and re-pays the LLM + pdflatex cost
+# (finding N8) — but the ladder still has to fit inside the CI job cap, so it
+# matches LLM_RETRY_BACKOFF rather than going longer.
+TELEGRAM_RETRY_BACKOFF = (2, 8, 20)
+
+# Upper bound on a `retry_after` Telegram asks us to honor on a 429; beyond this
+# the fixed ladder above is used instead, so a hostile/absurd value can't stall
+# the run.
+TELEGRAM_RETRY_AFTER_CAP = 60
+
 
 def _split_csv(raw: str) -> tuple:
     """Parse a comma-separated env list into a lowercased/stripped/de-empty tuple.
@@ -116,14 +180,27 @@ def _non_empty_env(name: str, default: str) -> str:
     return os.environ.get(name, "").strip() or default
 
 
-@dataclass(frozen=True)
-class ScraperConfig:
-    http_timeout_seconds: int = HTTP_TIMEOUT_SECONDS
-    max_workers: int = MAX_WORKERS
+def _positive_int_env(name: str, default: int) -> int:
+    """Return a positive int from the environment, falling back on anything else.
 
-    @classmethod
-    def from_env(cls) -> "ScraperConfig":
-        return cls()
+    Every other env read in this module is deliberately crash-proof; the worker
+    counts were the exception — ``int(os.environ["EVAL_WORKERS"])`` raised on
+    garbage, and a ``0`` or negative value reached
+    ``ThreadPoolExecutor(max_workers=0)`` and raised there instead (finding 12).
+    A misconfigured tuning knob should not take down a scheduled run.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"Warning: {name}={raw!r} is not an integer; using {default}.")
+        return default
+    if value < 1:
+        print(f"Warning: {name}={value} must be >= 1; using {default}.")
+        return default
+    return value
 
 
 @dataclass(frozen=True)
@@ -185,8 +262,8 @@ class PipelineConfig:
             llm_fallback_api_base=_non_empty_env("LLM_FALLBACK_API_BASE", ""),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
-            eval_workers=int(os.environ.get("EVAL_WORKERS", str(EVAL_WORKERS))),
-            tailor_workers=int(os.environ.get("TAILOR_WORKERS", str(TAILOR_WORKERS))),
+            eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
+            tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
             sources_disable=_split_csv(os.environ.get("SOURCES_DISABLE", "")),
             state_sync=os.environ.get("STATE_SYNC", "") == "1",

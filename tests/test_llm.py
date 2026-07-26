@@ -1,4 +1,5 @@
 """Request-contract, factory, breaker, and telemetry tests for the LLM providers."""
+import datetime
 import json
 import urllib.error
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 # --- modules under test (repoint on migration) ---
+import job_search.llm.clients as clients_module
 from job_search.config import load_base_tex
 from job_search.latex.tailor_render import extract_job_bullets
 from job_search.llm.clients import (
@@ -15,6 +17,7 @@ from job_search.llm.clients import (
     LLMClient,
     OpenAIProvider,
     build_provider,
+    model_shutdown_warning,
 )
 from job_search.llm.cv_edits import CV_EDIT_SCHEMA, select_cv_bullets
 from job_search.llm.eval import evaluate_job
@@ -657,6 +660,103 @@ def test_usage_summary_reports_token_totals_without_dumping_dict():
     for number in ("12345", "6789", "321", "44"):
         assert number in summary
     assert "{'input'" not in summary
+
+
+# =====================================================================
+# Model retirement: shutdown warnings + 400/404 "model rejected" handling
+# (audit finding 6, still-open half — see docs correction 2026-07-25)
+# =====================================================================
+
+
+def test_shutdown_warning_silent_outside_the_window():
+    # Far from the date there is nothing useful to say — keep the log clean.
+    assert model_shutdown_warning("gemini-2.5-flash", datetime.date(2026, 1, 1)) == ""
+
+
+def test_shutdown_warning_fires_inside_the_window_with_days_left():
+    warning = model_shutdown_warning("gemini-2.5-flash", datetime.date(2026, 7, 25))
+    assert "2026-10-16" in warning
+    assert "83 day(s)" in warning
+    assert "LLM_PRIMARY_MODEL" in warning
+
+
+def test_shutdown_warning_switches_to_past_tense_after_the_date():
+    warning = model_shutdown_warning("gemini-2.5-flash", datetime.date(2026, 10, 20))
+    assert "passed its announced shutdown date" in warning
+    assert "4 day(s) ago" in warning
+
+
+def test_shutdown_warning_empty_for_models_without_a_recorded_date():
+    assert model_shutdown_warning("gpt-5.4-mini", datetime.date(2026, 7, 25)) == ""
+    assert model_shutdown_warning("", datetime.date(2026, 7, 25)) == ""
+
+
+def test_usage_summary_carries_the_shutdown_warning(monkeypatch):
+    # The digest footer renders usage_summary(), so this is where a user who
+    # never reads CI logs still sees the date.
+    monkeypatch.setattr(
+        clients_module, "model_shutdown_warning", lambda model, today=None: "[LLM] retiring soon"
+    )
+    c = _client(["G"], [])
+    c.generate("p")
+    assert "retiring soon" in c.usage_summary()
+
+
+def test_model_rejected_404_disables_primary_after_one_loud_message(capsys):
+    # A retired model answers 404: neither retryable nor a breaker status, so
+    # without this every job would pay its own doomed primary request.
+    c = _client([_http_error(404), "G-never-reached"], ["F1", "F2"])
+
+    assert c.generate("p1") == "F1"
+    assert c._primary_disabled is True
+    assert c.generate("p2") == "F2"
+    assert c.primary.calls == 1          # the primary is never retried this run
+    assert c._fallback_calls == 2
+
+    output = capsys.readouterr().out
+    assert "check LLM_PRIMARY_MODEL" in output
+    assert output.count("Primary model rejected") == 1  # loud once, not per job
+
+
+def test_request_rejected_400_falls_back_without_disabling_the_primary(capsys):
+    # Review of PR #7: 400 is NOT "this model is gone". Gemini returns
+    # INVALID_ARGUMENT for per-request conditions, and this pipeline feeds it
+    # arbitrary scraped descriptions — so one pathological posting must not move
+    # every remaining job onto the fallback.
+    c = _client([_http_error(400), "G2"], ["F1"])
+
+    assert c.generate("p1") == "F1"
+    assert c._primary_disabled is False
+    assert c.generate("p2") == "G2"      # the primary is still in play
+
+    output = capsys.readouterr().out
+    assert "check LLM_PRIMARY_MODEL" in output   # ...but a bad model name is still diagnosable
+
+
+def test_request_rejection_is_reported_only_once_per_run(capsys):
+    c = _client([_http_error(400), _http_error(400)], ["F1", "F2"])
+    c.generate("p1")
+    c.generate("p2")
+    assert capsys.readouterr().out.count("rejected a request") == 1
+
+
+def test_request_rejected_without_fallback_reraises_the_original_error():
+    c = LLMClient(_FakeProvider([_http_error(400)]))
+    with pytest.raises(urllib.error.HTTPError):
+        c.generate("p")
+
+
+def test_model_rejected_without_fallback_raises_with_the_cause():
+    c = LLMClient(_FakeProvider([_http_error(404)]))
+    with pytest.raises(RuntimeError, match="LLM_PRIMARY_MODEL"):
+        c.generate("p")
+
+
+def test_model_rejected_reason_shows_in_usage_summary():
+    c = _client([_http_error(404)], ["F"])
+    c.generate("p")
+    assert "disabled mid-run" in c.usage_summary()
+    assert "404" in c.usage_summary()
 
 
 # =====================================================================
