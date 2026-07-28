@@ -60,6 +60,8 @@ def make_config(digest_delivery=False):
         sources_disable=(),
         state_sync=False,
         digest_delivery=digest_delivery,
+        # Empty disables sections; the two tests below opt in with a tmp_path file.
+        sections_file="",
     )
 
 
@@ -1195,3 +1197,44 @@ def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):
 
     assert telegram.documents == []
     assert any("Job search complete" in m for m in telegram.messages)
+
+
+def test_digest_sections_group_the_delivered_fits(monkeypatch, tmp_path):
+    config_file = tmp_path / "sections.py"
+    config_file.write_text(
+        "from job_search.digest.sections import Section, on_job\n"
+        "SECTIONS = [Section('Acme roles', match=on_job(lambda j: j.company == 'Acme'))]\n",
+        encoding="utf-8",
+    )
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    cfg = make_config(digest_delivery=True)
+    cfg.sections_file = str(config_file)
+    run.run_daily(cfg)
+
+    _name, _zf, html = _read_digest(telegram)
+    assert "Acme roles" in html
+    assert telegram.messages == []  # a valid config raises no alert
+
+
+def test_a_broken_sections_config_alerts_and_still_delivers_the_digest(monkeypatch, tmp_path):
+    config_file = tmp_path / "sections.py"
+    config_file.write_text("SECTIONS = 'not a list'\n", encoding="utf-8")
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    cfg = make_config(digest_delivery=True)
+    cfg.sections_file = str(config_file)
+    run.run_daily(cfg)
+
+    # Alerted, and the digest still went out with the fit marked seen.
+    assert any("Digest sections" in message for message in telegram.messages)
+    assert len(telegram.documents) == 1
+    _name, _zf, html = _read_digest(telegram)
+    assert "Match" in html
+    assert "https://x/match" in saved[-1]
