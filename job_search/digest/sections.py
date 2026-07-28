@@ -142,3 +142,66 @@ def days_since_posted(entry):
     if posted is None:
         return None
     return (datetime.date.today() - posted).days
+
+
+# ── Grouping ──────────────────────────────────────────────────────────────────
+# Where entries that match no configured section land. Rendered only when it has
+# something in it, so a config with its own trailing catch-all never shows both.
+OTHER_SECTION = Section("Other", "📋")
+
+
+def group_entries(entries, sections, list_name):
+    """Group `entries` into (Section, entries) pairs; the first match wins.
+
+    Section order is priority order: an entry matching several sections appears
+    once, under the earliest one. That keeps the per-section counts summing to
+    the list total and stops a fit's "Download CV" button from appearing twice.
+
+    Returns ``(groups, warnings)``. An empty ``groups`` means nothing is
+    configured for this list, and the caller renders it flat exactly as it did
+    before sections existed. ``warnings`` names any section whose predicate
+    raised — the entry simply falls through to the next section, because losing
+    the grouping of one card is never worth losing the card.
+    """
+    active = [s for s in sections if list_name in tuple(s.applies_to or ())]
+    if not active:
+        return [], []
+
+    buckets = [[] for _ in active]
+    other = []
+    warnings = []
+    reported = set()
+
+    for entry in entries:
+        placed = False
+        for index, section in enumerate(active):
+            if section.match is None:
+                buckets[index].append(entry)
+                placed = True
+                break
+            try:
+                matched = bool(section.match(entry))
+            except Exception as exc:
+                # Deduped by (section, error): a predicate broken on one field is
+                # broken on every entry, and one warning per job would bury the
+                # rest of the digest.
+                key = (section.name, type(exc).__name__, str(exc))
+                if key not in reported:
+                    reported.add(key)
+                    warnings.append(
+                        "section {!r} predicate failed ({}: {})".format(
+                            section.name, type(exc).__name__, exc
+                        )
+                    )
+                continue
+            if matched:
+                buckets[index].append(entry)
+                placed = True
+                break
+        if not placed:
+            other.append(entry)
+
+    groups = [(section, bucket) for section, bucket in zip(active, buckets) if bucket]
+    if other:
+        groups.append((OTHER_SECTION, other))
+    return groups, warnings
