@@ -68,7 +68,14 @@ def _validate(sections):
             problems.append("{} repeats the name {!r}".format(where, name))
         else:
             seen_names.add(name.lower())
-        applies = tuple(section.applies_to or ())
+        try:
+            applies = tuple(section.applies_to or ())
+        except TypeError:
+            problems.append(
+                "{} ({!r}) has an applies_to that is not iterable "
+                "(expected a list of list names)".format(where, name)
+            )
+            continue
         if not applies:
             problems.append("{} ({!r}) has an empty applies_to".format(where, name))
         for list_name in applies:
@@ -132,14 +139,25 @@ def load_sections(path):
             path, type(exc).__name__, exc
         )
 
-    if not hasattr(module, "SECTIONS"):
-        return (), "{} defines no SECTIONS list. Showing ungrouped lists.".format(path)
+    try:
+        if not hasattr(module, "SECTIONS"):
+            return (), "{} defines no SECTIONS list. Showing ungrouped lists.".format(
+                path
+            )
 
-    sections = module.SECTIONS
-    problems = _validate(sections)
-    if problems:
-        return (), "{} is invalid: {}. Showing ungrouped lists.".format(
-            path, "; ".join(problems[:_MAX_REPORTED])
+        sections = module.SECTIONS
+        problems = _validate(sections)
+        if problems:
+            return (), "{} is invalid: {}. Showing ungrouped lists.".format(
+                path, "; ".join(problems[:_MAX_REPORTED])
+            )
+
+        return tuple(sections), "; ".join(_smoke_problems(sections))
+    except Exception as exc:
+        # Belt-and-braces: no future addition to validation or the smoke check
+        # should be able to re-breach the never-raises guarantee. hasattr()
+        # above only swallows AttributeError, so a property-like SECTIONS that
+        # raises something else is caught here too.
+        return (), "{} raised while validating SECTIONS ({}: {}). Showing ungrouped lists.".format(
+            path, type(exc).__name__, exc
         )
-
-    return tuple(sections), "; ".join(_smoke_problems(sections))

@@ -149,6 +149,34 @@ def test_the_smoke_check_covers_entries_with_no_evaluation(tmp_path):
     assert "TypeError" in error
 
 
+def test_a_non_iterable_applies_to_is_reported_instead_of_raising(tmp_path):
+    body = (
+        "from job_search.digest.sections import Section\n"
+        "SECTIONS = [Section('Remote', applies_to=5)]\n"
+    )
+    sections, error = load_sections(_write(tmp_path, body))
+    assert sections == ()
+    assert "applies_to" in error
+
+
+def test_a_broken_applies_to_iterator_does_not_escape_load_sections(tmp_path):
+    # A predicate is one thing, but applies_to itself could be some exotic
+    # iterable whose __iter__ raises. The outer guard in load_sections is the
+    # last line of defense against that, not _validate alone.
+    body = (
+        "from job_search.digest.sections import Section\n"
+        "\n"
+        "class Explodes:\n"
+        "    def __iter__(self):\n"
+        "        raise ValueError('nope')\n"
+        "\n"
+        "SECTIONS = [Section('Remote', applies_to=Explodes())]\n"
+    )
+    sections, error = load_sections(_write(tmp_path, body))
+    assert sections == ()
+    assert error != ""
+
+
 def test_loading_registers_nothing_importable_under_the_name_sections(tmp_path):
     # A user file called sections.py must never become `import sections`, or it
     # could shadow job_search.digest.sections for anything that imports loosely.
