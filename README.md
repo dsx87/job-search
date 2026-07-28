@@ -237,6 +237,44 @@ Failures retry on days 1 and 3; after the third failed attempt, automated work
 stops and Telegram directs recovery through `/tailor`. Manual tailoring bypasses
 the daily retry state.
 
+## Group the digest into your own sections
+
+By default the digest lists every fit in one stack. Copy `sections.example.py`
+to `sections.py` and it groups them under headings you define — Israel roles,
+worldwide-remote roles, EU relocation, whatever you want:
+
+```python
+from job_search.digest.sections import Section, all_of, fact, is_remote, on_job
+from job_search.location.classify import is_israel_job
+
+SECTIONS = [
+    Section("Israel", "🇮🇱", applies_to=("fits", "review"),
+            match=on_job(is_israel_job)),
+    Section("Remote — Worldwide", "🌍",
+            match=all_of(is_remote, fact("remote_geo_scope", "worldwide"))),
+    Section("Everything else", "📋"),      # no match = catch-all
+]
+```
+
+The config is Python rather than YAML or JSON on purpose: a section can call
+anything in the repo, so `on_job(is_israel_job)` reuses the real location
+database instead of re-listing city names in a rule language that would have to
+grow an operator every time you wanted a new kind of rule.
+
+- **Order is priority.** Each job appears exactly once, under the first section
+  it matches. Anything left over goes to an automatic "Other".
+- **`applies_to`** picks the lists a section groups — `"fits"` (the default) and
+  `"review"`. Deferred jobs were never evaluated, so they stay a flat list.
+- **Sections are presentation only.** They change nothing about what is
+  scraped, filtered, evaluated, or delivered; the ZIP still holds one tailored
+  CV per fit.
+- **A broken config never costs you a run.** The digest is delivered ungrouped,
+  a warning strip at the top of the dashboard says what was wrong, and Telegram
+  alerts you. A typo like `e.job.is_remot` is caught while the file is loaded,
+  not mid-render.
+- **`SECTIONS_FILE`** points at a different file, so a Raspberry Pi and GitHub
+  Actions can group differently.
+
 ## Tech stack
 
 Python (stdlib-only core) · GitHub Actions · Raspberry Pi / systemd · Playwright ·
@@ -258,6 +296,7 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `tests/` | Offline characterization suite (`pytest`) |
 | `criteria.md` | Human-readable job-fit rules the LLM filters against |
 | `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
+| `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
 

@@ -187,3 +187,16 @@ def test_loading_registers_nothing_importable_under_the_name_sections(tmp_path):
     added = set(sys.modules) - before
     assert "sections" not in added
     assert "job_search_user_sections" not in added
+
+
+def test_the_shipped_example_config_loads_cleanly():
+    # sections.example.py is what a user copies to sections.py; if it stopped
+    # loading, every new user would start from a broken config.
+    sections, error = load_sections("sections.example.py")
+    assert error == ""
+    assert [section.name for section in sections] == [
+        "Israel",
+        "Remote — Worldwide",
+        "EU relocation",
+        "Everything else",
+    ]
