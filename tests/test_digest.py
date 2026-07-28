@@ -32,7 +32,8 @@ def _fit(title="iOS Engineer", company="Acme", url="https://x/1", reason="Fully 
     return FitEntry(job=job, evaluation=evaluation, summary=summary, pdf_bytes=pdf, cv_filename=cv)
 
 
-def _context(fits=None, review=None, deferred=None, stats=None):
+def _context(fits=None, review=None, deferred=None, stats=None,
+             sections=(), sections_error=""):
     return DigestContext(
         date=datetime.date(2026, 7, 21),
         stats=stats or _stats(),
@@ -41,6 +42,8 @@ def _context(fits=None, review=None, deferred=None, stats=None):
         fits=fits if fits is not None else [_fit()],
         review=review if review is not None else [],
         deferred=deferred if deferred is not None else [],
+        sections=sections,
+        sections_error=sections_error,
     )
 
 
@@ -195,3 +198,81 @@ def test_cv_filenames_are_unique_even_for_same_company():
     assert n1 != n2
     assert n1.startswith("igor_pivnyk_cv_acme") and n1.endswith(".pdf")
     assert n2.startswith("igor_pivnyk_cv_acme") and n2.endswith(".pdf")
+
+
+# ── user-defined sections ─────────────────────────────────────────────────────
+
+from job_search.digest.sections import Section, is_remote, on_job  # noqa: E402
+
+
+def _review(title="Maybe iOS", company="Globex", reason="Unclear on remote."):
+    job = Job(title=title, company=company, url="https://x/2", location="Berlin",
+              description="Another description. " * 20)
+    evaluation = {"fit": None, "reason": reason, "timezone_note": None, "facts": {}}
+    return ReviewEntry(job=job, evaluation=evaluation, summary="A maybe.")
+
+
+def test_without_sections_the_fits_render_flat_exactly_as_before():
+    html = render_digest_html(_context(fits=[_fit()]))
+    assert 'class="sub-head"' not in html
+
+
+def test_sections_group_the_fits_under_sub_headings_with_counts():
+    remote = _fit(title="Remote iOS", url="https://x/r")
+    onsite_job = Job(title="Onsite iOS", company="Globex", url="https://x/o",
+                     location="Berlin", is_remote=False,
+                     description="A long description. " * 20)
+    onsite = FitEntry(job=onsite_job, evaluation={"fit": True, "reason": "r",
+                                                 "timezone_note": None, "facts": {}},
+                      summary="", pdf_bytes=b"PDF-B", cv_filename="cv_b.pdf")
+    sections = (Section("Remote roles", "🌍", match=is_remote),)
+
+    html = render_digest_html(_context(fits=[remote, onsite], sections=sections))
+
+    assert "Remote roles" in html
+    assert html.count('class="sub-head"') == 2
+    assert "Other" in html            # the un-matched onsite fit
+    assert "Remote iOS" in html and "Onsite iOS" in html
+
+
+def test_a_section_applies_only_to_the_lists_it_names():
+    sections = (Section("Berlin", "🏙", applies_to=("review",),
+                        match=on_job(lambda job: "berlin" in job.location.lower())),)
+
+    html = render_digest_html(_context(fits=[_fit()], review=[_review()], sections=sections))
+
+    # The review list is grouped; the fits list, which the section does not
+    # apply to, stays flat and produces no Other bucket.
+    assert "Berlin" in html
+    assert "Other" not in html
+
+
+def test_empty_sections_are_not_rendered():
+    sections = (Section("Never matches", "🚫", match=lambda _entry: False),)
+    html = render_digest_html(_context(fits=[_fit()], sections=sections))
+    assert "Never matches" not in html
+
+
+def test_section_names_and_icons_are_html_escaped():
+    sections = (Section("<script>x</script>", "<img>", match=is_remote),)
+    html = render_digest_html(_context(fits=[_fit()], sections=sections))
+    assert "<script>x</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_a_sections_error_is_shown_as_a_warning_strip():
+    html = render_digest_html(_context(sections_error="sections.py is invalid: bad"))
+    assert "sections.py is invalid: bad" in html
+    assert "Sections:" in html
+
+
+def test_a_render_time_predicate_failure_is_shown_as_a_warning_strip():
+    def boom(_entry):
+        raise AttributeError("no such field")
+
+    sections = (Section("Broken", "💥", match=boom),)
+    html = render_digest_html(_context(fits=[_fit()], sections=sections))
+
+    assert "Broken" in html
+    assert "no such field" in html
+    assert "Sections:" in html

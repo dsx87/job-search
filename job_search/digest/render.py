@@ -13,6 +13,7 @@ link to the original posting.
 import html
 
 from ..models import REGION_LABELS, Region, coerce_job
+from .sections import group_entries
 
 _STYLE = """
 *{box-sizing:border-box}
@@ -68,6 +69,11 @@ section{margin:0 0 26px}
 .sec-head{display:flex;align-items:baseline;gap:9px;margin:0 0 12px}
 .sec-head h2{font-size:15px;margin:0;font-weight:700;letter-spacing:-.01em}
 .sec-head .n{color:var(--faint);font-weight:600;font-variant-numeric:tabular-nums}
+
+.sub-head{display:flex;align-items:baseline;gap:8px;margin:18px 0 10px}
+.sub-head h3{font-size:12.5px;margin:0;font-weight:700;letter-spacing:.03em;
+  text-transform:uppercase;color:var(--muted)}
+.sub-head .n{color:var(--faint);font-weight:600;font-variant-numeric:tabular-nums}
 
 .job{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--line);
   border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin:0 0 12px}
@@ -308,16 +314,66 @@ def _section(icon, name, count, body) -> str:
     ).format(icon=icon, name=_esc(name), count=count, body=body)
 
 
-def _fits_section(fits) -> str:
-    if not fits:
-        return ""
-    return _section("✅", "Fits", len(fits), "".join(_fit_card(e) for e in fits))
+def _subsection(section, count, body) -> str:
+    """One user-defined group inside a top-level list."""
+    label = " ".join(
+        part for part in (str(section.icon or "").strip(), str(section.name or "")) if part
+    )
+    return (
+        '<div class="sub-head"><h3>{label}</h3><span class="n">{count}</span></div>{body}'
+    ).format(label=_esc(label), count=count, body=body)
 
 
-def _review_section(review) -> str:
-    if not review:
+def _grouped_body(entries, ctx, list_name, card, warnings) -> str:
+    """Cards for `entries`, split into sub-headed groups when sections apply.
+
+    With nothing configured for this list, `group_entries` returns no groups and
+    the body is the same flat run of cards the digest has always rendered.
+    """
+    groups, group_warnings = group_entries(entries, ctx.sections, list_name)
+    warnings.extend(group_warnings)
+    if not groups:
+        return "".join(card(entry) for entry in entries)
+    return "".join(
+        _subsection(section, len(bucket), "".join(card(entry) for entry in bucket))
+        for section, bucket in groups
+    )
+
+
+def _fits_section(ctx, warnings) -> str:
+    if not ctx.fits:
         return ""
-    return _section("\U0001f50d", "Needs review", len(review), "".join(_review_card(e) for e in review))
+    return _section(
+        "✅", "Fits", len(ctx.fits),
+        _grouped_body(ctx.fits, ctx, "fits", _fit_card, warnings),
+    )
+
+
+def _review_section(ctx, warnings) -> str:
+    if not ctx.review:
+        return ""
+    return _section(
+        "\U0001f50d", "Needs review", len(ctx.review),
+        _grouped_body(ctx.review, ctx, "review", _review_card, warnings),
+    )
+
+
+def _sections_warning(ctx, warnings) -> str:
+    """One strip for both kinds of section problem.
+
+    They arrive by different routes: `ctx.sections_error` is set by the loader
+    before the run is rendered (and is the one that also fires a Telegram
+    alert), while `warnings` is collected during rendering, after the alert
+    opportunity has passed.
+    """
+    messages = [
+        message
+        for message in [str(ctx.sections_error or "").strip()] + list(warnings)
+        if message
+    ]
+    if not messages:
+        return ""
+    return '<div class="warn"><b>Sections:</b> {}</div>'.format(_esc(" · ".join(messages)))
 
 
 def _deferred_section(deferred) -> str:
@@ -388,15 +444,19 @@ def render_digest_html(ctx) -> str:
         if ctx.source_warning
         else ""
     )
+    # Built before the warning strip: grouping is what discovers a predicate that
+    # raises, and that has to reach the strip above the body it happened in.
+    warnings = []
     body_sections = "".join(
         s for s in (
-            _fits_section(ctx.fits),
-            _review_section(ctx.review),
+            _fits_section(ctx, warnings),
+            _review_section(ctx, warnings),
             _deferred_section(ctx.deferred),
         ) if s
     )
     if not body_sections:
         body_sections = '<p class="empty">No evaluated jobs matched your criteria this run.</p>'
+    sections_warn = _sections_warning(ctx, warnings)
 
     return (
         "<!doctype html>\n"
@@ -406,7 +466,7 @@ def render_digest_html(ctx) -> str:
         "<style>{style}</style></head><body><div class=\"wrap\">"
         '<header class="top"><h1>Job Search Digest</h1>'
         '<div class="sub">Your matches for <span class="date">{date}</span></div></header>'
-        "{stats}{issues}{warn}{body}"
+        "{stats}{issues}{warn}{sections_warn}{body}"
         "<footer>Generated for {date} · {usage}</footer>"
         "</div></body></html>"
     ).format(
@@ -415,6 +475,7 @@ def render_digest_html(ctx) -> str:
         stats=_stats_bar(ctx),
         issues=_issues_bar(ctx.stats),
         warn=warn,
+        sections_warn=sections_warn,
         body=body_sections,
         usage=_esc(ctx.usage_summary),
     )

@@ -46,3 +46,7 @@ class DigestContext:
     fits: list = field(default_factory=list)
     review: list = field(default_factory=list)
     deferred: list = field(default_factory=list)
+    # User-defined sections (see digest.sections) and anything the loader wants
+    # the reader to know about them. Both empty → today's ungrouped dashboard.
+    sections: tuple = ()
+    sections_error: str = ""
