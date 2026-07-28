@@ -1,5 +1,9 @@
 """TDD for loading user-authored digest sections from a Python file."""
+import pathlib
+
 from job_search.digest.section_config import load_sections
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _write(tmp_path, body, name="sections.py"):
@@ -93,6 +97,18 @@ def test_duplicate_names_are_reported(tmp_path):
     assert "repeats" in error
 
 
+def test_a_section_named_other_collides_with_the_catch_all_and_is_reported(tmp_path):
+    # "Other" is what the implicit catch-all is called; a user section by that
+    # name would render two identical-looking sub-headings.
+    body = (
+        "from job_search.digest.sections import Section\n"
+        "SECTIONS = [Section('other')]\n"  # case-insensitive, like the dup check
+    )
+    sections, error = load_sections(_write(tmp_path, body))
+    assert sections == ()
+    assert "reserved" in error
+
+
 def test_an_unknown_applies_to_value_is_reported(tmp_path):
     body = (
         "from job_search.digest.sections import Section\n"
@@ -177,6 +193,33 @@ def test_a_broken_applies_to_iterator_does_not_escape_load_sections(tmp_path):
     assert error != ""
 
 
+def test_a_sys_exit_in_the_config_is_reported_instead_of_killing_the_process(tmp_path):
+    # sys.exit() raises SystemExit, not Exception; a bare `except Exception`
+    # would let it fly straight past the never-raises contract.
+    body = "import sys\nsys.exit(3)\n"
+    sections, error = load_sections(_write(tmp_path, body))
+    assert sections == ()
+    assert "SystemExit" in error
+
+
+def test_more_than_MAX_REPORTED_problems_notes_the_remainder(tmp_path):
+    body = (
+        "from job_search.digest.sections import Section\n"
+        "SECTIONS = [Section(''), Section(''), Section(''), Section(''), Section('')]\n"
+    )
+    sections, error = load_sections(_write(tmp_path, body))
+    assert sections == ()
+    assert "(+2 more)" in error
+
+
+def test_a_path_that_exists_but_is_not_a_file_is_reported(tmp_path):
+    # A directory (or anything else failing os.path.isfile) is a config typo,
+    # not the opt-out that a genuinely missing path represents.
+    sections, error = load_sections(str(tmp_path))
+    assert sections == ()
+    assert "not a file" in error
+
+
 def test_loading_registers_nothing_importable_under_the_name_sections(tmp_path):
     # A user file called sections.py must never become `import sections`, or it
     # could shadow job_search.digest.sections for anything that imports loosely.
@@ -192,7 +235,7 @@ def test_loading_registers_nothing_importable_under_the_name_sections(tmp_path):
 def test_the_shipped_example_config_loads_cleanly():
     # sections.example.py is what a user copies to sections.py; if it stopped
     # loading, every new user would start from a broken config.
-    sections, error = load_sections("sections.example.py")
+    sections, error = load_sections(str(_REPO_ROOT / "sections.example.py"))
     assert error == ""
     assert [section.name for section in sections] == [
         "Israel",

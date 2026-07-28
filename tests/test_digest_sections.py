@@ -208,3 +208,34 @@ def test_a_raising_predicate_falls_through_and_is_reported_once():
     assert len(warnings) == 1
     assert "Broken" in warnings[0]
     assert "no such field" in warnings[0]
+
+
+def test_a_predicate_raising_a_different_message_per_entry_is_still_reported_once():
+    # The dedup key must not include str(exc): a predicate that embeds per-entry
+    # data in its message (e.g. ValueError(entry.job.title)) would otherwise
+    # produce one warning per entry and bury the rest of the digest.
+    def boom(entry):
+        raise ValueError(entry.job.title)
+
+    entries = [_fit(Job(title="A", is_remote=True)), _fit(Job(title="B", is_remote=True))]
+    sections = (Section("Broken", "💥", match=boom), _remote_section())
+
+    groups, warnings = group_entries(entries, sections, "fits")
+
+    assert [section.name for section, _bucket in groups] == ["Remote"]
+    assert len(groups[0][1]) == 2
+    assert len(warnings) == 1
+
+
+def test_a_predicate_raising_SystemExit_falls_through_instead_of_killing_the_run():
+    def boom(_entry):
+        raise SystemExit(3)
+
+    entries = [_fit(Job(is_remote=True))]
+    sections = (Section("Broken", "💥", match=boom), _remote_section())
+
+    groups, warnings = group_entries(entries, sections, "fits")
+
+    assert [section.name for section, _bucket in groups] == ["Remote"]
+    assert len(warnings) == 1
+    assert "SystemExit" in warnings[0]

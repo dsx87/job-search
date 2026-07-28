@@ -371,7 +371,9 @@ def _deliver_digest(
     if sections_error:
         print("  Digest sections: {}".format(sections_error), file=sys.stderr)
         try:
-            telegram.send_message("⚠️ Digest sections: {}".format(sections_error))
+            telegram.send_message(
+                "⚠️ Digest sections: {}".format(html.escape(sections_error))
+            )
         except Exception as exc:
             print(f"Telegram sections alert error: {exc}", file=sys.stderr)
 

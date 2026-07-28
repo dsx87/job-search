@@ -17,7 +17,7 @@ import os
 
 from ..models import Job
 from .model import FitEntry, ReviewEntry
-from .sections import LIST_NAMES, Section
+from .sections import LIST_NAMES, OTHER_SECTION, Section
 
 # Deliberately not "sections": this module object is never registered in
 # sys.modules, and the distinctive name keeps tracebacks unambiguous.
@@ -64,6 +64,13 @@ def _validate(sections):
         name = str(section.name or "").strip()
         if not name:
             problems.append("{} has an empty name".format(where))
+        elif name.lower() == OTHER_SECTION.name.lower():
+            problems.append(
+                "{} ({!r}) is reserved for the automatic catch-all; omit match= "
+                "on a section to have it own the leftovers instead".format(
+                    where, name
+                )
+            )
         elif name.lower() in seen_names:
             problems.append("{} repeats the name {!r}".format(where, name))
         else:
@@ -88,6 +95,15 @@ def _validate(sections):
         if section.match is not None and not callable(section.match):
             problems.append("{} ({!r}) match is not callable".format(where, name))
     return problems
+
+
+def _summarize_problems(problems):
+    """Join the first `_MAX_REPORTED` problems, noting how many were dropped."""
+    shown = "; ".join(problems[:_MAX_REPORTED])
+    remainder = len(problems) - _MAX_REPORTED
+    if remainder > 0:
+        shown += " (+{} more)".format(remainder)
+    return shown
 
 
 def _smoke_problems(sections):
@@ -125,8 +141,13 @@ def load_sections(path):
     the sections are used and the message is still surfaced.
     """
     path = str(path or "").strip()
-    if not path or not os.path.isfile(path):
+    if not path:
         return (), ""
+    if not os.path.exists(path):
+        # Sections are opt-in: no file at all is silent, not an error.
+        return (), ""
+    if not os.path.isfile(path):
+        return (), "{} is not a file. Showing ungrouped lists.".format(path)
 
     try:
         spec = importlib.util.spec_from_file_location(_MODULE_NAME, path)
@@ -134,7 +155,11 @@ def load_sections(path):
             raise ImportError("not an importable Python file")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-    except Exception as exc:
+    # A user file's top-level code runs here, and a stray `sys.exit()` raises
+    # SystemExit rather than Exception. Catching it too keeps the never-raises
+    # guarantee; KeyboardInterrupt is deliberately left alone so Ctrl-C still
+    # stops a run.
+    except (Exception, SystemExit) as exc:
         return (), "{} could not be loaded ({}: {}). Showing ungrouped lists.".format(
             path, type(exc).__name__, exc
         )
@@ -149,15 +174,16 @@ def load_sections(path):
         problems = _validate(sections)
         if problems:
             return (), "{} is invalid: {}. Showing ungrouped lists.".format(
-                path, "; ".join(problems[:_MAX_REPORTED])
+                path, _summarize_problems(problems)
             )
 
         return tuple(sections), "; ".join(_smoke_problems(sections))
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         # Belt-and-braces: no future addition to validation or the smoke check
         # should be able to re-breach the never-raises guarantee. hasattr()
         # above only swallows AttributeError, so a property-like SECTIONS that
-        # raises something else is caught here too.
+        # raises something else is caught here too, and SystemExit (e.g. a
+        # predicate or module body calling sys.exit()) is caught alongside it.
         return (), "{} raised while validating SECTIONS ({}: {}). Showing ungrouped lists.".format(
             path, type(exc).__name__, exc
         )

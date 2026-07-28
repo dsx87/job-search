@@ -181,11 +181,18 @@ def group_entries(entries, sections, list_name):
                 break
             try:
                 matched = bool(section.match(entry))
-            except Exception as exc:
-                # Deduped by (section, error): a predicate broken on one field is
-                # broken on every entry, and one warning per job would bury the
-                # rest of the digest.
-                key = (section.name, type(exc).__name__, str(exc))
+            # A predicate raising SystemExit (e.g. an errant sys.exit() call) is
+            # caught here too, so a bad config can never kill the run after the
+            # LLM and pdflatex spend has already been paid. KeyboardInterrupt is
+            # deliberately left alone so Ctrl-C still stops a run.
+            except (Exception, SystemExit) as exc:
+                # Deduped by (section, error type) only — not the error text.
+                # A predicate broken on one field is broken on every entry, and
+                # some predicates embed per-entry data in the message (e.g.
+                # ValueError(entry.job.title)), which would defeat a key that
+                # included str(exc): one warning per job would bury the rest of
+                # the digest.
+                key = (section.name, type(exc).__name__)
                 if key not in reported:
                     reported.add(key)
                     warnings.append(
