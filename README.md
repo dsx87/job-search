@@ -274,6 +274,29 @@ grow an operator every time you wanted a new kind of rule.
   not mid-render.
 - **`SECTIONS_FILE`** points at a different file, so a Raspberry Pi and GitHub
   Actions can group differently.
+- **`sections.py` stays untracked.** It's per-host local config — only
+  `sections.example.py` is in git, so `git add sections.py` is refused without
+  `-f`. On a host deployed by `git pull` (the Raspberry Pi), create it directly
+  on the host.
+
+### Helper vocabulary
+
+Everything below lives in `job_search.digest.sections`. A raw
+`lambda entry: ...` works anywhere a `match=` is expected — these just keep the
+common case short.
+
+| Helper | What it does |
+|--------|---------------|
+| `all_of(*predicates)` | Matches when every predicate matches (AND). |
+| `any_of(*predicates)` | Matches when any predicate matches (OR). |
+| `not_(predicate)` | Inverts a predicate. |
+| `is_remote` | Matches a remote job. |
+| `in_region(*regions)` | Matches when the job's region is one of `regions` (e.g. `Region.EU`). |
+| `fact(name, *values)` | With values, matches when the LLM-extracted fact equals one of them (case-insensitive). With none, matches when the fact is known at all — present and not the "unknown" the extractor writes when a posting doesn't state it. |
+| `location_contains(*tokens)` | Matches when the job's location contains any token, case-insensitive. |
+| `title_matches(pattern)` | Matches the job title against a case-insensitive regex, compiled once at section-definition time so a broken pattern surfaces at load, not mid-render. |
+| `on_job(fn)` | Adapts a job-taking function into an entry-taking predicate — the bridge to anything already written in this repo, e.g. `on_job(is_israel_job)`. |
+| `days_since_posted(entry)` | **Not a predicate** — returns the posting's age in days as an `int`, or `None` when the source gave no date. Use it inside a lambda, e.g. `match=lambda e: (days_since_posted(e) or 99) <= 3`. |
 
 ## Tech stack
 
