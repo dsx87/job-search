@@ -52,6 +52,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Digest grouping without committing the config. SECTIONS_PY is a repo
+      # variable holding the contents of sections.py, which is gitignored and so
+      # never in a runner's checkout. Passed via env rather than interpolated
+      # into the script, so the Python source can never be read as shell. Run
+      # before the slow Chromium install so a bad config is visible early —
+      # reported, never fatal: the pipeline delivers an ungrouped digest.
+      - name: Write digest sections config
+        if: vars.SECTIONS_PY != ''
+        env:
+          SECTIONS_PY: ${{ vars.SECTIONS_PY }}
+        run: |
+          printf '%s' "$SECTIONS_PY" > sections.py
+          python3 - <<'PY'
+          from job_search.digest.section_config import load_sections
+          sections, error = load_sections("sections.py")
+          print("Digest sections:", [s.name for s in sections] or "(none)")
+          if error:
+              print("::warning title=Digest sections::" + error)
+          PY
+
       - name: Install Chromium for Playwright (secrettelaviv source)
         run: python -m playwright install --with-deps chromium
 
@@ -72,9 +92,8 @@ jobs:
           LLM_FALLBACK_SCHEME: ${{ vars.LLM_FALLBACK_SCHEME }}
           LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
           LLM_FALLBACK_API_BASE: ${{ vars.LLM_FALLBACK_API_BASE }}
-          # Optional digest grouping. Unset means no grouping here, since the
-          # default sections.py is untracked and so never in an Actions
-          # checkout; point this at a tracked file to group on CI.
+          # Optional override for the path the grouping config is read from.
+          # Leave unset: the step above writes sections.py, the default.
           SECTIONS_FILE: ${{ vars.SECTIONS_FILE }}
           CV_PHONE: ${{ secrets.CV_PHONE }}
         run: python3 -u -m job_search.pipeline
