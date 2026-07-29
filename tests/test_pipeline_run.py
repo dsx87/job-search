@@ -60,6 +60,8 @@ def make_config(digest_delivery=False):
         sources_disable=(),
         state_sync=False,
         digest_delivery=digest_delivery,
+        # Empty disables sections; the two tests below opt in with a tmp_path file.
+        sections_file="",
     )
 
 
@@ -1195,3 +1197,103 @@ def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):
 
     assert telegram.documents == []
     assert any("Job search complete" in m for m in telegram.messages)
+
+
+def test_digest_sections_group_the_delivered_fits(monkeypatch, tmp_path):
+    config_file = tmp_path / "sections.py"
+    config_file.write_text(
+        "from job_search.digest.sections import Section, on_job\n"
+        "SECTIONS = [Section('Acme roles', match=on_job(lambda j: j.company == 'Acme'))]\n",
+        encoding="utf-8",
+    )
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    cfg = make_config(digest_delivery=True)
+    cfg.sections_file = str(config_file)
+    run.run_daily(cfg)
+
+    _name, zf, html = _read_digest(telegram)
+    assert "Acme roles" in html
+    assert telegram.messages == []  # a valid config raises no alert
+    # Grouping is presentation only: the same CV lands in the ZIP under the
+    # same filename regardless of which sub-heading it renders under.
+    pdfs = [n for n in zf.namelist() if n.startswith("cvs/") and n.endswith(".pdf")]
+    assert len(pdfs) == 1
+    assert zf.read(pdfs[0]) == b"PDFDATA"
+
+
+def test_a_broken_sections_config_alerts_and_still_delivers_the_digest(monkeypatch, tmp_path):
+    config_file = tmp_path / "sections.py"
+    config_file.write_text("SECTIONS = 'not a list'\n", encoding="utf-8")
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    cfg = make_config(digest_delivery=True)
+    cfg.sections_file = str(config_file)
+    run.run_daily(cfg)
+
+    # Alerted, and the digest still went out with the fit marked seen.
+    assert any("Digest sections" in message for message in telegram.messages)
+    assert len(telegram.documents) == 1
+    _name, _zf, html = _read_digest(telegram)
+    assert "Match" in html
+    assert "https://x/match" in saved[-1]
+
+
+def test_the_sections_alert_escapes_html_in_the_error_message(monkeypatch, tmp_path):
+    # sections_error can embed a section name verbatim ({!r}); Telegram sends
+    # with parse_mode=HTML, so an unescaped "<" either renders a stray tag or
+    # makes Telegram reject the whole alert with a 400 that is never retried.
+    config_file = tmp_path / "sections.py"
+    config_file.write_text(
+        "from job_search.digest.sections import Section\n"
+        "SECTIONS = [Section('<b>Remote</b>'), Section('<b>Remote</b>')]\n",
+        encoding="utf-8",
+    )
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    cfg = make_config(digest_delivery=True)
+    cfg.sections_file = str(config_file)
+    run.run_daily(cfg)
+
+    alert = next(m for m in telegram.messages if "Digest sections" in m)
+    assert "&lt;b&gt;Remote&lt;/b&gt;" in alert
+    assert "<b>Remote</b>" not in alert
+
+
+def test_a_render_time_predicate_failure_sends_no_telegram_message(monkeypatch, tmp_path):
+    # The load-time smoke check runs the predicate against blank entries only;
+    # it must not raise there (else it becomes a sections_error / alert case,
+    # covered above). This predicate only explodes on a real entry's data, so
+    # the failure surfaces solely as a render-time warning collected inside
+    # render_digest_html — nothing should reach Telegram for it.
+    config_file = tmp_path / "sections.py"
+    config_file.write_text(
+        "from job_search.digest.sections import Section\n"
+        "SECTIONS = [Section("
+        "'Explode', match=lambda e: 1 / 0 if e.job.company == 'Acme' else True"
+        ")]\n",
+        encoding="utf-8",
+    )
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    cfg = make_config(digest_delivery=True)
+    cfg.sections_file = str(config_file)
+    run.run_daily(cfg)
+
+    assert telegram.messages == []
+    assert len(telegram.documents) == 1
+    _name, _zf, html = _read_digest(telegram)
+    assert "Match" in html  # the digest was still delivered
+    assert "ZeroDivisionError" in html  # the warning is visible in the dashboard

@@ -19,6 +19,7 @@ from ..digest import (
     build_digest_zip,
     cv_filename_for,
     digest_filename,
+    load_sections,
 )
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient, model_shutdown_warning
@@ -363,6 +364,19 @@ def _deliver_digest(
             print(f"Telegram notification error: {exc}", file=sys.stderr)
         return
 
+    # Loaded here rather than in run_daily so the legacy per-job delivery path
+    # never pays for it, and so a config problem is announced only on a run that
+    # actually had something to group.
+    sections, sections_error = load_sections(cfg.sections_file)
+    if sections_error:
+        print("  Digest sections: {}".format(sections_error), file=sys.stderr)
+        try:
+            telegram.send_message(
+                "⚠️ Digest sections: {}".format(html.escape(sections_error))
+            )
+        except Exception as exc:
+            print(f"Telegram sections alert error: {exc}", file=sys.stderr)
+
     ctx = DigestContext(
         date=today,
         stats=stats,
@@ -373,6 +387,8 @@ def _deliver_digest(
         fits=fit_entries,
         review=review_entries,
         deferred=deferred_entries,
+        sections=sections,
+        sections_error=sections_error,
     )
     zip_bytes = build_digest_zip(ctx)
     if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:

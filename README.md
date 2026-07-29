@@ -237,6 +237,69 @@ Failures retry on days 1 and 3; after the third failed attempt, automated work
 stops and Telegram directs recovery through `/tailor`. Manual tailoring bypasses
 the daily retry state.
 
+## Group the digest into your own sections
+
+By default the digest lists every fit in one stack. Copy `sections.example.py`
+to `sections.py` and it groups them under headings you define — Israel roles,
+worldwide-remote roles, EU relocation, whatever you want:
+
+```python
+from job_search.digest.sections import Section, all_of, fact, is_remote, on_job
+from job_search.location.classify import is_israel_job
+
+SECTIONS = [
+    Section("Israel", "🇮🇱", applies_to=("fits", "review"),
+            match=on_job(is_israel_job)),
+    Section("Remote — Worldwide", "🌍",
+            match=all_of(is_remote, fact("remote_geo_scope", "worldwide"))),
+    Section("Everything else", "📋"),      # no match = catch-all
+]
+```
+
+The config is Python rather than YAML or JSON on purpose: a section can call
+anything in the repo, so `on_job(is_israel_job)` reuses the real location
+database instead of re-listing city names in a rule language that would have to
+grow an operator every time you wanted a new kind of rule.
+
+- **Order is priority.** Each job appears exactly once, under the first section
+  it matches. Anything left over goes to an automatic "Other".
+- **`applies_to`** picks the lists a section groups — `"fits"` (the default) and
+  `"review"`. Deferred jobs were never evaluated, so they stay a flat list.
+- **Sections are presentation only.** They change nothing about what is
+  scraped, filtered, evaluated, or delivered; the ZIP still holds one tailored
+  CV per fit.
+- **A broken config never costs you a run.** The digest is delivered ungrouped,
+  a warning strip at the top of the dashboard says what was wrong, and Telegram
+  alerts you. A typo like `e.job.is_remot` is caught while the file is loaded,
+  not mid-render.
+- **`SECTIONS_FILE`** points at a different file, so a Raspberry Pi and GitHub
+  Actions can group differently. It names a path in that host's own checkout,
+  so on GitHub Actions — where the untracked `sections.py` never exists — point
+  it at a tracked file, or leave it unset to skip grouping there.
+- **`sections.py` stays untracked.** It's per-host local config — only
+  `sections.example.py` is in git, so `git add sections.py` is refused without
+  `-f`. On a host deployed by `git pull` (the Raspberry Pi), create it directly
+  on the host.
+
+### Helper vocabulary
+
+Everything below lives in `job_search.digest.sections`. A raw
+`lambda entry: ...` works anywhere a `match=` is expected — these just keep the
+common case short.
+
+| Helper | What it does |
+|--------|---------------|
+| `all_of(*predicates)` | Matches when every predicate matches (AND). |
+| `any_of(*predicates)` | Matches when any predicate matches (OR). |
+| `not_(predicate)` | Inverts a predicate. |
+| `is_remote` | Matches a remote job. |
+| `in_region(*regions)` | Matches when the job's region is one of `regions` (e.g. `Region.EU`). |
+| `fact(name, *values)` | With values, matches when the LLM-extracted fact equals one of them (case-insensitive). With none, matches when the fact is known at all — present and not the "unknown" the extractor writes when a posting doesn't state it. |
+| `location_contains(*tokens)` | Matches when the job's location contains any token, case-insensitive. |
+| `title_matches(pattern)` | Matches the job title against a case-insensitive regex, compiled once at section-definition time so a broken pattern surfaces at load, not mid-render. |
+| `on_job(fn)` | Adapts a job-taking function into an entry-taking predicate — the bridge to anything already written in this repo, e.g. `on_job(is_israel_job)`. |
+| `days_since_posted(entry)` | **Not a predicate** — returns the posting's age in days as an `int`, or `None` when the source gave no date. Use it inside a lambda, e.g. `match=lambda e: days_since_posted(e) is not None and days_since_posted(e) <= 3`. Test against `None` explicitly rather than with `or` — a job posted today is `0`, which `or` would treat as missing. |
+
 ## Tech stack
 
 Python (stdlib-only core) · GitHub Actions · Raspberry Pi / systemd · Playwright ·
@@ -258,6 +321,7 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `tests/` | Offline characterization suite (`pytest`) |
 | `criteria.md` | Human-readable job-fit rules the LLM filters against |
 | `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
+| `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
 

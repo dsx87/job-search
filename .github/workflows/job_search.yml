@@ -72,6 +72,10 @@ jobs:
           LLM_FALLBACK_SCHEME: ${{ vars.LLM_FALLBACK_SCHEME }}
           LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
           LLM_FALLBACK_API_BASE: ${{ vars.LLM_FALLBACK_API_BASE }}
+          # Optional digest grouping. Unset means no grouping here, since the
+          # default sections.py is untracked and so never in an Actions
+          # checkout; point this at a tracked file to group on CI.
+          SECTIONS_FILE: ${{ vars.SECTIONS_FILE }}
           CV_PHONE: ${{ secrets.CV_PHONE }}
         run: python3 -u -m job_search.pipeline
 

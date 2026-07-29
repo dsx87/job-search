@@ -256,3 +256,18 @@ def test_valid_worker_counts_are_honored(monkeypatch):
     monkeypatch.setenv("TAILOR_WORKERS", "1")
     cfg = PipelineConfig.from_env()
     assert (cfg.eval_workers, cfg.tailor_workers) == (2, 1)
+
+
+def test_sections_file_default():
+    assert config.SECTIONS_FILE == "sections.py"
+    assert PipelineConfig().sections_file == "sections.py"
+
+
+def test_sections_file_env_override(monkeypatch):
+    monkeypatch.setenv("SECTIONS_FILE", "pi-sections.py")
+    assert PipelineConfig.from_env().sections_file == "pi-sections.py"
+
+
+def test_blank_sections_file_env_falls_back_to_the_default(monkeypatch):
+    monkeypatch.setenv("SECTIONS_FILE", "   ")
+    assert PipelineConfig.from_env().sections_file == "sections.py"

@@ -36,6 +36,10 @@ CRITERIA_FILE = "criteria.md"
 CV_TAILORING_PROMPT_FILE = "cv_tailoring_prompt.md"
 BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
 OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
+# Optional user-defined digest sections (job_search.digest.section_config). The
+# file is absent by default, and an absent file renders today's ungrouped
+# digest — the feature is opt-in and costs nothing until it exists.
+SECTIONS_FILE = "sections.py"
 
 # ── LLM defaults (generic, scheme-based providers) ─────────────────────────────
 # A provider is a wire-protocol *scheme* (gemini | openai | anthropic) + model +
@@ -224,6 +228,7 @@ class PipelineConfig:
     criteria_file: str = CRITERIA_FILE
     cv_tailoring_prompt_file: str = CV_TAILORING_PROMPT_FILE
     base_tex_file: str = BASE_TEX_FILE
+    sections_file: str = SECTIONS_FILE
     # Source selection: names forced ON (adds default-off sources like
     # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
     # today's default-on set, so CI with no env is unchanged. See
@@ -262,6 +267,7 @@ class PipelineConfig:
             llm_fallback_api_base=_non_empty_env("LLM_FALLBACK_API_BASE", ""),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+            sections_file=_non_empty_env("SECTIONS_FILE", SECTIONS_FILE),
             eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
             tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
