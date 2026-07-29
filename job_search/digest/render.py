@@ -366,11 +366,13 @@ def _sections_warning(ctx, warnings) -> str:
     alert), while `warnings` is collected during rendering, after the alert
     opportunity has passed.
     """
-    messages = [
-        message
-        for message in [str(ctx.sections_error or "").strip()] + list(warnings)
-        if message
-    ]
+    # Deduplicated because a section applying to both "fits" and "review" is
+    # grouped twice, and group_entries dedupes only within a single call — a
+    # predicate that raises would otherwise say the same thing twice.
+    messages = []
+    for message in [str(ctx.sections_error or "").strip()] + list(warnings):
+        if message and message not in messages:
+            messages.append(message)
     if not messages:
         return ""
     return '<div class="warn"><b>Sections:</b> {}</div>'.format(_esc(" · ".join(messages)))

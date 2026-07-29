@@ -75,14 +75,17 @@ def _validate(sections):
             problems.append("{} repeats the name {!r}".format(where, name))
         else:
             seen_names.add(name.lower())
-        try:
-            applies = tuple(section.applies_to or ())
-        except TypeError:
+        # A list or tuple specifically, rather than anything iterable. A
+        # one-shot iterator would be drained by this validation and then reach
+        # group_entries empty, silently dropping the section — the one failure
+        # mode this module exists to prevent, since it reports nothing at all.
+        if not isinstance(section.applies_to or (), (list, tuple)):
             problems.append(
-                "{} ({!r}) has an applies_to that is not iterable "
-                "(expected a list of list names)".format(where, name)
+                "{} ({!r}) has an applies_to that is not a list or tuple "
+                "(expected e.g. ('fits', 'review'))".format(where, name)
             )
             continue
+        applies = tuple(section.applies_to or ())
         if not applies:
             problems.append("{} ({!r}) has an empty applies_to".format(where, name))
         for list_name in applies:

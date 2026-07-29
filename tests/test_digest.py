@@ -276,3 +276,17 @@ def test_a_render_time_predicate_failure_is_shown_as_a_warning_strip():
     assert "Broken" in html
     assert "no such field" in html
     assert "Sections:" in html
+
+
+def test_a_predicate_failing_on_both_lists_is_reported_once():
+    # group_entries dedupes within one call, and a section applying to both
+    # lists is grouped twice, so the strip has to dedupe across them.
+    def boom(_entry):
+        raise AttributeError("no such field")
+
+    sections = (Section("Broken", "💥", applies_to=("fits", "review"), match=boom),)
+    html = render_digest_html(
+        _context(fits=[_fit()], review=[_review()], sections=sections)
+    )
+
+    assert html.count("no such field") == 1

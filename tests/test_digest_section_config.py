@@ -232,6 +232,19 @@ def test_loading_registers_nothing_importable_under_the_name_sections(tmp_path):
     assert "job_search_user_sections" not in added
 
 
+def test_a_one_shot_iterable_applies_to_is_reported_not_silently_dropped(tmp_path):
+    # An iterator would be drained by validation and then reach group_entries
+    # empty, dropping the section with no message anywhere — the only failure
+    # mode that is silent, which is exactly what this module exists to prevent.
+    body = (
+        "from job_search.digest.sections import Section\n"
+        "SECTIONS = [Section('Remote', applies_to=iter(('fits',)))]\n"
+    )
+    sections, error = load_sections(_write(tmp_path, body))
+    assert sections == ()
+    assert "applies_to" in error
+
+
 def test_the_shipped_example_config_loads_cleanly():
     # sections.example.py is what a user copies to sections.py; if it stopped
     # loading, every new user would start from a broken config.

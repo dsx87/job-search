@@ -273,7 +273,9 @@ grow an operator every time you wanted a new kind of rule.
   alerts you. A typo like `e.job.is_remot` is caught while the file is loaded,
   not mid-render.
 - **`SECTIONS_FILE`** points at a different file, so a Raspberry Pi and GitHub
-  Actions can group differently.
+  Actions can group differently. It names a path in that host's own checkout,
+  so on GitHub Actions — where the untracked `sections.py` never exists — point
+  it at a tracked file, or leave it unset to skip grouping there.
 - **`sections.py` stays untracked.** It's per-host local config — only
   `sections.example.py` is in git, so `git add sections.py` is refused without
   `-f`. On a host deployed by `git pull` (the Raspberry Pi), create it directly
@@ -296,7 +298,7 @@ common case short.
 | `location_contains(*tokens)` | Matches when the job's location contains any token, case-insensitive. |
 | `title_matches(pattern)` | Matches the job title against a case-insensitive regex, compiled once at section-definition time so a broken pattern surfaces at load, not mid-render. |
 | `on_job(fn)` | Adapts a job-taking function into an entry-taking predicate — the bridge to anything already written in this repo, e.g. `on_job(is_israel_job)`. |
-| `days_since_posted(entry)` | **Not a predicate** — returns the posting's age in days as an `int`, or `None` when the source gave no date. Use it inside a lambda, e.g. `match=lambda e: (days_since_posted(e) or 99) <= 3`. |
+| `days_since_posted(entry)` | **Not a predicate** — returns the posting's age in days as an `int`, or `None` when the source gave no date. Use it inside a lambda, e.g. `match=lambda e: days_since_posted(e) is not None and days_since_posted(e) <= 3`. Test against `None` explicitly rather than with `or` — a job posted today is `0`, which `or` would treat as missing. |
 
 ## Tech stack
 
