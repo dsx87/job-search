@@ -151,8 +151,9 @@ providers is config only — no code change. Override any of these optional
 **Actions repository variables** (Settings → Secrets and variables → Actions →
 Variables): `LLM_PRIMARY_SCHEME`, `LLM_PRIMARY_MODEL`, `LLM_PRIMARY_API_BASE`,
 `LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_BASE`. Unset or
-blank variables use the application defaults. Worked examples (the `openai`
-scheme covers any OpenAI-compatible endpoint via `api_base`):
+blank variables use the application defaults. `SECTIONS_PY` is a variable too —
+see [digest sections](#group-the-digest-into-your-own-sections). Worked examples
+(the `openai` scheme covers any OpenAI-compatible endpoint via `api_base`):
 
 | Provider | Scheme | `…_API_BASE` | Example model |
 |---|---|---|---|
@@ -272,14 +273,19 @@ grow an operator every time you wanted a new kind of rule.
   a warning strip at the top of the dashboard says what was wrong, and Telegram
   alerts you. A typo like `e.job.is_remot` is caught while the file is loaded,
   not mid-render.
-- **`SECTIONS_FILE`** points at a different file, so a Raspberry Pi and GitHub
-  Actions can group differently. It names a path in that host's own checkout,
-  so on GitHub Actions — where the untracked `sections.py` never exists — point
-  it at a tracked file, or leave it unset to skip grouping there.
 - **`sections.py` stays untracked.** It's per-host local config — only
   `sections.example.py` is in git, so `git add sections.py` is refused without
   `-f`. On a host deployed by `git pull` (the Raspberry Pi), create it directly
   on the host.
+- **On GitHub Actions, use the `SECTIONS_PY` repository variable.** A runner
+  only ever sees what is committed, so an untracked `sections.py` is never
+  there. Paste the file's *contents* into the variable (Settings → Secrets and
+  variables → Actions → Variables) and the workflow writes it out before the
+  run. Leave it unset and CI simply doesn't group. The Actions log prints the
+  section names it parsed, so a typo shows up there as a warning annotation
+  rather than only as a Telegram alert.
+- **`SECTIONS_FILE`** overrides the path the config is read from, so a host can
+  point somewhere else entirely.
 
 ### Helper vocabulary
 
