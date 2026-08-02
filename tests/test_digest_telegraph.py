@@ -183,3 +183,61 @@ def test_fit_without_evaluation_still_renders():
     text = _all_text(tg.render_digest_nodes(ctx))
     assert "Senior iOS Engineer" in text
     assert "Previously matched." in text
+
+
+def test_fits_over_budget_trims_review_and_deferred_to_zero_but_keeps_headings():
+    """Fits alone blow the 60 KB budget -- trimming bottoms out at keep=0.
+
+    oversized_context() only forces the ladder down to keep=3 (its bulk is in
+    review, which the ladder trims), so it never exercises the keep=0 rung.
+    This context puts the bulk in fits instead, which are never trimmed, so
+    every rung leaves review and deferred trimmed to nothing while fits alone
+    keep the run over budget.
+    """
+    fits = [
+        sample_fit(
+            title="Fit Role {}".format(index), company="Company {}".format(index),
+            url="https://jobs.example.com/fit-{}".format(index),
+            summary="Summary sentence. " * 200,
+            reason="Reason sentence. " * 200,
+        )
+        for index in range(12)
+    ]
+    ctx = sample_context(grouped=False, fits=fits)
+    nodes = tg.render_digest_nodes(ctx)
+
+    # No empty <ul> anywhere -- when a list trims to nothing, its <ul> must
+    # not be emitted at all, not even as an empty children array.
+    assert not any(n["tag"] == "ul" and not n.get("children") for n in _walk(nodes))
+
+    # The "... and N more" lines exist (review and deferred were trimmed to
+    # zero) and each has its section heading above it, not orphaned.
+    review_heading = next(
+        i for i, n in enumerate(nodes)
+        if n["tag"] == "h3" and "Needs review" in _all_text([n])
+    )
+    review_more = next(i for i, n in enumerate(nodes) if "more to review" in _all_text([n]))
+    assert review_heading < review_more
+
+    deferred_heading = next(
+        i for i, n in enumerate(nodes)
+        if n["tag"] == "h3" and "Deferred" in _all_text([n])
+    )
+    deferred_more = next(i for i, n in enumerate(nodes) if "more deferred" in _all_text([n]))
+    assert deferred_heading < deferred_more
+
+    # Headings show the true (pre-trim) totals, matching the top counts line.
+    text = _all_text(nodes)
+    assert "Needs review ({})".format(len(ctx.review)) in text
+    assert "Deferred ({})".format(len(ctx.deferred)) in text
+
+
+def test_partially_trimmed_review_heading_shows_true_total_not_trimmed_count():
+    """oversized_context() trims review down to 3 survivors; the heading
+    must still report the true total of 40, matching the top counts line --
+    not the 3 cards that actually render."""
+    ctx = oversized_context()
+    nodes = tg.render_digest_nodes(ctx)
+    text = _all_text(nodes)
+    assert "Needs review ({})".format(len(ctx.review)) in text
+    assert "Needs review (3)" not in text

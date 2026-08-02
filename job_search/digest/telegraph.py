@@ -13,7 +13,6 @@ Two rules this module lives by:
   which Telegraph forbids; inline they are walls of text and the only realistic
   threat to the 64 KB content cap. The posting link carries them instead.
 """
-import datetime
 import json
 import secrets
 
@@ -134,10 +133,23 @@ def _deferred_node(deferred):
 
 
 # ── list sections ─────────────────────────────────────────────────────────────
-def _list_nodes(ctx, list_name, heading, entries, warnings, *, cv_note):
-    if not entries:
+def _list_nodes(ctx, list_name, heading, entries, warnings, *, cv_note, total=None):
+    """Cards for one list, headed by its true count even when trimmed empty.
+
+    ``total`` is what the heading reports; it defaults to ``len(entries)`` but
+    a caller that trimmed ``entries`` for size passes the pre-trim count, so
+    the heading agrees with the top counts line instead of reporting however
+    many cards survived the trim. When ``total`` is nonzero but ``entries`` is
+    empty (trimmed all the way down), the heading still renders alone — the
+    "... and N more" line that follows needs a heading to sit under.
+    """
+    if total is None:
+        total = len(entries)
+    if not total:
         return []
-    nodes = [_node("h3", ["{} ({})".format(heading, len(entries))])]
+    nodes = [_node("h3", ["{} ({})".format(heading, total)])]
+    if not entries:
+        return nodes
     groups, group_warnings = group_entries(entries, ctx.sections, list_name)
     warnings.extend(group_warnings)
     if not groups:
@@ -193,12 +205,20 @@ def _render(ctx, index_url, keep_review, keep_deferred):
     # warning belongs above the body it happened in.
     warnings = []
     body = _list_nodes(ctx, "fits", "✅ Fits", ctx.fits, warnings, cv_note=True)
-    body.extend(_list_nodes(ctx, "review", "🔍 Needs review", review, warnings, cv_note=False))
+    body.extend(_list_nodes(
+        ctx, "review", "🔍 Needs review", review, warnings, cv_note=False, total=len(ctx.review)
+    ))
     if dropped_review:
         body.append(_node("p", [_node("i", ["… and {} more to review".format(dropped_review)])]))
-    if deferred:
+    # Headed by the true total (ctx.deferred), not the possibly-trimmed
+    # `deferred` list, so a trim to zero still leaves the "... and N more"
+    # line under a heading instead of orphaned. The <ul> itself is only
+    # emitted when something survived the trim — an empty <ul> is a node
+    # shape worth avoiding.
+    if ctx.deferred:
         body.append(_node("h3", ["⚠️ Deferred ({})".format(len(ctx.deferred))]))
-        body.append(_deferred_node(deferred))
+        if deferred:
+            body.append(_deferred_node(deferred))
         body.append(_node("p", [_node("i", [
             "Not enough job-description text for a reliable decision — "
             "these retry automatically next run."
