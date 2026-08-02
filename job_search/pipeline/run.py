@@ -411,19 +411,20 @@ def _deliver_digest(
     caption = _digest_caption(
         len(fit_entries), len(review_entries), len(deferred_entries), today, page_url
     )
+    if not page_url:
+        zip_bytes = build_digest_zip(ctx)
+        if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
+            # Diagnosable rather than silent: the send below will fail and the
+            # fits will retry, but at least the log says why.
+            print(
+                f"  Digest is {len(zip_bytes) // (1024 * 1024)} MB, over Telegram's "
+                f"{_TELEGRAM_DOC_LIMIT // (1024 * 1024)} MB limit — send will likely fail.",
+                file=sys.stderr,
+            )
     try:
         if page_url:
             telegram.send_message(caption)
         else:
-            zip_bytes = build_digest_zip(ctx)
-            if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
-                # Diagnosable rather than silent: the send below will fail and the
-                # fits will retry, but at least the log says why.
-                print(
-                    f"  Digest is {len(zip_bytes) // (1024 * 1024)} MB, over Telegram's "
-                    f"{_TELEGRAM_DOC_LIMIT // (1024 * 1024)} MB limit — send will likely fail.",
-                    file=sys.stderr,
-                )
             telegram.send_document(digest_filename(today), zip_bytes, caption)
     except Exception as exc:
         # Whole-batch delivery failed: every fit stays unseen and retries.

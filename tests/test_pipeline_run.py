@@ -2,6 +2,8 @@
 import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from job_search.models import Job
 from job_search.pipeline import run
 from job_search.pipeline import stages
@@ -1446,3 +1448,25 @@ def test_index_refresh_failure_does_not_fail_the_run(monkeypatch):
 
     assert run.run_daily(_telegraph_config()) == 0
     assert "https://x/match" in saved[-1]
+
+
+def test_zip_build_failure_is_fatal_not_a_delivery_failure(monkeypatch):
+    # build_digest_zip raising is a bug (a render error, a bad entry) with
+    # nothing to do with delivery — it must escape _deliver_digest and hit
+    # run_daily's fatal path (error notification, re-raise) exactly as it did
+    # before telegra.ph delivery existed, not consume a retry attempt.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    def boom(_ctx):
+        raise RuntimeError("render bug")
+
+    monkeypatch.setattr(run, "build_digest_zip", boom)
+
+    with pytest.raises(RuntimeError, match="render bug"):
+        run.run_daily(make_config(digest_delivery=True))
+
+    assert not any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+    assert not any(marker.startswith("delivery:notified:") for marker in saved[-1])
