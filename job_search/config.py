@@ -242,6 +242,12 @@ class PipelineConfig:
     # tailored CVs) instead of a stream of per-job Telegram messages. Set
     # DIGEST_DELIVERY=0 to fall back to the legacy per-job delivery path.
     digest_delivery: bool = True
+    # TELEGRAPH_ACCESS_TOKEN → publish each digest as a telegra.ph page (one
+    # Telegram message with the link, CVs as separate documents) and keep a
+    # rolling index page. Empty (the default) means the run sends the ZIP, so a
+    # runner without the secret behaves exactly as it did before. Layers under
+    # DIGEST_DELIVERY: the legacy per-job path never consults it.
+    telegraph_access_token: str = ""
 
     @classmethod
     def from_env(cls) -> "PipelineConfig":
@@ -274,6 +280,7 @@ class PipelineConfig:
             sources_disable=_split_csv(os.environ.get("SOURCES_DISABLE", "")),
             state_sync=os.environ.get("STATE_SYNC", "") == "1",
             digest_delivery=os.environ.get("DIGEST_DELIVERY", "1") != "0",
+            telegraph_access_token=os.environ.get("TELEGRAPH_ACCESS_TOKEN", ""),
         )
 
 
