@@ -14,6 +14,7 @@ import socket
 import time
 import urllib.error
 
+from ..config import RETRYABLE_STATUS
 from ..http import http_json
 
 API_BASE = "https://api.telegra.ph"
@@ -38,9 +39,22 @@ def _call(method, payload):
     for attempt, delay in enumerate(RETRY_BACKOFF, 1):
         try:
             _status, body = http_json(url, method="POST", json_body=payload)
-        # HTTPError is a URLError subclass, so a 5xx retries here too. socket.timeout
-        # is named explicitly because it is only an alias of TimeoutError from 3.10
-        # and the floor (and the Pi) is 3.9.
+        # HTTPError must be caught before URLError — it is a subclass. Transient
+        # statuses (429, 5xx) are retried; permanent ones (4xx) are re-raised.
+        # socket.timeout is named explicitly because it is only an alias of TimeoutError
+        # from 3.10 and the floor (and the Pi) is 3.9.
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_STATUS or attempt == attempts:
+                raise
+            print(
+                "    telegraph {} transient error {} — waiting {:g}s "
+                "(attempt {}/{})...".format(
+                    method, exc.code, delay, attempt, attempts
+                ),
+                flush=True,
+            )
+            time.sleep(delay)
+            continue
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             if attempt == attempts:
                 raise

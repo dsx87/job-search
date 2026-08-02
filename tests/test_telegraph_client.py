@@ -112,3 +112,27 @@ def test_edit_page_sends_the_path(monkeypatch):
 
     body = json.loads(fake.requests[0].data.decode("utf-8"))
     assert body["path"] == "Index-08-01"
+
+
+def test_retryable_http_status_is_retried_then_succeeds(monkeypatch):
+    fake = _install(monkeypatch, [
+        urllib.error.HTTPError("https://api.telegra.ph/createPage", 503, "Service Unavailable", {}, None),
+        _ok({"path": "P-08-02", "url": "https://telegra.ph/P-08-02"}),
+    ])
+
+    page = telegraph.TelegraphClient().create_page("tok", "Title", [])
+
+    assert page["path"] == "P-08-02"
+    assert len(fake.requests) == 2
+
+
+def test_permanent_http_status_is_not_retried(monkeypatch):
+    fake = _install(monkeypatch, [
+        urllib.error.HTTPError("https://api.telegra.ph/createPage", 400, "Bad Request", {}, None),
+    ])
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        telegraph.TelegraphClient().create_page("tok", "Title", [])
+
+    assert excinfo.value.code == 400
+    assert len(fake.requests) == 1
