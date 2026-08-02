@@ -241,3 +241,47 @@ def test_partially_trimmed_review_heading_shows_true_total_not_trimmed_count():
     text = _all_text(nodes)
     assert "Needs review ({})".format(len(ctx.review)) in text
     assert "Needs review (3)" not in text
+
+
+# ── index page ────────────────────────────────────────────────────────────────
+
+def test_index_lists_pages_newest_first_as_links():
+    pages = [
+        {"title": "Job Digest 2026-08-01 deadbeef", "url": "https://telegra.ph/a"},
+        {"title": "Job Digest 2026-07-31 cafebabe", "url": "https://telegra.ph/b"},
+    ]
+    nodes = tg.render_index_nodes(pages)
+    hrefs = [n["attrs"]["href"] for n in _walk(nodes) if n["tag"] == "a"]
+    assert hrefs == ["https://telegra.ph/a", "https://telegra.ph/b"]
+
+
+def test_index_link_labels_hide_the_random_token():
+    nodes = tg.render_index_nodes([
+        {"title": "Job Digest 2026-08-01 deadbeef", "url": "https://telegra.ph/a"},
+    ])
+    text = _all_text(nodes)
+    assert "Job Digest 2026-08-01" in text
+    assert "deadbeef" not in text
+
+
+def test_index_tags_are_allowed_and_it_leads_with_h3():
+    nodes = tg.render_index_nodes([
+        {"title": "Job Digest 2026-08-01 deadbeef", "url": "https://telegra.ph/a"},
+    ])
+    assert {n["tag"] for n in _walk(nodes)} <= ALLOWED_TAGS
+    assert nodes[0]["tag"] == "h3"
+    assert tg.INDEX_TITLE in _all_text([nodes[0]])
+
+
+def test_empty_index_says_so_rather_than_rendering_an_empty_list():
+    nodes = tg.render_index_nodes([])
+    assert [n for n in _walk(nodes) if n["tag"] == "ul"] == []
+    assert "No digests" in _all_text(nodes)
+
+
+def test_index_is_capped_at_the_page_list_limit():
+    pages = [{"title": "Job Digest 2026-08-01 deadbeef",
+              "url": "https://telegra.ph/u{}".format(i)}
+             for i in range(500)]
+    hrefs = [n["attrs"]["href"] for n in _walk(tg.render_index_nodes(pages)) if n["tag"] == "a"]
+    assert len(hrefs) == 200

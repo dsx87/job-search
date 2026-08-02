@@ -14,6 +14,7 @@ Two rules this module lives by:
   threat to the 64 KB content cap. The posting link carries them instead.
 """
 import json
+import re
 import secrets
 
 from ..models import REGION_LABELS, Region, coerce_job
@@ -259,4 +260,45 @@ def render_digest_nodes(ctx, index_url="") -> list:
         nodes = _render(ctx, index_url, keep, keep)
         if content_size(nodes) <= CONTENT_LIMIT_BYTES:
             return nodes
+    return nodes
+
+
+# ── index page ────────────────────────────────────────────────────────────────
+# The marker that identifies the one long-lived index page among the account's
+# pages. Never change it without also renaming the existing page, or the next
+# run creates a second index.
+INDEX_TITLE = "Job Search Digests"
+
+# The 8 random hex characters digest_page_title appends. Stripped from link
+# labels: they exist to make the URL unguessable, not to be read.
+_TITLE_TOKEN = re.compile(r"\s+[0-9a-f]{8}$")
+
+# Matches notify.telegraph.PAGE_LIST_LIMIT — duplicated rather than imported so
+# this module stays free of any network-facing import.
+INDEX_LIMIT = 200
+
+
+def _index_label(title) -> str:
+    return _TITLE_TOKEN.sub("", _text(title).strip()) or "Untitled digest"
+
+
+def render_index_nodes(pages) -> list:
+    """The rolling table of contents, newest first.
+
+    Rebuilt from getPageList every run rather than appended to, so there is no
+    accumulated list to corrupt and the index self-heals after a run that died
+    part-way through.
+    """
+    nodes = [_node("h3", [INDEX_TITLE])]
+    entries = list(pages)[:INDEX_LIMIT]
+    if not entries:
+        nodes.append(_node("p", ["No digests published yet."]))
+        return nodes
+    nodes.append(_node("p", [_node("i", [
+        "The {} most recent runs, newest first.".format(len(entries))
+    ])]))
+    nodes.append(_node("ul", [
+        _node("li", [_link(_text(page.get("url")), [_index_label(page.get("title"))])])
+        for page in entries
+    ]))
     return nodes
