@@ -5,6 +5,7 @@ from .model import DeferredEntry, DigestContext, FitEntry, ReviewEntry
 from .render import render_digest_html
 from .section_config import load_sections
 from .sections import Section, group_entries
+from .telegraph import content_size, digest_page_title, render_digest_nodes
 
 __all__ = [
     "DeferredEntry",
@@ -13,11 +14,14 @@ __all__ = [
     "ReviewEntry",
     "Section",
     "build_digest_zip",
+    "content_size",
     "cv_filename_for",
     "digest_filename",
+    "digest_page_title",
     "group_entries",
     "load_sections",
     "oversized_context",
     "render_digest_html",
+    "render_digest_nodes",
     "sample_context",
 ]
