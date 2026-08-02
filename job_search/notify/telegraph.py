@@ -95,6 +95,8 @@ class TelegraphClient:
             "content": json.dumps(nodes, ensure_ascii=False),
         })
 
-    def get_page_list(self, token: str) -> list:
-        result = _call("getPageList", {"access_token": token, "limit": PAGE_LIST_LIMIT})
+    def get_page_list(self, token: str, offset: int = 0) -> list:
+        result = _call("getPageList", {
+            "access_token": token, "offset": offset, "limit": PAGE_LIST_LIMIT,
+        })
         return list(result.get("pages") or [])

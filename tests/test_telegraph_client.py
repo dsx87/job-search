@@ -105,6 +105,16 @@ def test_get_page_list_asks_for_the_documented_maximum(monkeypatch):
     assert body["limit"] == telegraph.PAGE_LIST_LIMIT == 200
 
 
+def test_get_page_list_sends_the_given_offset(monkeypatch):
+    fake = _install(monkeypatch, [_ok({"total_count": 0, "pages": []})])
+
+    telegraph.TelegraphClient().get_page_list("tok", offset=200)
+
+    body = json.loads(fake.requests[0].data.decode("utf-8"))
+    assert body["offset"] == 200
+    assert body["limit"] == telegraph.PAGE_LIST_LIMIT
+
+
 def test_edit_page_sends_the_path(monkeypatch):
     fake = _install(monkeypatch, [_ok({"path": "Index-08-01", "url": "https://telegra.ph/Index"})])
 

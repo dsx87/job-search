@@ -6,13 +6,19 @@ import pytest
 from job_search.digest import publish
 from job_search.digest.fixtures import sample_context
 from job_search.digest.telegraph import INDEX_TITLE
-from job_search.notify.telegraph import TelegraphError
+from job_search.notify.telegraph import PAGE_LIST_LIMIT, TelegraphError
 
 DATE = datetime.date(2026, 8, 1)
 
 
 class FakeClient:
-    """Records calls; serves a page list that grows as pages are created."""
+    """Records calls; serves a page list that grows as pages are created.
+
+    ``get_page_list`` honours ``offset`` the way the real API does: a window
+    of at most ``PAGE_LIST_LIMIT`` entries starting at ``offset``, shorter
+    only when it runs past the end of ``pages`` -- the real termination
+    signal the discovery walk relies on.
+    """
 
     def __init__(self, pages=None, fail=None):
         self.pages = list(pages or [])
@@ -24,10 +30,10 @@ class FakeClient:
         if exc:
             raise exc
 
-    def get_page_list(self, token):
-        self.calls.append(("get_page_list", token))
+    def get_page_list(self, token, offset=0):
+        self.calls.append(("get_page_list", token, offset))
         self._maybe_fail("get_page_list")
-        return list(self.pages)
+        return list(self.pages[offset:offset + PAGE_LIST_LIMIT])
 
     def create_page(self, token, title, nodes):
         self.calls.append(("create_page", title, nodes))
@@ -127,3 +133,68 @@ def test_title_can_be_pinned_for_deterministic_tests():
                            title="Job Digest 2026-08-01 deadbeef")
 
     assert client.calls[2][1] == "Job Digest 2026-08-01 deadbeef"
+
+
+# ── index discovery beyond the first getPageList window ─────────────────────
+# The index page is created once, before any digest, and only ever edited in
+# place -- so it is permanently the OLDEST page in the account. Once the
+# account holds more than PAGE_LIST_LIMIT pages, a discovery walk that only
+# ever looks at offset=0 stops seeing it and starts creating a duplicate index
+# every run, silently orphaning the old one.
+
+def _filler_pages(count, *, start=0):
+    """``count`` non-index pages, oldest-looking title, never matching INDEX_TITLE."""
+    return [{"path": "filler-{}".format(i), "title": "Job Digest filler {}".format(i),
+             "url": "https://telegra.ph/filler-{}".format(i)}
+            for i in range(start, start + count)]
+
+
+def test_index_beyond_the_first_page_of_getpagelist_is_still_found():
+    index = {"path": "Job-Search-Digests", "title": INDEX_TITLE,
+             "url": "https://telegra.ph/Job-Search-Digests"}
+    # Newest-first order, as the real API returns it: 220 digests newer than
+    # the index, so the index sits past the first PAGE_LIST_LIMIT-sized window.
+    client = FakeClient(pages=_filler_pages(220) + [index])
+
+    url = publish.publish_digest(client, "tok", sample_context(DATE), DATE)
+
+    assert url.startswith("https://telegra.ph/Job-Digest-")
+    created = [c for c in client.calls if c[0] == "create_page"]
+    assert len(created) == 1                     # only the digest -- no duplicate index
+    assert created[0][1] != INDEX_TITLE
+    discovery_offsets = [c[2] for c in client.calls if c[0] == "get_page_list"]
+    assert discovery_offsets[0] == 0
+    assert PAGE_LIST_LIMIT in discovery_offsets   # a second window was actually requested
+
+
+def test_index_discovery_stops_after_the_first_short_window():
+    """An account under one window's worth of pages: the walk must not keep
+    requesting empty windows after the first short (end-of-account) reply."""
+    client = FakeClient(pages=_filler_pages(30))
+
+    publish.publish_digest(client, "tok", sample_context(DATE), DATE)
+
+    discovery_calls = [c for c in client.calls if c[0] == "get_page_list"]
+    # One short window during discovery (index absent, so a new one is
+    # created) plus one more during the refresh that follows -- never more.
+    assert len(discovery_calls) == 2
+    assert discovery_calls[0][2] == 0
+
+
+def test_index_discovery_hard_stops_and_logs_when_never_found(capsys):
+    """A misbehaving API that keeps returning full windows and never yields
+    the index (and never returns a short, end-of-account window either) must
+    not be walked forever."""
+    huge = _filler_pages(publish._MAX_INDEX_WINDOWS * PAGE_LIST_LIMIT + PAGE_LIST_LIMIT)
+    client = FakeClient(pages=huge)
+
+    url = publish.publish_digest(client, "tok", sample_context(DATE), DATE)
+
+    assert url.startswith("https://telegra.ph/Job-Digest-")
+    discovery_calls = [c for c in client.calls if c[0] == "get_page_list"]
+    # Exactly the hard-stop windows during discovery, plus one for the refresh
+    # that follows the (new, since the walk gave up) index it created.
+    assert len(discovery_calls) == publish._MAX_INDEX_WINDOWS + 1
+    discovery_offsets = [c[2] for c in discovery_calls[:publish._MAX_INDEX_WINDOWS]]
+    assert discovery_offsets == [i * PAGE_LIST_LIMIT for i in range(publish._MAX_INDEX_WINDOWS)]
+    assert capsys.readouterr().err.strip() != ""
