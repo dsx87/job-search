@@ -93,6 +93,21 @@ def test_force_proceeds_without_touching_the_production_token(monkeypatch):
     assert all(token == "minted-token" for token in client.create_page_tokens)
 
 
+def test_refuses_when_preview_token_equals_access_token(monkeypatch, capsys):
+    """finding 7: both variables set to the SAME value, no --force. This is
+    the branch _resolve_token's first `if token == ... and not args.force`
+    guards -- distinct from test_refuses_the_production_token, which covers
+    TELEGRAPH_PREVIEW_TOKEN being unset entirely."""
+    monkeypatch.setenv("TELEGRAPH_PREVIEW_TOKEN", "shared-tok")
+    monkeypatch.setenv("TELEGRAPH_ACCESS_TOKEN", "shared-tok")
+    client = FakeClient()
+
+    assert preview.main([], client=client) == 2
+
+    assert client.created == []
+    assert "TELEGRAPH_PREVIEW_TOKEN" in capsys.readouterr().err
+
+
 def test_distinct_preview_and_access_tokens_uses_the_preview_one(monkeypatch):
     """Both tokens set, to different values, no --force: the preview one wins.
 
