@@ -16,6 +16,7 @@ Two rules this module lives by:
 import json
 import re
 import secrets
+import sys
 
 from ..models import REGION_LABELS, Region, coerce_job
 # Reused verbatim so the two renderers cannot disagree about what a fact chip
@@ -287,6 +288,15 @@ def render_digest_nodes(ctx, index_url="") -> list:
         nodes = _render(ctx, index_url, keep, keep)
         if content_size(nodes) <= CONTENT_LIMIT_BYTES:
             return nodes
+    # Still over budget with review and deferred trimmed to nothing: fits
+    # alone are the payload and are never trimmed. Log the size so the
+    # createPage rejection this triggers upstream is diagnosable rather than
+    # a silent oversized publish attempt.
+    print(
+        "  Telegraph digest is {} bytes after trimming, over the {} byte budget "
+        "— createPage will likely reject it.".format(content_size(nodes), CONTENT_LIMIT_BYTES),
+        file=sys.stderr,
+    )
     return nodes
 
 

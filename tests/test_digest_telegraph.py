@@ -212,6 +212,29 @@ def test_fit_without_evaluation_still_renders():
     assert "Previously matched." in text
 
 
+def test_still_over_budget_after_trimming_logs_the_size(capsys):
+    """finding 5: the spec says the run logs the size and lets create_page
+    fail when trimming can't bring an oversized run under budget. Silently
+    returning oversized nodes makes the subsequent createPage rejection
+    undiagnosable."""
+    fits = [
+        sample_fit(
+            title="Fit Role {}".format(index), company="Company {}".format(index),
+            url="https://jobs.example.com/fit-{}".format(index),
+            summary="Summary sentence. " * 200,
+            reason="Reason sentence. " * 200,
+        )
+        for index in range(12)
+    ]
+    ctx = sample_context(grouped=False, fits=fits)
+    nodes = tg.render_digest_nodes(ctx)
+
+    size = tg.content_size(nodes)
+    assert size > tg.CONTENT_LIMIT_BYTES  # still over budget even after trimming
+    err = capsys.readouterr().err
+    assert str(size) in err
+
+
 def test_fits_over_budget_trims_review_and_deferred_to_zero_but_keeps_headings():
     """Fits alone blow the 60 KB budget -- trimming bottoms out at keep=0.
 
