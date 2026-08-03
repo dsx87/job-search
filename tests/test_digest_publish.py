@@ -60,9 +60,56 @@ def test_publish_creates_the_index_then_the_digest_then_refreshes():
     assert url.startswith("https://telegra.ph/Job-Digest-2026-08-01-")
     assert client.methods() == ["get_page_list", "create_page", "create_page",
                                 "get_page_list", "edit_page"]
-    # First create_page is the index, second is the digest.
-    assert client.calls[1][1] == INDEX_TITLE
+    # First create_page is the index, second is the digest. The index title
+    # carries a random suffix (finding 1) so the derived path is unguessable,
+    # the same way digest titles do.
+    assert client.calls[1][1].startswith(INDEX_TITLE)
+    assert client.calls[1][1] != INDEX_TITLE
     assert client.calls[2][1].startswith("Job Digest 2026-08-01 ")
+
+
+def test_new_index_title_carries_a_random_suffix_and_differs_between_runs():
+    """A guessable index URL defeats the whole point of the digest tokens:
+    it would link every digest ever published. Two fresh accounts must not
+    mint the same index title."""
+    client_a = FakeClient()
+    publish.publish_digest(client_a, "tok", sample_context(DATE), DATE)
+    index_title_a = [c for c in client_a.calls if c[0] == "create_page"][0][1]
+
+    client_b = FakeClient()
+    publish.publish_digest(client_b, "tok", sample_context(DATE), DATE)
+    index_title_b = [c for c in client_b.calls if c[0] == "create_page"][0][1]
+
+    assert index_title_a != index_title_b
+
+
+def test_legacy_bare_title_index_is_discovered_and_reused_not_duplicated():
+    """An index created before this fix (bare INDEX_TITLE, no suffix) must
+    still be found by the new startswith match -- backward compatibility."""
+    index = {"path": "Job-Search-Digests", "title": INDEX_TITLE,
+             "url": "https://telegra.ph/Job-Search-Digests"}
+    client = FakeClient(pages=[index])
+
+    publish.publish_digest(client, "tok", sample_context(DATE), DATE)
+
+    created = [c for c in client.calls if c[0] == "create_page"]
+    assert len(created) == 1  # only the digest -- no duplicate index minted
+    assert created[0][1] != INDEX_TITLE
+
+
+def test_refresh_preserves_the_existing_index_title():
+    """_refresh_index must pass the index's OWN title through, not the bare
+    marker -- otherwise every refresh would rewrite a randomized title back
+    to the guessable bare one, undoing finding 1's fix."""
+    randomized_title = INDEX_TITLE + " ab12cd34"
+    index = {"path": "Job-Search-Digests-ab12cd34", "title": randomized_title,
+             "url": "https://telegra.ph/Job-Search-Digests-ab12cd34"}
+    client = FakeClient(pages=[index])
+
+    publish.publish_digest(client, "tok", sample_context(DATE), DATE)
+
+    _method, _path, title, _nodes = [c for c in client.calls if c[0] == "edit_page"][0]
+    assert title == randomized_title
 
 
 def test_existing_index_is_reused_not_duplicated():

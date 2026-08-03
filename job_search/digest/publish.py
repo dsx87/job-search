@@ -10,6 +10,7 @@ Failure policy, which the pipeline depends on:
 * Looking up or refreshing the index never escapes. A digest page without a
   back-link, or an index a day out of date, is worth far less than the run.
 """
+import secrets
 import sys
 
 from .telegraph import INDEX_TITLE, digest_page_title, render_digest_nodes, render_index_nodes
@@ -28,15 +29,30 @@ from ..notify.telegraph import PAGE_LIST_LIMIT
 _MAX_INDEX_WINDOWS = 50
 
 
+def _index_title():
+    """A fresh index title, randomized the same way digest titles are.
+
+    A bare, predictable ``INDEX_TITLE`` derives a guessable telegra.ph path
+    that links every digest ever published -- defeating the random token on
+    each digest title. The random suffix here closes that hole (finding 1).
+    """
+    return "{} {}".format(INDEX_TITLE, secrets.token_hex(4))
+
+
 def _find_index(client, token):
     """Walk getPageList windows until the index turns up or the account runs
     out of pages. Returns None if neither happens within the hard stop.
+
+    Matches by prefix, not equality: the index title now carries a random
+    suffix (see ``_index_title``), and an account may still hold an index
+    created before that change, under the bare ``INDEX_TITLE`` marker. Both
+    must be found so a run never mints a duplicate index.
     """
     offset = 0
     for _ in range(_MAX_INDEX_WINDOWS):
         pages = client.get_page_list(token, offset=offset)
         for page in pages:
-            if str(page.get("title", "")) == INDEX_TITLE:
+            if str(page.get("title", "")).startswith(INDEX_TITLE):
                 return page
         if len(pages) < PAGE_LIST_LIMIT:
             return None  # short window: reached the end of the account
@@ -52,7 +68,7 @@ def _index_page(client, token):
         index = _find_index(client, token)
         if index is not None:
             return index
-        return client.create_page(token, INDEX_TITLE, render_index_nodes([]))
+        return client.create_page(token, _index_title(), render_index_nodes([]))
     except Exception as exc:
         print("  Telegraph index unavailable (digest still published): {}".format(exc),
               file=sys.stderr)
@@ -68,13 +84,19 @@ def _refresh_index(client, token, index):
     Once the account is large the index will not be *in* that window (it is
     the oldest page there is) so the path filter below is a no-op rather than
     something that needs the same multi-window walk as discovery.
+
+    The edit reuses the index's OWN title (falling back to the bare marker
+    only if it is somehow missing) rather than always writing ``INDEX_TITLE``
+    -- otherwise every refresh would strip the random suffix a fresh index
+    was created with, undoing finding 1's fix on the very next run.
     """
     if not index:
         return
     try:
         pages = client.get_page_list(token)
         digests = [p for p in pages if p.get("path") != index.get("path")]
-        client.edit_page(token, index["path"], INDEX_TITLE, render_index_nodes(digests))
+        title = index.get("title") or INDEX_TITLE
+        client.edit_page(token, index["path"], title, render_index_nodes(digests))
     except Exception as exc:
         print("  Telegraph index refresh failed: {}".format(exc), file=sys.stderr)
 

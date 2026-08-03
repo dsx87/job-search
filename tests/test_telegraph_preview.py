@@ -43,7 +43,8 @@ def test_publishes_one_page_per_day_plus_the_index(monkeypatch):
     assert preview.main(["--days", "3"], client=client) == 0
 
     titles = [title for title, _nodes in client.created]
-    assert titles[0] == "Job Search Digests"          # the index, created first
+    assert titles[0].startswith("Job Search Digests")  # the index, created first
+    assert titles[0] != "Job Search Digests"            # random suffix (finding 1)
     assert sum(1 for t in titles if t.startswith("Job Digest ")) == 3
     assert len(client.edited) == 3                     # index refreshed per digest
 
