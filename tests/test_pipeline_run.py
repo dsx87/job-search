@@ -1434,6 +1434,58 @@ def test_failed_cv_document_retries_only_that_fit(monkeypatch):
     assert any("delivery:notified" in marker for marker in saved[-1])
 
 
+def test_one_cv_failure_notifies_the_user_and_other_fits_still_commit(monkeypatch):
+    """finding 4: every other delivery-failure branch in _deliver_digest ends
+    in a Telegram notice; the per-CV branch on the page path only logged to
+    stderr and continued, leaving the user in total silence about a fit that
+    never arrived. The fix must add a notice without disturbing which jobs
+    get marked seen, when review/deferral commits happen, or the state
+    machine's existing per-fit retry bookkeeping."""
+    jobs = [
+        Job(title="Match {}".format(i), company="Acme{}".format(i),
+            url="https://x/match{}".format(i), description="x" * 200)
+        for i in (1, 2, 3)
+    ]
+    telegram = FakeTelegram()
+    failing_company = "Acme2"
+
+    def send_document(filename, content, caption):
+        if failing_company in caption:
+            raise RuntimeError("upload down")
+        telegram.documents.append((filename, content, caption))
+
+    telegram.send_document = send_document
+    _t, saved = install_daily_fakes(monkeypatch, jobs, telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run, "evaluate_job",
+        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+    )
+
+    def prepare_fit(_llm, _ti, _bt, job, _ev):
+        return {
+            "title": job["title"], "company": job["company"],
+            "message": "m", "pdf_bytes": b"PDFDATA",
+        }
+
+    monkeypatch.setattr(run, "prepare_fit", prepare_fit)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    # The user is told about the failure -- not left in silence.
+    assert any("elivery failure" in m for m in telegram.messages)
+
+    # The other two fits are still committed exactly as normal delivery would.
+    assert "https://x/match1" in saved[-1]
+    assert "https://x/match3" in saved[-1]
+    # The failed one is not -- its CV never arrived, so it retries next run.
+    assert "https://x/match2" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+
+
 def test_index_refresh_failure_does_not_fail_the_run(monkeypatch):
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, saved = install_daily_fakes(monkeypatch, [job])

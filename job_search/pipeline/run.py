@@ -448,6 +448,7 @@ def _deliver_digest(
             print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
         return
 
+    cv_failures = 0
     for entry, (job, _payload, retry_state, _ev) in zip(fit_entries, prepared):
         if page_url:
             # The page has no file hosting, so each CV rides its own document.
@@ -470,6 +471,7 @@ def _deliver_digest(
                 stats.delivery_failed += 1
                 _record_fit_failure(seen, stats, job, "document", today, telegram)
                 mark_delivery_notified(seen, **job)
+                cv_failures += 1
                 continue
         # Only count a notification the user is actually seeing for the first
         # time; a retried fit was announced in an earlier run, and the legacy
@@ -498,6 +500,19 @@ def _deliver_digest(
     if uncertain:
         save_seen_jobs(seen)
     _commit_deferrals(seen, deferrals, today)
+
+    if cv_failures:
+        # Every other delivery-failure branch in this function ends in a
+        # Telegram notice; this per-CV branch previously only logged to
+        # stderr, leaving the user silent about a fit whose CV never arrived
+        # (finding 4). All state reconciliation is already done above, so
+        # this send is purely a notification — its own failure must not
+        # raise or disturb any of it, only log, exactly like the other
+        # fallback sends in this function.
+        try:
+            telegram.send_message(_format_run_summary(stats, source_warning))
+        except Exception as exc:
+            print(f"  CV-failure notification error: {exc}", file=sys.stderr)
 
 
 def run_daily(cfg, test: bool = False) -> int:
