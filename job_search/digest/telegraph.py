@@ -19,8 +19,8 @@ import secrets
 
 from ..models import REGION_LABELS, Region, coerce_job
 # Reused verbatim so the two renderers cannot disagree about what a fact chip
-# says or which URLs are safe to link.
-from .render import _FACT_LABELS, _is_http
+# says, which URLs are safe to link, or how a run-health issue is worded.
+from .render import _FACT_LABELS, _is_http, _stat
 from .sections import group_entries
 
 # Telegraph's hard cap is 64 KB; the margin absorbs the JSON the API wraps the
@@ -181,6 +181,32 @@ def _warning_nodes(ctx, warnings):
     return nodes
 
 
+def _issues_nodes(stats):
+    """A warning strip when the run had problems, mirroring render.py's
+    _issues_bar exactly (same labels, same pluralization).
+
+    On the happy path _format_run_summary is never sent, so for a page user
+    this strip is the only channel reporting evaluation/preparation/delivery
+    failures, retries-waiting and newly-blocked fits (finding 3) -- without
+    it a broken run can look quiet.
+    """
+    problems = [
+        ("evaluation failure", _stat(stats, "evaluation_failed")),
+        ("CV preparation failure", _stat(stats, "preparation_failed")),
+        ("delivery failure", _stat(stats, "delivery_failed")),
+        ("awaiting retry", _stat(stats, "retries_waiting")),
+        ("newly blocked", _stat(stats, "newly_blocked")),
+    ]
+    active = [
+        "{} {}{}".format(count, label, "" if count == 1 or label == "awaiting retry" else "s")
+        for label, count in problems
+        if count
+    ]
+    if not active:
+        return []
+    return [_node("blockquote", ["⚠️ " + " · ".join(active)])]
+
+
 def _counts_line(ctx) -> str:
     return " · ".join([
         "{} new".format(int(getattr(ctx.stats, "new_jobs", 0) or 0)),
@@ -234,6 +260,7 @@ def _render(ctx, index_url, keep_review, keep_deferred):
         _node("h3", ["Job Search Digest — " + date_str]),
         _node("p", [_counts_line(ctx)]),
     ]
+    nodes.extend(_issues_nodes(ctx.stats))
     nodes.extend(_warning_nodes(ctx, warnings))
     nodes.extend(body)
     nodes.append(_node("hr"))

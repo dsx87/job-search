@@ -3,7 +3,8 @@ import datetime
 import json
 
 from job_search.digest import telegraph as tg
-from job_search.digest.fixtures import oversized_context, sample_context, sample_fit
+from job_search.digest.fixtures import oversized_context, sample_context, sample_fit, sample_stats
+from job_search.digest.render import _issues_bar
 from job_search.models import Region
 
 ALLOWED_TAGS = {
@@ -110,6 +111,32 @@ def test_source_and_sections_warnings_appear_near_the_top():
     head = _all_text(nodes[:4])
     assert "linkedin timed out" in head
     assert "bad predicate" in head
+
+
+def test_issues_strip_matches_the_html_dashboard_wording():
+    """finding 3: the Telegraph page must surface the same run-health signal
+    as render.py's _issues_bar strip -- on the happy path _format_run_summary
+    is never sent, so for a page user this strip is the only channel."""
+    stats = sample_stats(
+        evaluation_failed=2, preparation_failed=1, delivery_failed=3,
+        retries_waiting=1, newly_blocked=1,
+    )
+    ctx = sample_context(stats=stats)
+    nodes = tg.render_digest_nodes(ctx)
+    text = _all_text(nodes)
+
+    html_strip = _issues_bar(stats)
+    wording = html_strip.split(">", 1)[1].rsplit("<", 1)[0]  # strip the <div ...> wrapper
+    wording = wording.replace("⚠️ ", "", 1)
+    assert wording in text
+
+
+def test_clean_run_has_no_issues_strip():
+    nodes = tg.render_digest_nodes(sample_context())
+    text = _all_text(nodes)
+    for label in ("evaluation failure", "preparation failure", "delivery failure",
+                  "awaiting retry", "newly blocked"):
+        assert label not in text
 
 
 def test_a_raising_predicate_is_reported_not_fatal():
