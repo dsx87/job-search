@@ -149,3 +149,25 @@ def test_dump_writes_node_json_without_publishing(monkeypatch, tmp_path):
     payload = json.loads(target.read_text())
     assert "digest" in payload and "index" in payload
     assert payload["digest"][0]["tag"] == "h3"
+
+
+def test_empty_minted_token_is_reported_and_publishes_nothing(monkeypatch, capsys):
+    monkeypatch.delenv("TELEGRAPH_PREVIEW_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAPH_ACCESS_TOKEN", raising=False)
+    client = FakeClient()
+    client.create_account = lambda _short_name: ""
+
+    assert preview.main(["--days", "1"], client=client) == 2
+
+    assert client.created == []
+    assert "no access token" in capsys.readouterr().err
+
+
+def test_dump_writes_utf8_regardless_of_locale(tmp_path):
+    # The nodes carry emoji and "·"; the locale default would raise under LANG=C.
+    target = tmp_path / "nodes.json"
+
+    assert preview.main(["--dump", str(target)], client=FakeClient()) == 0
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["digest"][0]["tag"] == "h3"

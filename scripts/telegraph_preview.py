@@ -57,6 +57,9 @@ def _resolve_token(args, client):
               "account instead).", file=sys.stderr)
         return ""
     token = client.create_account(PREVIEW_SHORT_NAME)
+    if not token:
+        print("Telegraph returned no access token; cannot publish.", file=sys.stderr)
+        return ""
     print("Minted a preview account. Export this to reuse it (and keep the index alive):")
     print("  export TELEGRAPH_PREVIEW_TOKEN={}".format(token))
     return token
@@ -74,7 +77,9 @@ def main(argv=None, client=None) -> int:
                 {"title": "Job Digest 2026-08-01 deadbeef", "url": "https://telegra.ph/example"},
             ]),
         }
-        with open(args.dump, "w") as handle:
+        # Explicit UTF-8: the nodes carry emoji and "·", and ensure_ascii=False
+        # keeps them literal, so the locale default would raise under LANG=C.
+        with open(args.dump, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
         print("Wrote {}".format(args.dump))
         return 0

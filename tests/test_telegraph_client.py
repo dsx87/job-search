@@ -67,12 +67,13 @@ def test_api_error_raises_telegraph_error(monkeypatch):
 
 
 def test_transient_network_error_is_retried_then_succeeds(monkeypatch):
+    # Driven through edit_page: the ladder only applies to idempotent calls.
     fake = _install(monkeypatch, [
         urllib.error.URLError("connection reset"),
         _ok({"path": "P-08-01", "url": "https://telegra.ph/P-08-01"}),
     ])
 
-    page = telegraph.TelegraphClient().create_page("tok", "Title", [])
+    page = telegraph.TelegraphClient().edit_page("tok", "P-08-01", "Title", [])
 
     assert page["path"] == "P-08-01"
     assert len(fake.requests) == 2
@@ -82,7 +83,7 @@ def test_retries_are_bounded_and_the_last_error_propagates(monkeypatch):
     fake = _install(monkeypatch, [urllib.error.URLError("down")] * len(telegraph.RETRY_BACKOFF))
 
     with pytest.raises(urllib.error.URLError):
-        telegraph.TelegraphClient().create_page("tok", "Title", [])
+        telegraph.TelegraphClient().edit_page("tok", "P-08-01", "Title", [])
 
     assert len(fake.requests) == len(telegraph.RETRY_BACKOFF)
 
@@ -125,12 +126,13 @@ def test_edit_page_sends_the_path(monkeypatch):
 
 
 def test_retryable_http_status_is_retried_then_succeeds(monkeypatch):
+    # Driven through edit_page: the ladder only applies to idempotent calls.
     fake = _install(monkeypatch, [
-        urllib.error.HTTPError("https://api.telegra.ph/createPage", 503, "Service Unavailable", {}, None),
+        urllib.error.HTTPError("https://api.telegra.ph/editPage", 503, "Service Unavailable", {}, None),
         _ok({"path": "P-08-02", "url": "https://telegra.ph/P-08-02"}),
     ])
 
-    page = telegraph.TelegraphClient().create_page("tok", "Title", [])
+    page = telegraph.TelegraphClient().edit_page("tok", "P-08-02", "Title", [])
 
     assert page["path"] == "P-08-02"
     assert len(fake.requests) == 2
@@ -145,4 +147,71 @@ def test_permanent_http_status_is_not_retried(monkeypatch):
         telegraph.TelegraphClient().create_page("tok", "Title", [])
 
     assert excinfo.value.code == 400
+    assert len(fake.requests) == 1
+
+
+def _http_error(code):
+    return urllib.error.HTTPError(
+        "https://api.telegra.ph/createPage", code, "err", {}, None
+    )
+
+
+def test_create_page_is_not_retried_after_a_transport_error(monkeypatch):
+    # The service may have committed the page before the connection broke, and
+    # Telegraph has no delete — a retry would publish a permanent duplicate.
+    fake = _install(monkeypatch, [
+        urllib.error.URLError("connection reset"),
+        _ok({"path": "P-08-01", "url": "https://telegra.ph/P-08-01"}),
+    ])
+
+    with pytest.raises(urllib.error.URLError):
+        telegraph.TelegraphClient().create_page("tok", "Title", [])
+
+    assert len(fake.requests) == 1
+
+
+def test_create_page_is_not_retried_on_a_5xx(monkeypatch):
+    # A 502/504 can also arrive after the page was committed.
+    fake = _install(monkeypatch, [_http_error(502), _ok({"path": "p", "url": "u"})])
+
+    with pytest.raises(urllib.error.HTTPError):
+        telegraph.TelegraphClient().create_page("tok", "Title", [])
+
+    assert len(fake.requests) == 1
+
+
+def test_create_page_is_retried_on_429_which_was_never_performed(monkeypatch):
+    fake = _install(monkeypatch, [
+        _http_error(429),
+        _ok({"path": "P-08-01", "url": "https://telegra.ph/P-08-01"}),
+    ])
+
+    page = telegraph.TelegraphClient().create_page("tok", "Title", [])
+
+    assert page["path"] == "P-08-01"
+    assert len(fake.requests) == 2
+
+
+def test_idempotent_calls_still_retry_transport_errors(monkeypatch):
+    fake = _install(monkeypatch, [
+        urllib.error.URLError("connection reset"),
+        _ok({"path": "Index", "url": "https://telegra.ph/Index"}),
+    ])
+
+    telegraph.TelegraphClient().edit_page("tok", "Index", "Index", [])
+
+    assert len(fake.requests) == 2
+
+
+def test_create_account_is_not_retried_after_a_transport_error(monkeypatch):
+    # Telegraph offers neither account deletion nor token recovery, so a retried
+    # create leaves an orphaned account whose token nobody holds.
+    fake = _install(monkeypatch, [
+        urllib.error.URLError("connection reset"),
+        _ok({"access_token": "second-account"}),
+    ])
+
+    with pytest.raises(urllib.error.URLError):
+        telegraph.TelegraphClient().create_account("job-search")
+
     assert len(fake.requests) == 1
