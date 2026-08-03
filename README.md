@@ -240,17 +240,20 @@ long-lived "Job Search Digests" index page is rebuilt each run, listing the 200
 most recent digests. A publish failure for any reason — no token, Telegraph
 unreachable, content rejected — falls back to the ZIP exactly as before.
 
-To see what the pages look like without waiting for a real run:
+To see what the pages look like without waiting for a real run: by this point
+`TELEGRAPH_ACCESS_TOKEN` is already set, and the tool refuses to publish there
+on purpose, so mint a separate preview account once and reuse it:
 
-    python scripts/telegraph_preview.py --days 3
+```bash
+python scripts/telegraph_preview.py --days 3 --force   # mints a preview account, prints TELEGRAPH_PREVIEW_TOKEN=...
+export TELEGRAPH_PREVIEW_TOKEN=...                      # paste what the run above printed
+python scripts/telegraph_preview.py --days 3            # reuses it; the index now lists 6 pages
+```
 
-That publishes mock digests from `job_search/digest/fixtures.py` — the same
-fixtures the tests assert on — to a *separate* preview account
-(`TELEGRAPH_PREVIEW_TOKEN`, minted automatically the first time you run it). It
-refuses to run unless that account is distinct from your production
-`TELEGRAPH_ACCESS_TOKEN`, so mock digests can't land in the real index;
-`--force` overrides the refusal but still publishes to a preview account, never
-your production one. Run it twice to watch the index grow.
+Mock digests come from `job_search/digest/fixtures.py` — the same fixtures the
+tests assert on. `--force` publishes to a preview account, never your
+production one — unless you deliberately set `TELEGRAPH_PREVIEW_TOKEN` equal to
+`TELEGRAPH_ACCESS_TOKEN` yourself.
 
 The daily flow, CLI `--tailor`, and Telegram `/tailor` command share the same
 delivery contract: validation, successful compilation, exactly-one-page
