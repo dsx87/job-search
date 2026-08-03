@@ -96,6 +96,9 @@ jobs:
           # Leave unset: the step above writes sections.py, the default.
           SECTIONS_FILE: ${{ vars.SECTIONS_FILE }}
           CV_PHONE: ${{ secrets.CV_PHONE }}
+          # Publish the digest as a telegra.ph page instead of a ZIP. Unset
+          # (the default) is a no-op -- see README's Actions-secrets table.
+          TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
         run: python3 -u -m job_search.pipeline
 
       # `if: always()` mirrors the Pi's `push_state()` in a `finally` block
