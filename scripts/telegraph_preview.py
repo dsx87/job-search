@@ -35,7 +35,7 @@ def _parse_args(argv):
     parser.add_argument("--dump", default="",
                         help="write the node JSON to this path instead of publishing")
     parser.add_argument("--force", action="store_true",
-                        help="allow running against TELEGRAPH_ACCESS_TOKEN (never do this)")
+                        help="suppress the refusal below and proceed with a preview account")
     return parser.parse_args(argv)
 
 
@@ -44,15 +44,17 @@ def _resolve_token(args, client):
     token = os.environ.get("TELEGRAPH_PREVIEW_TOKEN", "").strip()
     if token:
         if token == os.environ.get("TELEGRAPH_ACCESS_TOKEN", "").strip() and not args.force:
-            print("Refusing to run: TELEGRAPH_PREVIEW_TOKEN equals TELEGRAPH_ACCESS_TOKEN. "
-                  "Mock digests must not land in your real index (--force overrides).",
+            print("Refusing to run: TELEGRAPH_PREVIEW_TOKEN equals TELEGRAPH_ACCESS_TOKEN, so "
+                  "this would not be a separate preview account. Mock digests must not land in "
+                  "your real index (--force proceeds anyway, reusing this same token).",
                   file=sys.stderr)
             return ""
         return token
     if os.environ.get("TELEGRAPH_ACCESS_TOKEN", "").strip() and not args.force:
         print("Refusing to run: TELEGRAPH_ACCESS_TOKEN is set but TELEGRAPH_PREVIEW_TOKEN is "
               "not. Set TELEGRAPH_PREVIEW_TOKEN to a separate preview account so mock digests "
-              "do not land in your real index (--force overrides).", file=sys.stderr)
+              "do not land in your real index (--force proceeds with a separate preview "
+              "account instead).", file=sys.stderr)
         return ""
     token = client.create_account(PREVIEW_SHORT_NAME)
     print("Minted a preview account. Export this to reuse it (and keep the index alive):")

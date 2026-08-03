@@ -11,16 +11,20 @@ class FakeClient:
     def __init__(self):
         self.pages = []
         self.created = []
+        self.create_page_tokens = []  # the token passed per create_page call, same order
+        self.account_calls = []       # short_name args passed to create_account
         self.edited = []
 
     def create_account(self, short_name):
+        self.account_calls.append(short_name)
         return "minted-token"
 
     def get_page_list(self, _token, offset=0):
         return list(self.pages)
 
-    def create_page(self, _token, title, nodes):
+    def create_page(self, token, title, nodes):
         self.created.append((title, nodes))
+        self.create_page_tokens.append(token)
         page = {"path": title.replace(" ", "-"), "title": title,
                 "url": "https://telegra.ph/" + title.replace(" ", "-")}
         self.pages.insert(0, page)
@@ -33,6 +37,7 @@ class FakeClient:
 
 def test_publishes_one_page_per_day_plus_the_index(monkeypatch):
     monkeypatch.setenv("TELEGRAPH_PREVIEW_TOKEN", "preview-tok")
+    monkeypatch.delenv("TELEGRAPH_ACCESS_TOKEN", raising=False)
     client = FakeClient()
 
     assert preview.main(["--days", "3"], client=client) == 0
@@ -45,6 +50,7 @@ def test_publishes_one_page_per_day_plus_the_index(monkeypatch):
 
 def test_second_invocation_grows_the_index(monkeypatch):
     monkeypatch.setenv("TELEGRAPH_PREVIEW_TOKEN", "preview-tok")
+    monkeypatch.delenv("TELEGRAPH_ACCESS_TOKEN", raising=False)
     client = FakeClient()
 
     preview.main(["--days", "2"], client=client)
@@ -65,13 +71,44 @@ def test_refuses_the_production_token(monkeypatch, capsys):
     assert "TELEGRAPH_PREVIEW_TOKEN" in capsys.readouterr().err
 
 
-def test_force_allows_the_production_token(monkeypatch):
+def test_force_proceeds_without_touching_the_production_token(monkeypatch):
+    """--force suppresses the refusal but must never publish with the real token.
+
+    Regression guard for the finding that --force's old help text ("allow
+    running against TELEGRAPH_ACCESS_TOKEN") did not match what the code
+    does: with TELEGRAPH_PREVIEW_TOKEN unset, --force falls through to
+    minting a fresh preview account, so the token that reaches create_page
+    must be the minted one, never "production-tok".
+    """
     monkeypatch.delenv("TELEGRAPH_PREVIEW_TOKEN", raising=False)
     monkeypatch.setenv("TELEGRAPH_ACCESS_TOKEN", "production-tok")
     client = FakeClient()
 
     assert preview.main(["--force", "--days", "1"], client=client) == 0
+
     assert client.created
+    assert client.create_page_tokens  # something was actually published
+    assert "production-tok" not in client.create_page_tokens
+    assert all(token == "minted-token" for token in client.create_page_tokens)
+
+
+def test_distinct_preview_and_access_tokens_uses_the_preview_one(monkeypatch):
+    """Both tokens set, to different values, no --force: the preview one wins.
+
+    This is the case the earlier review flagged as untested and dependent on
+    the ambient environment. The tool must proceed (no refusal — the tokens
+    are legitimately different accounts) and publish with the preview token,
+    never the access one.
+    """
+    monkeypatch.setenv("TELEGRAPH_PREVIEW_TOKEN", "preview-tok")
+    monkeypatch.setenv("TELEGRAPH_ACCESS_TOKEN", "production-tok")
+    client = FakeClient()
+
+    assert preview.main(["--days", "1"], client=client) == 0
+
+    assert client.create_page_tokens
+    assert "production-tok" not in client.create_page_tokens
+    assert all(token == "preview-tok" for token in client.create_page_tokens)
 
 
 def test_missing_token_mints_one_and_prints_it(monkeypatch, capsys):
