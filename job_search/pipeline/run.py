@@ -20,15 +20,15 @@ from ..digest import (
     cv_filename_for,
     digest_filename,
     load_sections,
+    publish_digest,
 )
-from ..digest import publish_digest
-from ..notify.telegraph import TelegraphClient
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
+from ..notify.telegraph import TelegraphClient
 from ..sources.fetch import fetch_jobs_with_health, select_sources
 from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
