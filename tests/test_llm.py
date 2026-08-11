@@ -201,7 +201,7 @@ def test_openai_json_mode_messages_mention_json(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
     OpenAIProvider("k", model="gpt-5.4-mini").generate(
         "Extract facts from this posting. Use unknown for anything unstated.",
-        response_schema={"type": "object"},
+        json_mode=True,
     )
 
     payload = captured["payload"]
@@ -212,6 +212,58 @@ def test_openai_json_mode_messages_mention_json(monkeypatch):
         "role": "user",
         "content": "Extract facts from this posting. Use unknown for anything unstated.",
     }
+
+
+def test_openai_response_schema_is_enforced_on_the_wire(monkeypatch):
+    # The schema used to be dropped: json_object alone let the model invent both
+    # the shape ({"value": …, "evidence": …} per field) and the values ("true",
+    # "restricted to specific countries"), so _normalize_facts scored every field
+    # "unknown" — a silent all-unknown evaluation instead of a real verdict.
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return _Response({"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    OpenAIProvider("k", model="gpt-5.4-mini").generate("prompt", response_schema=FACT_SCHEMA)
+
+    fmt = captured["payload"]["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["strict"] is True
+    schema = fmt["json_schema"]["schema"]
+    assert schema["properties"]["platform_focus"]["enum"] == list(
+        FACT_SCHEMA["properties"]["platform_focus"]["enum"]
+    )
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(FACT_SCHEMA["properties"])
+    assert any("json" in m["content"].lower() for m in captured["payload"]["messages"])
+
+
+def test_strict_json_schema_recurses_without_mutating_the_original():
+    original = {
+        "type": "object",
+        "properties": {
+            "jobs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"company": {"type": "string"}},
+                },
+            },
+        },
+    }
+    before = json.dumps(original, sort_keys=True)
+
+    strict = clients_module._strict_json_schema(original)
+
+    items = strict["properties"]["jobs"]["items"]
+    assert items["additionalProperties"] is False
+    assert items["required"] == ["company"]
+    assert strict["required"] == ["jobs"]
+    # Strict mode is an OpenAI wire concern; the caller's schema stays as written
+    # (Gemini receives the same object and wants it untouched).
+    assert json.dumps(original, sort_keys=True) == before
 
 
 def test_openai_plain_request_has_no_json_preamble(monkeypatch):
