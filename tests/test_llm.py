@@ -1,5 +1,6 @@
 """Request-contract, factory, breaker, and telemetry tests for the LLM providers."""
 import datetime
+import io
 import json
 import urllib.error
 from types import SimpleNamespace
@@ -167,6 +168,64 @@ def test_openai_request_omits_temperature_and_uses_json_object(monkeypatch):
     # gpt-5.4-mini rejects a non-default temperature — omitted by default.
     assert "temperature" not in payload
     assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_http_error_carries_the_provider_explanation(monkeypatch):
+    # A bare "HTTP Error 400: Bad Request" in the run log says nothing; the API
+    # explains itself in the body, so the raised error must carry it.
+    body = io.BytesIO(b'{"error": {"message": "\'messages\' must contain the word \'json\'"}}')
+
+    def urlopen(request, timeout):
+        raise urllib.error.HTTPError("http://x", 400, "Bad Request", {}, body)
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        OpenAIProvider("k", model="gpt-5.4-mini").generate("prompt")
+
+    assert "must contain the word 'json'" in str(excinfo.value)
+    assert excinfo.value.code == 400
+    # The body is consumed once; the breaker's own reporting still sees it.
+    assert "must contain the word 'json'" in LLMClient._error_detail(excinfo.value)
+
+
+def test_openai_json_mode_messages_mention_json(monkeypatch):
+    # OpenAI rejects response_format=json_object with HTTP 400 unless some message
+    # contains the word "json" — the fact-extraction prompt never does, which took
+    # every evaluation down the moment the run fell back to the OpenAI provider.
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return _Response({"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    OpenAIProvider("k", model="gpt-5.4-mini").generate(
+        "Extract facts from this posting. Use unknown for anything unstated.",
+        response_schema={"type": "object"},
+    )
+
+    payload = captured["payload"]
+    assert payload["response_format"] == {"type": "json_object"}
+    assert any("json" in m["content"].lower() for m in payload["messages"])
+    # The caller's prompt rides through untouched, as its own user message.
+    assert payload["messages"][-1] == {
+        "role": "user",
+        "content": "Extract facts from this posting. Use unknown for anything unstated.",
+    }
+
+
+def test_openai_plain_request_has_no_json_preamble(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return _Response({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    OpenAIProvider("k", model="gpt-5.4-mini").generate("prompt")
+
+    assert captured["payload"]["messages"] == [{"role": "user", "content": "prompt"}]
+    assert "response_format" not in captured["payload"]
 
 
 def test_openai_sends_temperature_when_enabled(monkeypatch):

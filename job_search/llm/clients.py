@@ -91,6 +91,38 @@ def model_shutdown_warning(model: str, today=None) -> str:
     )
 
 
+def _http_error_body(exc, limit: int = 200) -> str:
+    """One-line body of an HTTPError — where providers explain a rejection.
+
+    The body is a stream that can only be read once, so the first read is cached
+    on the exception: the raise path below and the breaker's own reporting both
+    want it, and whoever asks second must not get an empty string.
+    """
+    cached = getattr(exc, "_body_detail", None)
+    if cached is None:
+        try:
+            cached = " ".join(exc.read().decode("utf-8", "replace").split())
+        except Exception:
+            cached = ""
+        try:
+            exc._body_detail = cached
+        except Exception:  # pragma: no cover — exotic exception objects
+            pass
+    return cached[: limit - 1] + "…" if len(cached) > limit else cached
+
+
+def _annotate_http_error(exc) -> None:
+    """Fold the response body into the error message before it propagates.
+
+    Without this the pipeline logs a bare ``HTTP Error 400: Bad Request`` per job
+    and the actual cause (a malformed field, a rejected model) is only reachable
+    by re-running the request by hand.
+    """
+    detail = _http_error_body(exc)
+    if detail and detail not in (exc.msg or ""):
+        exc.msg = f"{exc.msg} — {detail}"
+
+
 def _post_json_with_retry(url, payload, headers, *, timeout=90, label=""):
     """POST a JSON body, retrying transient errors, and return the decoded reply.
 
@@ -113,6 +145,7 @@ def _post_json_with_retry(url, payload, headers, *, timeout=90, label=""):
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             if exc.code not in RETRYABLE_STATUS or attempt == attempts:
+                _annotate_http_error(exc)
                 raise
             print(
                 f"    {label} transient error {exc.code} — waiting {delay}s "
@@ -216,6 +249,14 @@ class GeminiProvider:
         raise RuntimeError(f"Gemini returned no text content (finishReason={finish_reason})")
 
 
+# ``response_format={"type": "json_object"}`` is rejected with HTTP 400
+# ("'messages' must contain the word 'json' in some form") unless a message says
+# so. Our JSON prompts describe their shape by field, not by naming the format —
+# fact extraction never says "JSON" — so the provider prepends this instead of
+# every prompt having to remember the incantation.
+_JSON_SYSTEM_MESSAGE = "Respond with a single valid JSON object and nothing else."
+
+
 class OpenAIProvider:
     """Scheme ``openai``: OpenAI-compatible ``/chat/completions``.
 
@@ -223,7 +264,9 @@ class OpenAIProvider:
     OpenRouter, Together, Mistral, local, …) via ``api_base``. ``temperature`` is
     omitted by default (``send_temperature=False``) because ``gpt-5.4-mini`` and
     other reasoning models reject a non-default temperature. JSON via
-    ``response_format={"type": "json_object"}`` — best-effort (no strict schema).
+    ``response_format={"type": "json_object"}`` — best-effort (no strict schema),
+    prefixed by ``_JSON_SYSTEM_MESSAGE`` because the API rejects that mode with a
+    400 unless a message names JSON (see the constant).
     """
 
     scheme = "openai"
@@ -243,14 +286,16 @@ class OpenAIProvider:
         self.last_usage = dict(_ZERO_USAGE)
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+        messages = [{"role": "user", "content": prompt}]
+        payload = {"model": self.model, "messages": messages}
         if self.send_temperature:
             payload["temperature"] = temperature
         if json_mode or response_schema is not None:
             payload["response_format"] = {"type": "json_object"}
+            # Unconditional rather than "only when the prompt lacks the word":
+            # scraped job descriptions mention JSON often enough that the
+            # conditional would make the request shape depend on the posting.
+            messages.insert(0, {"role": "system", "content": _JSON_SYSTEM_MESSAGE})
 
         url = f"{self.api_base}/chat/completions"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
@@ -506,12 +551,7 @@ class LLMClient:
     @staticmethod
     def _error_detail(exc, limit: int = 200) -> str:
         """Best-effort one-line body of an HTTPError (providers name the cause there)."""
-        try:
-            body = exc.read().decode("utf-8", "replace")
-        except Exception:
-            return ""
-        body = " ".join(body.split())
-        return body[: limit - 1] + "…" if len(body) > limit else body
+        return _http_error_body(exc, limit)
 
     def _record_primary_rejected(self, exc) -> None:
         """Disable the primary for the run after a model/request rejection, loudly once."""
