@@ -1522,3 +1522,46 @@ def test_zip_build_failure_is_fatal_not_a_delivery_failure(monkeypatch):
 
     assert not any(marker.startswith("delivery:attempt:") for marker in saved[-1])
     assert not any(marker.startswith("delivery:notified:") for marker in saved[-1])
+
+
+def test_failed_link_message_retracts_the_orphaned_page(monkeypatch):
+    # The page is created before the message announcing it can be sent, so a
+    # failed send leaves a page nobody was told about — and the fits retry, so
+    # the next run publishes another. The orphan must be withdrawn.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram()
+
+    def send_message(message):
+        if "telegra.ph" in message:
+            raise RuntimeError("telegram down")
+
+    telegram.send_message = send_message
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    from job_search.digest.telegraph import RETRACTED_TITLE
+
+    retitled = [(path, title) for path, title, _n in client.edited if title == RETRACTED_TITLE]
+    assert retitled, "the orphaned page was left live in the index"
+    assert retitled[0][0].startswith("Job-Digest-2026-07-21-")
+    # The fit still retries exactly as before — retraction changes no state.
+    assert "https://x/match" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+
+
+def test_successful_delivery_retracts_nothing(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    from job_search.digest.telegraph import RETRACTED_TITLE
+
+    assert not any(title == RETRACTED_TITLE for _p, title, _n in client.edited)

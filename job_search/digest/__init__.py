@@ -2,7 +2,7 @@
 from .bundle import build_digest_zip, cv_filename_for, digest_filename
 from .fixtures import oversized_context, sample_context
 from .model import DeferredEntry, DigestContext, FitEntry, ReviewEntry
-from .publish import publish_digest
+from .publish import publish_digest, retract_digest
 from .render import render_digest_html
 from .section_config import load_sections
 from .sections import Section, group_entries
@@ -29,5 +29,6 @@ __all__ = [
     "render_digest_html",
     "render_digest_nodes",
     "render_index_nodes",
+    "retract_digest",
     "sample_context",
 ]

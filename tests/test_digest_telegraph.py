@@ -335,3 +335,38 @@ def test_index_is_capped_at_the_page_list_limit():
              for i in range(500)]
     hrefs = [n["attrs"]["href"] for n in _walk(tg.render_index_nodes(pages)) if n["tag"] == "a"]
     assert len(hrefs) == 200
+
+
+# ── retraction ────────────────────────────────────────────────────────────────
+
+def test_index_lists_only_pages_still_titled_as_live_digests():
+    pages = [
+        {"title": "Job Digest 2026-08-01 deadbeef", "url": "https://telegra.ph/a"},
+        {"title": tg.RETRACTED_TITLE, "url": "https://telegra.ph/b"},
+        {"title": "Some unrelated page", "url": "https://telegra.ph/c"},
+    ]
+    nodes = tg.render_index_nodes(pages)
+    hrefs = [n["attrs"]["href"] for n in _walk(nodes) if n["tag"] == "a"]
+    assert hrefs == ["https://telegra.ph/a"]
+
+
+def test_an_index_of_only_retracted_pages_reads_as_empty():
+    nodes = tg.render_index_nodes([{"title": tg.RETRACTED_TITLE, "url": "https://telegra.ph/b"}])
+    assert [n for n in _walk(nodes) if n["tag"] == "ul"] == []
+    assert "No digests" in _all_text(nodes)
+
+
+def test_digest_titles_carry_the_prefix_the_index_filters_on():
+    title = tg.digest_page_title(datetime.date(2026, 8, 1))
+    assert title.startswith(tg.DIGEST_TITLE_PREFIX)
+
+
+def test_retracted_title_is_not_mistaken_for_a_digest():
+    # The whole scheme rests on this: a retracted page must fail the filter.
+    assert not tg.RETRACTED_TITLE.startswith(tg.DIGEST_TITLE_PREFIX)
+
+
+def test_retracted_body_carries_no_job_data_and_uses_allowed_tags():
+    nodes = tg.render_retracted_nodes()
+    assert {n["tag"] for n in _walk(nodes)} <= ALLOWED_TAGS
+    assert "withdrawn" in _all_text(nodes)

@@ -38,6 +38,29 @@ def content_size(nodes) -> int:
     return len(json.dumps(nodes, ensure_ascii=False).encode("utf-8"))
 
 
+# Every live digest title starts with this. Index membership is decided by it
+# (see render_index_nodes), which is what lets a page be retracted with nothing
+# but an editPage — no stored list of "which pages were announced".
+DIGEST_TITLE_PREFIX = "Job Digest"
+
+# What a retracted page is retitled to. Deliberately does NOT start with
+# DIGEST_TITLE_PREFIX, so the next index rebuild drops it.
+RETRACTED_TITLE = "Retracted digest"
+
+
+def render_retracted_nodes() -> list:
+    """Body for a page whose link never reached the user.
+
+    Telegraph has no delete, so the URL survives forever; stripping the content
+    is the most that can be done about a page that should never have been
+    announced.
+    """
+    return [_node("p", [
+        "This digest was withdrawn because it was never delivered. "
+        "Its jobs were re-sent in a later digest."
+    ])]
+
+
 def digest_page_title(date, token=None) -> str:
     """``Job Digest 2026-08-01 k3f9d2x1``.
 
@@ -48,7 +71,7 @@ def digest_page_title(date, token=None) -> str:
     back the guessable URL the token exists to prevent.
     """
     iso = date.isoformat() if hasattr(date, "isoformat") else str(date)
-    return "Job Digest {} {}".format(iso, token or secrets.token_hex(4))
+    return "{} {} {}".format(DIGEST_TITLE_PREFIX, iso, token or secrets.token_hex(4))
 
 
 # ── node helpers ──────────────────────────────────────────────────────────────
@@ -325,9 +348,18 @@ def render_index_nodes(pages) -> list:
     Rebuilt from getPageList every run rather than appended to, so there is no
     accumulated list to corrupt and the index self-heals after a run that died
     part-way through.
+
+    Only pages still titled as live digests are listed. Because the rebuild
+    reads the whole account, membership cannot be decided by "what this run
+    published" — a page withdrawn last week would be picked straight back up.
+    Deciding it from the title instead means retracting a page is a single
+    editPage, and needs no record of which pages were ever announced.
     """
     nodes = [_node("h3", [INDEX_TITLE])]
-    entries = list(pages)[:INDEX_LIMIT]
+    entries = [
+        page for page in pages
+        if _text(page.get("title")).startswith(DIGEST_TITLE_PREFIX)
+    ][:INDEX_LIMIT]
     if not entries:
         nodes.append(_node("p", ["No digests published yet."]))
         return nodes

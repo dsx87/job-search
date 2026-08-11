@@ -5,7 +5,7 @@ import pytest
 
 from job_search.digest import publish
 from job_search.digest.fixtures import sample_context
-from job_search.digest.telegraph import INDEX_TITLE
+from job_search.digest.telegraph import INDEX_TITLE, RETRACTED_TITLE
 from job_search.notify.telegraph import PAGE_LIST_LIMIT, TelegraphError
 
 DATE = datetime.date(2026, 8, 1)
@@ -245,3 +245,58 @@ def test_index_discovery_hard_stops_and_logs_when_never_found(capsys):
     discovery_offsets = [c[2] for c in discovery_calls[:publish._MAX_INDEX_WINDOWS]]
     assert discovery_offsets == [i * PAGE_LIST_LIMIT for i in range(publish._MAX_INDEX_WINDOWS)]
     assert capsys.readouterr().err.strip() != ""
+
+
+# ── retraction ────────────────────────────────────────────────────────────────
+
+def test_retract_blanks_the_page_and_retitles_it():
+    index = {"path": "Job-Search-Digests-aa11bb22", "title": INDEX_TITLE + " aa11bb22",
+             "url": "https://telegra.ph/Job-Search-Digests-aa11bb22"}
+    client = FakeClient(pages=[index])
+
+    publish.retract_digest(client, "tok", "https://telegra.ph/Job-Digest-2026-08-01-deadbeef")
+
+    edits = [c for c in client.calls if c[0] == "edit_page"]
+    path, title, nodes = edits[0][1], edits[0][2], edits[0][3]
+    assert path == "Job-Digest-2026-08-01-deadbeef"
+    assert title == RETRACTED_TITLE
+    assert "withdrawn" in repr(nodes)
+
+
+def test_retract_rebuilds_the_index_so_the_page_drops_out_now():
+    index = {"path": "Job-Search-Digests-aa11bb22", "title": INDEX_TITLE + " aa11bb22",
+             "url": "https://telegra.ph/Job-Search-Digests-aa11bb22"}
+    orphan = {"path": "Job-Digest-2026-08-01-deadbeef",
+              "title": "Job Digest 2026-08-01 deadbeef",
+              "url": "https://telegra.ph/Job-Digest-2026-08-01-deadbeef"}
+    client = FakeClient(pages=[orphan, index])
+
+    def edit_page(token, path, title, nodes):
+        client.calls.append(("edit_page", path, title, nodes))
+        for page in client.pages:          # mimic Telegraph: the title really changes
+            if page["path"] == path:
+                page["title"] = title
+        return {"path": path, "title": title, "url": "https://telegra.ph/" + path}
+
+    client.edit_page = edit_page
+
+    publish.retract_digest(client, "tok", orphan["url"])
+
+    index_rebuild = [c for c in client.calls if c[0] == "edit_page"][-1]
+    assert orphan["url"] not in repr(index_rebuild[3])
+
+
+def test_retract_never_raises_when_the_edit_fails(capsys):
+    client = FakeClient(fail={"edit_page": RuntimeError("edit down")})
+
+    publish.retract_digest(client, "tok", "https://telegra.ph/Job-Digest-2026-08-01-deadbeef")
+
+    assert "edit down" in capsys.readouterr().err
+
+
+def test_retract_ignores_a_url_it_cannot_parse_a_path_from():
+    client = FakeClient()
+
+    publish.retract_digest(client, "tok", "")
+
+    assert client.calls == []

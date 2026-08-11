@@ -12,8 +12,16 @@ Failure policy, which the pipeline depends on:
 """
 import secrets
 import sys
+import urllib.parse
 
-from .telegraph import INDEX_TITLE, digest_page_title, render_digest_nodes, render_index_nodes
+from .telegraph import (
+    INDEX_TITLE,
+    RETRACTED_TITLE,
+    digest_page_title,
+    render_digest_nodes,
+    render_index_nodes,
+    render_retracted_nodes,
+)
 # The digest module otherwise stays free of any network-facing import; this
 # one module is the exception, since it is the one that talks to a client.
 from ..notify.telegraph import PAGE_LIST_LIMIT
@@ -111,3 +119,32 @@ def publish_digest(client, token, ctx, date, *, title=None) -> str:
     page = client.create_page(token, title or digest_page_title(date), nodes)
     _refresh_index(client, token, index)
     return str(page.get("url", ""))
+
+
+def retract_digest(client, token, page_url) -> None:
+    """Withdraw a page whose link never reached the user. Never raises.
+
+    A page is created before the Telegram message announcing it can be sent, so
+    a failed send leaves a published page nobody was told about — and the run
+    retries, so the next one publishes another. Left alone they accumulate in
+    the index, which is the one thing that makes an otherwise-unguessable URL
+    findable.
+
+    Telegraph has no delete, so the page keeps its URL. What it can be given is
+    an empty body and a title that no longer marks it a live digest, which drops
+    it from the index on the rebuild below.
+
+    Best-effort throughout: this runs on a path where delivery has already
+    failed, and failing to tidy up must not add a second failure on top.
+    """
+    path = urllib.parse.urlparse(str(page_url or "")).path.strip("/")
+    if not path:
+        return
+    try:
+        client.edit_page(token, path, RETRACTED_TITLE, render_retracted_nodes())
+    except Exception as exc:
+        print("  Telegraph retraction failed for {}: {}".format(path, exc), file=sys.stderr)
+        return
+    # Rebuild so the withdrawn page leaves the index now rather than at the next
+    # successful run; _refresh_index swallows its own failures.
+    _refresh_index(client, token, _index_page(client, token))

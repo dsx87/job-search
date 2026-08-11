@@ -21,6 +21,7 @@ from ..digest import (
     digest_filename,
     load_sections,
     publish_digest,
+    retract_digest,
 )
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient, model_shutdown_warning
@@ -429,6 +430,12 @@ def _deliver_digest(
     except Exception as exc:
         # Whole-batch delivery failed: every fit stays unseen and retries.
         print(f"  Digest delivery failed — fits will retry next run: {exc}", file=sys.stderr)
+        if page_url:
+            # The page went up but its link never reached the user, and the fits
+            # below are about to be queued for another run — which publishes
+            # another page. Withdraw this one so the orphans do not pile up in
+            # the index. Best-effort; never raises.
+            retract_digest(TelegraphClient(), cfg.telegraph_access_token, page_url)
         for job, _payload, _rs, _ev in prepared:
             stats.delivery_failed += 1
             _record_fit_failure(seen, stats, job, "delivery", today, telegram)
