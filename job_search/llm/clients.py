@@ -18,6 +18,7 @@ and ``.scheme``. JSON enforcement is best-effort per scheme (documented below).
 Thread-safe: the eval/tailor stages call ``generate()`` from worker threads, and
 the breaker state is guarded by ``self._lock``.
 """
+import copy
 import datetime
 import json
 import socket
@@ -257,16 +258,48 @@ class GeminiProvider:
 _JSON_SYSTEM_MESSAGE = "Respond with a single valid JSON object and nothing else."
 
 
+def _strict_json_schema(schema):
+    """Copy a schema with the two constraints OpenAI's strict mode demands.
+
+    Every object needs ``additionalProperties: false`` and a ``required`` listing
+    all of its properties — including nested ones (array items). Requiring every
+    field is exactly what these schemas want anyway: each has an ``unknown``
+    member or an empty-list default, so a complete answer is always expressible.
+
+    Deep-copied because the same schema object is handed to Gemini, whose
+    ``responseSchema`` wants it as the caller wrote it.
+    """
+    node = copy.deepcopy(schema)
+
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("type") == "object" and isinstance(value.get("properties"), dict):
+                value["additionalProperties"] = False
+                value["required"] = list(value["properties"])
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(node)
+    return node
+
+
 class OpenAIProvider:
     """Scheme ``openai``: OpenAI-compatible ``/chat/completions``.
 
     Covers OpenAI plus any OpenAI-compatible endpoint (Groq, DeepSeek, xAI,
     OpenRouter, Together, Mistral, local, …) via ``api_base``. ``temperature`` is
     omitted by default (``send_temperature=False``) because ``gpt-5.4-mini`` and
-    other reasoning models reject a non-default temperature. JSON via
-    ``response_format={"type": "json_object"}`` — best-effort (no strict schema),
-    prefixed by ``_JSON_SYSTEM_MESSAGE`` because the API rejects that mode with a
-    400 unless a message names JSON (see the constant).
+    other reasoning models reject a non-default temperature.
+
+    JSON: a ``response_schema`` is enforced through structured outputs
+    (``response_format={"type": "json_schema", …, "strict": true}``); bare
+    ``json_mode`` falls back to ``json_object``. Both prepend
+    ``_JSON_SYSTEM_MESSAGE`` (see the constant). Structured outputs are an OpenAI
+    feature — an OpenAI-*compatible* base pointed at by ``api_base`` may only
+    support ``json_object``, so a schema call there could need the older mode.
     """
 
     scheme = "openai"
@@ -290,8 +323,21 @@ class OpenAIProvider:
         payload = {"model": self.model, "messages": messages}
         if self.send_temperature:
             payload["temperature"] = temperature
-        if json_mode or response_schema is not None:
+        if response_schema is not None:
+            # Structured outputs: the schema is enforced by the API, matching what
+            # Gemini's responseSchema gives us. Without it the model invents both
+            # shape and values, and the normalizers score every field "unknown".
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "strict": True,
+                    "schema": _strict_json_schema(response_schema),
+                },
+            }
+        elif json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if "response_format" in payload:
             # Unconditional rather than "only when the prompt lacks the word":
             # scraped job descriptions mention JSON often enough that the
             # conditional would make the request shape depend on the posting.
