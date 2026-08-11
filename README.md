@@ -65,8 +65,10 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
    a self-contained HTML dashboard (a table of every match with a one-line
    summary, the fit reasoning, key facts, and a local link to its tailored CV,
    plus the jobs flagged for review and the deferred ones) alongside the CV PDFs
-   themselves. Set `DIGEST_DELIVERY=0` to fall back to the legacy per-job
-   message + attachment stream.
+   themselves. Set `TELEGRAPH_ACCESS_TOKEN` to publish the dashboard as a
+   [telegra.ph](https://telegra.ph) page instead and send its link, with each
+   CV as its own document. Set `DIGEST_DELIVERY=0` to fall back to the legacy
+   per-job message + attachment stream.
 
 ## The design choice that makes both work
 
@@ -130,6 +132,7 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `TELEGRAM_CHAT_ID` | ✅ | delivery |
 | `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
+| `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py` |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
@@ -227,6 +230,30 @@ dashboard + the tailored CV PDFs) and sends it in one Telegram message. A
 successful send marks all included fits delivered; a failed send leaves them for
 the same day-1/day-3 retry as before. The CLI `--tailor` and Telegram `/tailor`
 commands are unaffected — they still deliver a single tailored CV directly.
+
+With `TELEGRAPH_ACCESS_TOKEN` set, the dashboard is published as a telegra.ph
+page instead and Telegram gets one message with the link, plus each tailored CV
+as its own document. The page title carries eight random hex characters so its
+public URL is not guessable, full job descriptions are left out (the posting
+link carries them, and Telegraph caps page content at 64 KB), and one
+long-lived "Job Search Digests" index page is rebuilt each run, listing the 200
+most recent digests. A publish failure for any reason — no token, Telegraph
+unreachable, content rejected — falls back to the ZIP exactly as before.
+
+To see what the pages look like without waiting for a real run: by this point
+`TELEGRAPH_ACCESS_TOKEN` is already set, and the tool refuses to publish there
+on purpose, so mint a separate preview account once and reuse it:
+
+```bash
+python scripts/telegraph_preview.py --days 3 --force   # mints a preview account, prints TELEGRAPH_PREVIEW_TOKEN=...
+export TELEGRAPH_PREVIEW_TOKEN=...                      # paste what the run above printed
+python scripts/telegraph_preview.py --days 3            # reuses it; the index now lists 6 pages
+```
+
+Mock digests come from `job_search/digest/fixtures.py` — the same fixtures the
+tests assert on. `--force` publishes to a preview account, never your
+production one — unless you deliberately set `TELEGRAPH_PREVIEW_TOKEN` equal to
+`TELEGRAPH_ACCESS_TOKEN` yourself.
 
 The daily flow, CLI `--tailor`, and Telegram `/tailor` command share the same
 delivery contract: validation, successful compilation, exactly-one-page

@@ -2,6 +2,8 @@
 import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from job_search.models import Job
 from job_search.pipeline import run
 from job_search.pipeline import stages
@@ -40,7 +42,7 @@ class FakeTelegram:
         self.documents.append((filename, content, caption))
 
 
-def make_config(digest_delivery=False):
+def make_config(digest_delivery=False, telegraph_access_token=""):
     # Existing tests exercise the legacy per-job delivery path, so this defaults
     # digest_delivery OFF; the digest-mode tests below pass digest_delivery=True.
     return SimpleNamespace(
@@ -60,6 +62,7 @@ def make_config(digest_delivery=False):
         sources_disable=(),
         state_sync=False,
         digest_delivery=digest_delivery,
+        telegraph_access_token=telegraph_access_token,
         # Empty disables sections; the two tests below opt in with a tmp_path file.
         sections_file="",
     )
@@ -1297,3 +1300,268 @@ def test_a_render_time_predicate_failure_sends_no_telegram_message(monkeypatch, 
     _name, _zf, html = _read_digest(telegram)
     assert "Match" in html  # the digest was still delivered
     assert "ZeroDivisionError" in html  # the warning is visible in the dashboard
+
+
+# ── telegraph delivery (a page link + one document per CV) ─────────────────────
+
+class FakeTelegraphClient:
+    def __init__(self, fail_create=False):
+        self.fail_create = fail_create
+        self.created = []
+        self.edited = []
+        self.pages = []
+
+    def get_page_list(self, _token, offset=0):
+        return list(self.pages)
+
+    def create_page(self, _token, title, nodes):
+        if self.fail_create:
+            raise RuntimeError("telegraph down")
+        self.created.append((title, nodes))
+        page = {"path": title.replace(" ", "-"), "title": title,
+                "url": "https://telegra.ph/" + title.replace(" ", "-")}
+        self.pages.insert(0, page)
+        return page
+
+    def edit_page(self, _token, path, title, nodes):
+        self.edited.append((path, title, nodes))
+        return {"path": path, "title": title, "url": "https://telegra.ph/" + path}
+
+
+def _install_telegraph(monkeypatch, client=None):
+    client = client or FakeTelegraphClient()
+    monkeypatch.setattr(run, "TelegraphClient", lambda: client)
+    return client
+
+
+def _telegraph_config():
+    return make_config(digest_delivery=True, telegraph_access_token="tok")
+
+
+def test_telegraph_sends_a_link_message_and_the_cv_as_a_document(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    # One link message; the CV is a document, and no ZIP was sent.
+    assert len(telegram.messages) == 1
+    assert "https://telegra.ph/Job-Digest-2026-07-21-" in telegram.messages[0]
+    assert len(telegram.documents) == 1
+    name, content, caption = telegram.documents[0]
+    assert name.endswith(".pdf") and content == b"PDFDATA"
+    assert "Tailored CV" in caption and "Acme" in caption
+    assert not any(n.endswith(".zip") for n, _c, _cap in telegram.documents)
+    # The job is marked seen exactly as the ZIP path marks it.
+    assert "https://x/match" in saved[-1]
+    # The page carries the job, and the index was refreshed.
+    assert "Match" in repr(client.created[-1][1])
+    assert client.edited
+
+
+def test_telegraph_failure_falls_back_to_the_zip(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    _install_telegraph(monkeypatch, FakeTelegraphClient(fail_create=True))
+
+    run.run_daily(_telegraph_config())
+
+    assert telegram.messages == []
+    name, _zf, html = _read_digest(telegram)
+    assert name == "job-digest-2026-07-21.zip"
+    assert "Match" in html
+    assert "https://x/match" in saved[-1]
+
+
+def test_no_token_still_sends_the_zip(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert telegram.documents[-1][0] == "job-digest-2026-07-21.zip"
+
+
+def test_link_message_failure_keeps_the_fit_unseen_and_retries(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram()
+    sent = []
+
+    def send_message(message):
+        if "telegra.ph" in message:
+            raise RuntimeError("telegram down")
+        sent.append(message)
+
+    telegram.send_message = send_message
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    assert "https://x/match" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+    assert any("Job search complete" in m for m in sent)   # the text fallback still lands
+
+
+def test_failed_cv_document_retries_only_that_fit(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram()
+
+    def send_document(*_args, **_kwargs):
+        raise RuntimeError("upload down")
+
+    telegram.send_document = send_document
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    # The page went out, so the fit is NOT marked seen — its CV never arrived.
+    assert "https://x/match" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+    # ...but it is marked notified, so the retry takes the known-fit route.
+    assert any("delivery:notified" in marker for marker in saved[-1])
+
+
+def test_one_cv_failure_notifies_the_user_and_other_fits_still_commit(monkeypatch):
+    """finding 4: every other delivery-failure branch in _deliver_digest ends
+    in a Telegram notice; the per-CV branch on the page path only logged to
+    stderr and continued, leaving the user in total silence about a fit that
+    never arrived. The fix must add a notice without disturbing which jobs
+    get marked seen, when review/deferral commits happen, or the state
+    machine's existing per-fit retry bookkeeping."""
+    jobs = [
+        Job(title="Match {}".format(i), company="Acme{}".format(i),
+            url="https://x/match{}".format(i), description="x" * 200)
+        for i in (1, 2, 3)
+    ]
+    telegram = FakeTelegram()
+    failing_company = "Acme2"
+
+    def send_document(filename, content, caption):
+        if failing_company in caption:
+            raise RuntimeError("upload down")
+        telegram.documents.append((filename, content, caption))
+
+    telegram.send_document = send_document
+    _t, saved = install_daily_fakes(monkeypatch, jobs, telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run, "evaluate_job",
+        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+    )
+
+    def prepare_fit(_llm, _ti, _bt, job, _ev):
+        return {
+            "title": job["title"], "company": job["company"],
+            "message": "m", "pdf_bytes": b"PDFDATA",
+        }
+
+    monkeypatch.setattr(run, "prepare_fit", prepare_fit)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    # The user is told about the failure -- not left in silence.
+    assert any("elivery failure" in m for m in telegram.messages)
+
+    # The other two fits are still committed exactly as normal delivery would.
+    assert "https://x/match1" in saved[-1]
+    assert "https://x/match3" in saved[-1]
+    # The failed one is not -- its CV never arrived, so it retries next run.
+    assert "https://x/match2" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+
+
+def test_index_refresh_failure_does_not_fail_the_run(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("edit down")
+
+    client.edit_page = boom
+
+    assert run.run_daily(_telegraph_config()) == 0
+    assert "https://x/match" in saved[-1]
+
+
+def test_zip_build_failure_is_fatal_not_a_delivery_failure(monkeypatch):
+    # build_digest_zip raising is a bug (a render error, a bad entry) with
+    # nothing to do with delivery — it must escape _deliver_digest and hit
+    # run_daily's fatal path (error notification, re-raise) exactly as it did
+    # before telegra.ph delivery existed, not consume a retry attempt.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+
+    def boom(_ctx):
+        raise RuntimeError("render bug")
+
+    monkeypatch.setattr(run, "build_digest_zip", boom)
+
+    with pytest.raises(RuntimeError, match="render bug"):
+        run.run_daily(make_config(digest_delivery=True))
+
+    assert not any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+    assert not any(marker.startswith("delivery:notified:") for marker in saved[-1])
+
+
+def test_failed_link_message_retracts_the_orphaned_page(monkeypatch):
+    # The page is created before the message announcing it can be sent, so a
+    # failed send leaves a page nobody was told about — and the fits retry, so
+    # the next run publishes another. The orphan must be withdrawn.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram = FakeTelegram()
+
+    def send_message(message):
+        if "telegra.ph" in message:
+            raise RuntimeError("telegram down")
+
+    telegram.send_message = send_message
+    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    from job_search.digest.telegraph import RETRACTED_TITLE
+
+    retitled = [(path, title) for path, title, _n in client.edited if title == RETRACTED_TITLE]
+    assert retitled, "the orphaned page was left live in the index"
+    assert retitled[0][0].startswith("Job-Digest-2026-07-21-")
+    # The fit still retries exactly as before — retraction changes no state.
+    assert "https://x/match" not in saved[-1]
+    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+
+
+def test_successful_delivery_retracts_nothing(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    from job_search.digest.telegraph import RETRACTED_TITLE
+
+    assert not any(title == RETRACTED_TITLE for _p, title, _n in client.edited)

@@ -271,3 +271,13 @@ def test_sections_file_env_override(monkeypatch):
 def test_blank_sections_file_env_falls_back_to_the_default(monkeypatch):
     monkeypatch.setenv("SECTIONS_FILE", "   ")
     assert PipelineConfig.from_env().sections_file == "sections.py"
+
+
+def test_telegraph_token_defaults_to_empty_and_reads_the_env(monkeypatch):
+    from job_search.config import PipelineConfig
+
+    monkeypatch.delenv("TELEGRAPH_ACCESS_TOKEN", raising=False)
+    assert PipelineConfig.from_env().telegraph_access_token == ""
+
+    monkeypatch.setenv("TELEGRAPH_ACCESS_TOKEN", "tok-123")
+    assert PipelineConfig.from_env().telegraph_access_token == "tok-123"

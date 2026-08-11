@@ -20,6 +20,8 @@ from ..digest import (
     cv_filename_for,
     digest_filename,
     load_sections,
+    publish_digest,
+    retract_digest,
 )
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient, model_shutdown_warning
@@ -27,6 +29,7 @@ from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
+from ..notify.telegraph import TelegraphClient
 from ..sources.fetch import fetch_jobs_with_health, select_sources
 from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
@@ -275,16 +278,17 @@ def _summaries(llm, jobs, workers):
         return list(pool.map(lambda job: summarize_job(llm, job), jobs))
 
 
-def _digest_caption(n_fits, n_review, n_deferred, date) -> str:
-    # Counts come from what actually went into the archive, not the run-level
-    # stats (a fit whose CV failed to compile is not bundled).
+def _digest_caption(n_fits, n_review, n_deferred, date, page_url="") -> str:
+    # Counts come from what actually went into the digest, not the run-level
+    # stats (a fit whose CV failed to compile is not included).
     bits = ["{} fit{}".format(n_fits, "" if n_fits == 1 else "s")]
     if n_review:
         bits.append(f"{n_review} to review")
     if n_deferred:
         bits.append(f"{n_deferred} deferred")
-    return "✅ Job Search Digest — {}\n{}\nOpen index.html in the archive.".format(
-        date.isoformat(), " · ".join(bits)
+    tail = page_url or "Open index.html in the archive."
+    return "✅ Job Search Digest — {}\n{}\n{}".format(
+        date.isoformat(), " · ".join(bits), tail
     )
 
 
@@ -390,21 +394,48 @@ def _deliver_digest(
         sections=sections,
         sections_error=sections_error,
     )
-    zip_bytes = build_digest_zip(ctx)
-    if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
-        # Diagnosable rather than silent: the send below will fail and the fits
-        # will retry, but at least the log says why.
-        print(
-            f"  Digest is {len(zip_bytes) // (1024 * 1024)} MB, over Telegram's "
-            f"{_TELEGRAM_DOC_LIMIT // (1024 * 1024)} MB limit — send will likely fail.",
-            file=sys.stderr,
-        )
-    caption = _digest_caption(len(fit_entries), len(review_entries), len(deferred_entries), today)
+    # Telegraph first: a page plus a link message is the whole digest. Any
+    # failure here (no token, API down, content rejected) falls through to the
+    # ZIP, which is the same delivery this pipeline has always done.
+    page_url = ""
+    if cfg.telegraph_access_token:
+        try:
+            page_url = publish_digest(
+                TelegraphClient(), cfg.telegraph_access_token, ctx, today
+            )
+        except Exception as exc:
+            print(
+                f"  Telegraph publish failed — falling back to the ZIP: {exc}",
+                file=sys.stderr,
+            )
+
+    caption = _digest_caption(
+        len(fit_entries), len(review_entries), len(deferred_entries), today, page_url
+    )
+    if not page_url:
+        zip_bytes = build_digest_zip(ctx)
+        if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
+            # Diagnosable rather than silent: the send below will fail and the
+            # fits will retry, but at least the log says why.
+            print(
+                f"  Digest is {len(zip_bytes) // (1024 * 1024)} MB, over Telegram's "
+                f"{_TELEGRAM_DOC_LIMIT // (1024 * 1024)} MB limit — send will likely fail.",
+                file=sys.stderr,
+            )
     try:
-        telegram.send_document(digest_filename(today), zip_bytes, caption)
+        if page_url:
+            telegram.send_message(caption)
+        else:
+            telegram.send_document(digest_filename(today), zip_bytes, caption)
     except Exception as exc:
         # Whole-batch delivery failed: every fit stays unseen and retries.
         print(f"  Digest delivery failed — fits will retry next run: {exc}", file=sys.stderr)
+        if page_url:
+            # The page went up but its link never reached the user, and the fits
+            # below are about to be queued for another run — which publishes
+            # another page. Withdraw this one so the orphans do not pile up in
+            # the index. Best-effort; never raises.
+            retract_digest(TelegraphClient(), cfg.telegraph_access_token, page_url)
         for job, _payload, _rs, _ev in prepared:
             stats.delivery_failed += 1
             _record_fit_failure(seen, stats, job, "delivery", today, telegram)
@@ -415,7 +446,7 @@ def _deliver_digest(
             mark_delivery_notified(seen, **job)
         if prepared:
             save_seen_jobs(seen)
-        # Never leave the user in silence — the ZIP was the only delivery, so
+        # Never leave the user in silence — the digest was the only delivery, so
         # fall back to the text run summary (which reports the delivery failures
         # and the pending retries).
         try:
@@ -424,7 +455,31 @@ def _deliver_digest(
             print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
         return
 
-    for job, _payload, retry_state, _ev in prepared:
+    cv_failures = 0
+    for entry, (job, _payload, retry_state, _ev) in zip(fit_entries, prepared):
+        if page_url:
+            # The page has no file hosting, so each CV rides its own document.
+            # A failure here is per-fit: the digest itself is already delivered,
+            # so only this job goes back on the retry ladder rather than the run.
+            try:
+                telegram.send_document(
+                    entry.cv_filename,
+                    entry.pdf_bytes,
+                    "Tailored CV — {} at {}".format(
+                        coerce_job(job).title, coerce_job(job).company
+                    ),
+                )
+            except Exception as exc:
+                print(
+                    f"  CV delivery failed for '{coerce_job(job).title}' — "
+                    f"retrying next run: {exc}",
+                    file=sys.stderr,
+                )
+                stats.delivery_failed += 1
+                _record_fit_failure(seen, stats, job, "document", today, telegram)
+                mark_delivery_notified(seen, **job)
+                cv_failures += 1
+                continue
         # Only count a notification the user is actually seeing for the first
         # time; a retried fit was announced in an earlier run, and the legacy
         # path avoids double-counting the same way (finding N9).
@@ -452,6 +507,19 @@ def _deliver_digest(
     if uncertain:
         save_seen_jobs(seen)
     _commit_deferrals(seen, deferrals, today)
+
+    if cv_failures:
+        # Every other delivery-failure branch in this function ends in a
+        # Telegram notice; this per-CV branch previously only logged to
+        # stderr, leaving the user silent about a fit whose CV never arrived
+        # (finding 4). All state reconciliation is already done above, so
+        # this send is purely a notification — its own failure must not
+        # raise or disturb any of it, only log, exactly like the other
+        # fallback sends in this function.
+        try:
+            telegram.send_message(_format_run_summary(stats, source_warning))
+        except Exception as exc:
+            print(f"  CV-failure notification error: {exc}", file=sys.stderr)
 
 
 def run_daily(cfg, test: bool = False) -> int:

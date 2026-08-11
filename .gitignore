@@ -37,6 +37,9 @@
 !scripts/run_pipeline.sh
 !scripts/enable-jobspy.sh
 !scripts/setup-state-sync.sh
+!scripts/telegraph_account.py
+!scripts/telegraph_preview.py
+!scripts/__init__.py
 
 # The vendored ARMv6 tls-client shared library (vendor/tls-client-armv6.so,
 # ~13 MB, cross-built for the Pi's arm1176jzf-s core) is intentionally NOT
