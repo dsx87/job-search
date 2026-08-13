@@ -86,7 +86,18 @@ def http_request(
     headers=None,
     timeout=HTTP_TIMEOUT_SECONDS,
     verify_tls=True,
+    data=None,
+    content_type=None,
 ):
+    """Perform one request and return ``(status, decoded_text)``.
+
+    ``json_body`` serializes a JSON body; ``data`` sends pre-built bytes
+    verbatim under ``content_type`` (the file-host uploader's multipart body,
+    which must not be re-encoded). Passing both is a programming error rather
+    than a silent pick of one.
+    """
+    if data is not None and json_body is not None:
+        raise ValueError("http_request takes either data or json_body, not both")
     request_url = build_url(url, params=params)
     body = None
     request_headers = {
@@ -101,6 +112,10 @@ def http_request(
     if json_body is not None:
         body = json.dumps(json_body).encode("utf-8")
         request_headers["Content-Type"] = "application/json"
+    elif data is not None:
+        body = data
+        if content_type:
+            request_headers["Content-Type"] = content_type
 
     request = urllib.request.Request(
         request_url,
