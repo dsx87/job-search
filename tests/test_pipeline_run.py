@@ -1,5 +1,7 @@
 """Regressions for description gating in the scheduled pipeline."""
 import datetime
+import io
+import zipfile
 from types import SimpleNamespace
 
 import pytest
@@ -1334,32 +1336,292 @@ def _install_telegraph(monkeypatch, client=None):
     return client
 
 
+class FakeX0Client:
+    """Records every upload; ``fail_upload`` makes the Nth one raise."""
+
+    def __init__(self, fail_upload=None):
+        self.fail_upload = fail_upload   # None, or a 1-based call number
+        self.uploads = []                # (filename, content)
+
+    def upload(self, filename, content):
+        self.uploads.append((filename, content))
+        if self.fail_upload == len(self.uploads):
+            from job_search.notify.x0 import FileHostError
+
+            raise FileHostError("host down")
+        return "https://x0.at/{}_{}".format(filename.rsplit(".", 1)[0], "i" * 24)
+
+
+def _install_x0(monkeypatch, client=None, encrypt=None):
+    """The file host and the encryptor, both faked, mirroring _install_telegraph.
+
+    The default encryptor tags the plaintext so a test can tell ciphertext from
+    the raw pdf_bytes — the property the whole feature rests on.
+    """
+    client = client or FakeX0Client()
+    monkeypatch.setattr(run, "X0Client", lambda: client)
+    monkeypatch.setattr(
+        run, "encrypt_pdf", encrypt or (lambda content, _password: b"ENC:" + content)
+    )
+    monkeypatch.setattr(run, "new_password", lambda: "test-password-1234")
+    return client
+
+
+def _created_nodes(client):
+    return repr(client.created[-1][1])
+
+
 def _telegraph_config():
     return make_config(digest_delivery=True, telegraph_access_token="tok")
 
 
-def test_telegraph_sends_a_link_message_and_the_cv_as_a_document(monkeypatch):
+def test_telegraph_sends_one_message_with_hosted_cv_links(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    # ONE message, no documents at all: the CVs are on the page now.
+    assert len(telegram.messages) == 1
+    assert "https://telegra.ph/Job-Digest-2026-07-21-" in telegram.messages[0]
+    assert telegram.documents == []
+    # One upload per fit under its clean name, plus the combined archive.
+    names = [name for name, _content in host.uploads]
+    assert names == ["igor_pivnyk_cv_acme.pdf", "job-cvs-2026-07-21.zip"]
+    # ...and both URLs made it onto the page.
+    nodes = _created_nodes(client)
+    assert "https://x0.at/igor_pivnyk_cv_acme_" in nodes
+    assert "https://x0.at/job-cvs-2026-07-21_" in nodes
+    # The job is marked seen exactly as the ZIP path marks it.
+    assert "https://x/match" in saved[-1]
+    assert client.edited
+
+
+def test_only_the_encrypted_bytes_ever_reach_the_host(monkeypatch):
+    """The security property: a public link must never serve a plaintext CV."""
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    _t, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch, pdf=b"PLAINTEXTCV")
+    _install_telegraph(monkeypatch)
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    cv_name, cv_content = host.uploads[0]
+    assert cv_content == b"ENC:PLAINTEXTCV"
+    assert b"PLAINTEXTCV" != cv_content and cv_content.startswith(b"ENC:")
+    assert cv_name.endswith(".pdf")
+    # The archive holds the encrypted copy too, not the original.
+    _zip_name, zip_content = host.uploads[1]
+    archive = zipfile.ZipFile(io.BytesIO(zip_content))
+    assert archive.read("igor_pivnyk_cv_acme.pdf") == b"ENC:PLAINTEXTCV"
+
+
+def test_the_password_is_in_the_message_and_not_on_the_page(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    message = telegram.messages[0]
+    assert "test-password-1234" in message
+    assert "<code>test-password-1234</code>" in message  # tap-to-copy in Telegram
+    # Second line, above the counts: bound_message truncates from the end, and a
+    # truncated password is a silently unusable digest.
+    assert message.splitlines()[1].strip().endswith("</code>")
+    assert "test-password-1234" not in _created_nodes(client)
+
+
+def test_cvs_are_uploaded_before_the_page_is_published(monkeypatch):
+    # The page needs the URLs, and an upload failure must leave nothing to
+    # retract — so the order is not an implementation detail.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    _t, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    order = []
+    client = FakeTelegraphClient()
+    real_create = client.create_page
+    client.create_page = lambda *a, **kw: (order.append("publish"), real_create(*a, **kw))[1]
+    _install_telegraph(monkeypatch, client)
+    host = FakeX0Client()
+    real_upload = host.upload
+    host.upload = lambda *a, **kw: (order.append("upload"), real_upload(*a, **kw))[1]
+    _install_x0(monkeypatch, host)
+
+    run.run_daily(_telegraph_config())
+
+    assert order.index("upload") < order.index("publish")
+    assert order.count("upload") == 2
+
+
+def test_encryption_unavailable_falls_back_to_the_zip_and_uploads_nothing(monkeypatch):
+    """qpdf missing is the designed fallback, NOT a delivery failure: the ZIP
+    goes out over Telegram exactly as before and the fits commit."""
+    from job_search.latex.encrypt import EncryptionUnavailable
+
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     client = _install_telegraph(monkeypatch)
 
+    def no_qpdf(_content, _password):
+        raise EncryptionUnavailable("qpdf is not installed")
+
+    host = _install_x0(monkeypatch, encrypt=no_qpdf)
+
     run.run_daily(_telegraph_config())
 
-    # One link message; the CV is a document, and no ZIP was sent.
-    assert len(telegram.messages) == 1
-    assert "https://telegra.ph/Job-Digest-2026-07-21-" in telegram.messages[0]
-    assert len(telegram.documents) == 1
-    name, content, caption = telegram.documents[0]
-    assert name.endswith(".pdf") and content == b"PDFDATA"
-    assert "Tailored CV" in caption and "Acme" in caption
-    assert not any(n.endswith(".zip") for n, _c, _cap in telegram.documents)
-    # The job is marked seen exactly as the ZIP path marks it.
+    # Nothing was uploaded and no page was created — nothing to retract.
+    assert host.uploads == []
+    assert client.created == []
+    assert telegram.messages == []
+    name, _zf, html = _read_digest(telegram)
+    assert name == "job-digest-2026-07-21.zip"
+    assert "Match" in html
+    # ZIP semantics: the fit is delivered and committed, not retried.
     assert "https://x/match" in saved[-1]
-    # The page carries the job, and the index was refreshed.
-    assert "Match" in repr(client.created[-1][1])
-    assert client.edited
+    assert not any(marker.startswith("delivery:attempt:") for marker in saved[-1])
+
+
+def test_an_upload_failure_falls_back_to_the_zip_with_no_page(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch, FakeX0Client(fail_upload=1))
+
+    run.run_daily(_telegraph_config())
+
+    assert client.created == []
+    assert telegram.messages == []
+    name, _zf, _html = _read_digest(telegram)
+    assert name == "job-digest-2026-07-21.zip"
+    assert "https://x/match" in saved[-1]
+
+
+def test_a_failed_archive_upload_leaves_no_half_linked_page(monkeypatch):
+    # The per-fit uploads succeeded and the archive did not. Publishing anyway
+    # would give a page whose "download all" link is missing while the entries
+    # point at real files — take the ZIP instead, so one run is one story.
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    client = _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch, FakeX0Client(fail_upload=2))
+
+    run.run_daily(_telegraph_config())
+
+    assert client.created == []
+    assert telegram.documents[-1][0] == "job-digest-2026-07-21.zip"
+
+
+def test_a_run_with_no_fits_still_publishes_a_page(monkeypatch):
+    # Nothing to upload is not a failure: a review-only run must still get its
+    # page rather than silently dropping to the ZIP.
+    job = Job(title="Maybe", company="Acme", url="https://x/maybe", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run, "evaluate_job",
+        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "unclear",
+                     "timezone_note": None, "facts": {}},
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    client = _install_telegraph(monkeypatch)
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    assert host.uploads == []
+    assert client.created
+    assert len(telegram.messages) == 1
+    assert "telegra.ph" in telegram.messages[0]
+    # No CVs, so no password and no download block.
+    assert "test-password-1234" not in telegram.messages[0]
+    assert "Download all CVs" not in _created_nodes(client)
+
+
+def test_without_a_token_the_file_host_is_never_touched(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(make_config(digest_delivery=True))
+
+    assert host.uploads == []
+    assert telegram.documents[-1][0] == "job-digest-2026-07-21.zip"
+
+
+def test_a_telegraph_failure_after_successful_uploads_still_sends_the_zip(monkeypatch):
+    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    _install_digest_fit(monkeypatch)
+    _install_telegraph(monkeypatch, FakeTelegraphClient(fail_create=True))
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    assert len(host.uploads) == 2      # the uploads happened, then expire unused
+    assert telegram.messages == []
+    name, _zf, html = _read_digest(telegram)
+    assert name == "job-digest-2026-07-21.zip"
+    # The archive keeps its local links, so the ZIP is self-contained as ever.
+    assert 'cvs/igor_pivnyk_cv_acme.pdf' in html
+    assert "https://x/match" in saved[-1]
+
+
+def test_every_fit_commits_when_the_page_is_delivered(monkeypatch):
+    # The per-CV document loop is gone, and with it the only way a fit could
+    # fail after the page went out. A delivered page means every CV was
+    # delivered, so all three commit.
+    jobs = [
+        Job(title="Match {}".format(i), company="Acme{}".format(i),
+            url="https://x/match{}".format(i), description="x" * 200)
+        for i in (1, 2, 3)
+    ]
+    telegram, saved = install_daily_fakes(monkeypatch, jobs)
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run, "evaluate_job",
+        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+    )
+    monkeypatch.setattr(
+        run, "prepare_fit",
+        lambda _llm, _ti, _bt, job, _ev: {
+            "title": job["title"], "company": job["company"],
+            "message": "m", "pdf_bytes": b"PDFDATA",
+        },
+    )
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    _install_telegraph(monkeypatch)
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    assert len(telegram.messages) == 1
+    assert telegram.documents == []
+    assert len(host.uploads) == 4      # three CVs and the archive
+    for index in (1, 2, 3):
+        assert "https://x/match{}".format(index) in saved[-1]
+    assert not any(marker.startswith("delivery:attempt:") for marker in saved[-1])
 
 
 def test_telegraph_failure_falls_back_to_the_zip(monkeypatch):
@@ -1368,6 +1630,7 @@ def test_telegraph_failure_falls_back_to_the_zip(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     _install_telegraph(monkeypatch, FakeTelegraphClient(fail_create=True))
+    _install_x0(monkeypatch)
 
     run.run_daily(_telegraph_config())
 
@@ -1404,6 +1667,7 @@ def test_link_message_failure_keeps_the_fit_unseen_and_retries(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch)
 
     run.run_daily(_telegraph_config())
 
@@ -1412,86 +1676,13 @@ def test_link_message_failure_keeps_the_fit_unseen_and_retries(monkeypatch):
     assert any("Job search complete" in m for m in sent)   # the text fallback still lands
 
 
-def test_failed_cv_document_retries_only_that_fit(monkeypatch):
-    job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
-    telegram = FakeTelegram()
-
-    def send_document(*_args, **_kwargs):
-        raise RuntimeError("upload down")
-
-    telegram.send_document = send_document
-    _t, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram)
-    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
-    _install_digest_fit(monkeypatch)
-    _install_telegraph(monkeypatch)
-
-    run.run_daily(_telegraph_config())
-
-    # The page went out, so the fit is NOT marked seen — its CV never arrived.
-    assert "https://x/match" not in saved[-1]
-    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
-    # ...but it is marked notified, so the retry takes the known-fit route.
-    assert any("delivery:notified" in marker for marker in saved[-1])
-
-
-def test_one_cv_failure_notifies_the_user_and_other_fits_still_commit(monkeypatch):
-    """finding 4: every other delivery-failure branch in _deliver_digest ends
-    in a Telegram notice; the per-CV branch on the page path only logged to
-    stderr and continued, leaving the user in total silence about a fit that
-    never arrived. The fix must add a notice without disturbing which jobs
-    get marked seen, when review/deferral commits happen, or the state
-    machine's existing per-fit retry bookkeeping."""
-    jobs = [
-        Job(title="Match {}".format(i), company="Acme{}".format(i),
-            url="https://x/match{}".format(i), description="x" * 200)
-        for i in (1, 2, 3)
-    ]
-    telegram = FakeTelegram()
-    failing_company = "Acme2"
-
-    def send_document(filename, content, caption):
-        if failing_company in caption:
-            raise RuntimeError("upload down")
-        telegram.documents.append((filename, content, caption))
-
-    telegram.send_document = send_document
-    _t, saved = install_daily_fakes(monkeypatch, jobs, telegram=telegram)
-    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
-    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
-    monkeypatch.setattr(
-        run, "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
-    )
-
-    def prepare_fit(_llm, _ti, _bt, job, _ev):
-        return {
-            "title": job["title"], "company": job["company"],
-            "message": "m", "pdf_bytes": b"PDFDATA",
-        }
-
-    monkeypatch.setattr(run, "prepare_fit", prepare_fit)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
-    _install_telegraph(monkeypatch)
-
-    run.run_daily(_telegraph_config())
-
-    # The user is told about the failure -- not left in silence.
-    assert any("elivery failure" in m for m in telegram.messages)
-
-    # The other two fits are still committed exactly as normal delivery would.
-    assert "https://x/match1" in saved[-1]
-    assert "https://x/match3" in saved[-1]
-    # The failed one is not -- its CV never arrived, so it retries next run.
-    assert "https://x/match2" not in saved[-1]
-    assert any(marker.startswith("delivery:attempt:") for marker in saved[-1])
-
-
 def test_index_refresh_failure_does_not_fail_the_run(monkeypatch):
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     client = _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch)
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("edit down")
@@ -1540,6 +1731,7 @@ def test_failed_link_message_retracts_the_orphaned_page(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     client = _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch)
 
     run.run_daily(_telegraph_config())
 
@@ -1559,6 +1751,7 @@ def test_successful_delivery_retracts_nothing(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     client = _install_telegraph(monkeypatch)
+    _install_x0(monkeypatch)
 
     run.run_daily(_telegraph_config())
 

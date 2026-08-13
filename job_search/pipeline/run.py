@@ -7,7 +7,9 @@ save points) is preserved exactly from the original pipeline.
 import concurrent.futures
 import datetime
 import html
+import io
 import sys
+import zipfile
 from dataclasses import dataclass, field
 
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
@@ -24,12 +26,14 @@ from ..digest import (
     retract_digest,
 )
 from ..identity import job_identity_keys, normalize_url
+from ..latex.encrypt import EncryptionUnavailable, encrypt_pdf, new_password
 from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
 from ..notify.telegraph import TelegraphClient
+from ..notify.x0 import X0Client
 from ..sources.fetch import fetch_jobs_with_health, select_sources
 from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
@@ -278,7 +282,7 @@ def _summaries(llm, jobs, workers):
         return list(pool.map(lambda job: summarize_job(llm, job), jobs))
 
 
-def _digest_caption(n_fits, n_review, n_deferred, date, page_url="") -> str:
+def _digest_caption(n_fits, n_review, n_deferred, date, page_url="", password="") -> str:
     # Counts come from what actually went into the digest, not the run-level
     # stats (a fit whose CV failed to compile is not included).
     bits = ["{} fit{}".format(n_fits, "" if n_fits == 1 else "s")]
@@ -286,16 +290,96 @@ def _digest_caption(n_fits, n_review, n_deferred, date, page_url="") -> str:
         bits.append(f"{n_review} to review")
     if n_deferred:
         bits.append(f"{n_deferred} deferred")
-    tail = page_url or "Open index.html in the archive."
-    return "✅ Job Search Digest — {}\n{}\n{}".format(
-        date.isoformat(), " · ".join(bits), tail
-    )
+    lines = ["✅ Job Search Digest — {}".format(date.isoformat())]
+    if page_url and password:
+        # Second line, above the counts, on purpose: bound_message truncates
+        # from the end, and a truncated password is a silently unusable digest.
+        # <code> makes it tap-to-copy in Telegram.
+        lines.append("CV password: <code>{}</code>".format(html.escape(password)))
+    lines.append(" · ".join(bits))
+    lines.append(page_url or "Open index.html in the archive.")
+    return "\n".join(lines)
 
 
 # Telegram's bot sendDocument ceiling. A real run bundles a handful of ~40 KB
 # CVs (well under 1 MB), so this only guards a pathological batch; we log rather
 # than split, since exceeding it here would mean something is badly wrong.
 _TELEGRAM_DOC_LIMIT = 50 * 1024 * 1024
+
+
+def _cv_archive_filename(date) -> str:
+    """The "download all CVs" archive, e.g. ``job-cvs-2026-07-21.zip``.
+
+    Deliberately not ``digest_filename``'s ``job-digest-<date>.zip``: that one is
+    the whole digest (dashboard + CVs) sent through Telegram, this one is only
+    the CVs and it is public. Two different things should not share a name.
+    """
+    iso = date.isoformat() if hasattr(date, "isoformat") else str(date)
+    return "job-cvs-{}.zip".format(iso)
+
+
+def _publish_cvs(fit_entries, date):
+    """Encrypt every tailored CV, host it, and host a combined archive too.
+
+    Returns ``(ok, password, zip_url)`` and sets ``cv_url`` on each entry it
+    uploaded. The page needs those URLs, so this runs *before* publishing —
+    which also means a failure here leaves no page to retract.
+
+    Nothing to upload is success, not failure: a review-only or deferred-only
+    run has no CVs and must still get its page.
+
+    Any exception — a failed upload, and specifically EncryptionUnavailable when
+    qpdf is missing or broken — takes the whole run back to the Telegram ZIP.
+    That is the designed fallback, and it is the only reason an unencrypted CV
+    can never reach a public host.
+    """
+    entries = [entry for entry in fit_entries if entry.pdf_bytes]
+    if not entries:
+        return True, "", ""
+
+    password = new_password()
+    host = X0Client()
+    try:
+        encrypted = []
+        for entry in entries:
+            payload = encrypt_pdf(entry.pdf_bytes, password)
+            entry.cv_url = host.upload(entry.cv_filename, payload)
+            encrypted.append((entry.cv_filename, payload))
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, payload in encrypted:
+                # Already-encrypted PDFs in a plain archive: stdlib zipfile
+                # cannot encrypt, and the protection belongs in the files
+                # themselves anyway, since they are also linked individually.
+                archive.writestr(name, payload)
+        zip_url = host.upload(_cv_archive_filename(date), buffer.getvalue())
+    except EncryptionUnavailable as exc:
+        # Loud, because absence of qpdf is silent degradation otherwise: the run
+        # keeps working, it just never uses the feature again.
+        print(
+            "  Cannot encrypt the CVs ({}) — falling back to the Telegram ZIP. "
+            "Install qpdf on this runner to publish a digest page.".format(exc),
+            file=sys.stderr,
+        )
+        _reset_cv_urls(fit_entries)
+        return False, "", ""
+    except Exception as exc:
+        print(
+            "  CV upload failed — falling back to the Telegram ZIP: {}".format(exc),
+            file=sys.stderr,
+        )
+        # Whatever did upload stays on the host until it expires; it is
+        # unguessable and nothing links to it. There is no deletion API
+        # (see notify/x0.py), so the URLs are simply dropped.
+        _reset_cv_urls(fit_entries)
+        return False, "", ""
+    return True, password, zip_url
+
+
+def _reset_cv_urls(fit_entries) -> None:
+    """Drop every hosted URL, so a half-finished upload run cannot be rendered."""
+    for entry in fit_entries:
+        entry.cv_url = ""
 
 
 def _commit_deferrals(seen, deferrals, today) -> None:
@@ -313,7 +397,17 @@ def _deliver_digest(
     llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
     source_warning, telegram, signature_for, deferrals=(),
 ):
-    """Bundle a run into ONE ZIP (HTML dashboard + tailored CVs) and send it once.
+    """Deliver a whole run in ONE Telegram message, by one of two routes.
+
+    With ``TELEGRAPH_ACCESS_TOKEN`` set: encrypt and host every CV, publish a
+    telegra.ph page linking to them, and send one message carrying the page link
+    and the CV password. Without it — or if encryption, an upload or the publish
+    fails — send the ZIP (HTML dashboard + tailored CVs) as one document, which
+    is the delivery this pipeline has always done.
+
+    Either way it is a single send, and the two routes are mutually exclusive by
+    construction: the uploads happen before the page exists, so a failure leaves
+    nothing published and nothing to retract.
 
     On a successful send every included fit is marked delivered/seen exactly as
     the per-job path does; on a failed send each fit records a delivery failure
@@ -368,6 +462,14 @@ def _deliver_digest(
             print(f"Telegram notification error: {exc}", file=sys.stderr)
         return
 
+    # Host the CVs before anything is published: the page carries links, so it
+    # cannot be built until the URLs exist — and a failure here means no page
+    # was ever created, so there is nothing to retract. Gated on the token
+    # because without one the run sends the ZIP and the file host is irrelevant.
+    uploads_ok, cv_password, cv_zip_url = True, "", ""
+    if cfg.telegraph_access_token:
+        uploads_ok, cv_password, cv_zip_url = _publish_cvs(fit_entries, today)
+
     # Loaded here rather than in run_daily so the legacy per-job delivery path
     # never pays for it, and so a config problem is announced only on a run that
     # actually had something to group.
@@ -393,12 +495,15 @@ def _deliver_digest(
         deferred=deferred_entries,
         sections=sections,
         sections_error=sections_error,
+        cv_zip_url=cv_zip_url,
+        cv_encrypted=bool(cv_password),
     )
     # Telegraph first: a page plus a link message is the whole digest. Any
-    # failure here (no token, API down, content rejected) falls through to the
-    # ZIP, which is the same delivery this pipeline has always done.
+    # failure here (no token, API down, content rejected, a CV that could not be
+    # encrypted or hosted) falls through to the ZIP, which is the same delivery
+    # this pipeline has always done.
     page_url = ""
-    if cfg.telegraph_access_token:
+    if cfg.telegraph_access_token and uploads_ok:
         try:
             page_url = publish_digest(
                 TelegraphClient(), cfg.telegraph_access_token, ctx, today
@@ -410,7 +515,8 @@ def _deliver_digest(
             )
 
     caption = _digest_caption(
-        len(fit_entries), len(review_entries), len(deferred_entries), today, page_url
+        len(fit_entries), len(review_entries), len(deferred_entries), today,
+        page_url, cv_password,
     )
     if not page_url:
         zip_bytes = build_digest_zip(ctx)
@@ -455,35 +561,17 @@ def _deliver_digest(
             print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
         return
 
-    cv_failures = 0
-    for entry, (job, _payload, retry_state, _ev) in zip(fit_entries, prepared):
-        if page_url:
-            # The page has no file hosting, so each CV rides its own document.
-            # A failure here is per-fit: the digest itself is already delivered,
-            # so only this job goes back on the retry ladder rather than the run.
-            try:
-                telegram.send_document(
-                    entry.cv_filename,
-                    entry.pdf_bytes,
-                    "Tailored CV — {} at {}".format(
-                        coerce_job(job).title, coerce_job(job).company
-                    ),
-                )
-            except Exception as exc:
-                print(
-                    f"  CV delivery failed for '{coerce_job(job).title}' — "
-                    f"retrying next run: {exc}",
-                    file=sys.stderr,
-                )
-                stats.delivery_failed += 1
-                _record_fit_failure(seen, stats, job, "document", today, telegram)
-                mark_delivery_notified(seen, **job)
-                cv_failures += 1
-                continue
+    # Every fit is delivered by now, whichever route the digest took: the ZIP
+    # carries the CVs inside it, and a published page carries links to CVs that
+    # were all hosted before the page existed. There is no per-CV failure left
+    # to handle here.
+    for _entry, (job, _payload, retry_state, _ev) in zip(fit_entries, prepared):
         # Only count a notification the user is actually seeing for the first
         # time; a retried fit was announced in an earlier run, and the legacy
         # path avoids double-counting the same way (finding N9).
         stats.notification_sent += int(not (retry_state and retry_state.notified))
+        # "CV delivered" now means "inside the ZIP or linked from the page" —
+        # the counter is unchanged, only what it counts has widened.
         stats.cv_sent += 1
         mark_delivery_notified(seen, **job)
         seen.update(job_identity_keys(job))
@@ -507,19 +595,11 @@ def _deliver_digest(
     if uncertain:
         save_seen_jobs(seen)
     _commit_deferrals(seen, deferrals, today)
-
-    if cv_failures:
-        # Every other delivery-failure branch in this function ends in a
-        # Telegram notice; this per-CV branch previously only logged to
-        # stderr, leaving the user silent about a fit whose CV never arrived
-        # (finding 4). All state reconciliation is already done above, so
-        # this send is purely a notification — its own failure must not
-        # raise or disturb any of it, only log, exactly like the other
-        # fallback sends in this function.
-        try:
-            telegram.send_message(_format_run_summary(stats, source_warning))
-        except Exception as exc:
-            print(f"  CV-failure notification error: {exc}", file=sys.stderr)
+    # Finding 4 ("every delivery-failure branch ends in a Telegram notice") is
+    # satisfied by construction now rather than by a notice: a CV that cannot be
+    # hosted fails the *whole* digest into the ZIP branch above, which already
+    # sends _format_run_summary. There is no longer a way for one fit's CV to go
+    # missing while the digest is delivered.
 
 
 def run_daily(cfg, test: bool = False) -> int:
