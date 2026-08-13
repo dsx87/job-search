@@ -1304,7 +1304,7 @@ def test_a_render_time_predicate_failure_sends_no_telegram_message(monkeypatch, 
     assert "ZeroDivisionError" in html  # the warning is visible in the dashboard
 
 
-# ── telegraph delivery (a page link + one document per CV) ─────────────────────
+# ── telegraph delivery (one message: a page link + the CV password) ───────────
 
 class FakeTelegraphClient:
     def __init__(self, fail_create=False):

@@ -66,9 +66,11 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
    summary, the fit reasoning, key facts, and a local link to its tailored CV,
    plus the jobs flagged for review and the deferred ones) alongside the CV PDFs
    themselves. Set `TELEGRAPH_ACCESS_TOKEN` to publish the dashboard as a
-   [telegra.ph](https://telegra.ph) page instead and send its link, with each
-   CV as its own document. Set `DIGEST_DELIVERY=0` to fall back to the legacy
-   per-job message + attachment stream.
+   [telegra.ph](https://telegra.ph) page instead: the CVs are AES-256 encrypted,
+   uploaded to a file host, and downloaded from the page itself, so the whole run
+   arrives as **one** Telegram message carrying the link and the CV password. Set
+   `DIGEST_DELIVERY=0` to fall back to the legacy per-job message + attachment
+   stream.
 
 ## The design choice that makes both work
 
@@ -132,7 +134,7 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `TELEGRAM_CHAT_ID` | ✅ | delivery |
 | `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
-| `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py` |
+| `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it also uploads each tailored CV — AES-256 encrypted, with the password sent in the Telegram message — to [x0.at](https://x0.at), because a telegra.ph page cannot host files. Needs `qpdf` on the runner; without it the run sends the ZIP as before |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
@@ -232,13 +234,26 @@ the same day-1/day-3 retry as before. The CLI `--tailor` and Telegram `/tailor`
 commands are unaffected — they still deliver a single tailored CV directly.
 
 With `TELEGRAPH_ACCESS_TOKEN` set, the dashboard is published as a telegra.ph
-page instead and Telegram gets one message with the link, plus each tailored CV
-as its own document. The page title carries eight random hex characters so its
-public URL is not guessable, full job descriptions are left out (the posting
-link carries them, and Telegraph caps page content at 64 KB), and one
-long-lived "Job Search Digests" index page is rebuilt each run, listing the 200
-most recent digests. A publish failure for any reason — no token, Telegraph
-unreachable, content rejected — falls back to the ZIP exactly as before.
+page instead and Telegram gets **one** message: the link and the CV password.
+The page title carries eight random hex characters so its public URL is not
+guessable, full job descriptions are left out (the posting link carries them,
+and Telegraph caps page content at 64 KB), and one long-lived "Job Search
+Digests" index page is rebuilt each run, listing the 200 most recent digests.
+
+Telegraph cannot host files, so each tailored CV is uploaded to
+[x0.at](https://x0.at) and the page carries "⬇ Download CV" links plus a
+"⬇ Download all CVs (zip)" link at the top. Because a link on a public page
+*is* the credential, every CV is AES-256 encrypted with `qpdf` before it leaves
+the machine, under one password per run that travels only in the private
+Telegram message — the host never holds anything but ciphertext. Uploads happen
+*before* the page is published, so a failure leaves nothing published. Links
+expire roughly 100 days after the run (x0.at's retention is size-derived; a
+~50 KB PDF sits near the maximum), and the page says so.
+
+If encryption or any upload fails, no page is published and the run sends the
+ZIP exactly as before — including when `qpdf` is not installed, which is why the
+runner setup adds it. The ZIP itself is not encrypted: it travels inside
+Telegram, which is already private.
 
 To see what the pages look like without waiting for a real run: by this point
 `TELEGRAPH_ACCESS_TOKEN` is already set, and the tool refuses to publish there
@@ -254,6 +269,16 @@ Mock digests come from `job_search/digest/fixtures.py` — the same fixtures the
 tests assert on. `--force` publishes to a preview account, never your
 production one — unless you deliberately set `TELEGRAPH_PREVIEW_TOKEN` equal to
 `TELEGRAPH_ACCESS_TOKEN` yourself.
+
+Add `--upload` to make the CV links live: the mock CVs are encrypted and put on
+the real file host, and the password is printed to the terminal. That is the
+only way to check the part no test reaches — open the page, click a CV, and
+confirm it downloads as `igor_pivnyk_cv_<company>.pdf` and asks for the
+password.
+
+```bash
+python scripts/telegraph_preview.py --days 1 --upload
+```
 
 The daily flow, CLI `--tailor`, and Telegram `/tailor` command share the same
 delivery contract: validation, successful compilation, exactly-one-page
@@ -369,6 +394,26 @@ This repo is public, so it carries **no** secrets and no personal phone number.
 The résumé's phone is a `((PHONE))` placeholder that is replaced at compile time
 from the `CV_PHONE` secret — it is never committed and never sent to the LLM. The
 committed sample PDF is rendered with the placeholder empty.
+
+The telegra.ph delivery path puts two things where a URL is the only thing
+guarding them, and both are handled deliberately:
+
+- **The digest page.** Public to anyone who has the link; the eight random hex
+  characters in its title are what make the link unguessable. It carries no
+  phone number, no full job descriptions and — by construction, not by
+  convention — no CV password: the password is never put on the object the
+  renderer sees.
+- **The hosted CVs.** Uploaded to x0.at under a 24-character random id, AES-256
+  encrypted first, so the host and anyone who stumbles on a link holds
+  ciphertext. One password per run, delivered over Telegram only. A leaked
+  password exposes that run's CVs and no earlier one.
+
+The practical cost: **a downloaded CV must be decrypted before you forward it to
+a recruiter**, or they will be asked for a password you do not want to share.
+
+```bash
+qpdf --decrypt --password=<the password from Telegram> igor_pivnyk_cv_acme.pdf cv.pdf
+```
 
 ## License
 

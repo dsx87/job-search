@@ -70,14 +70,17 @@ fi
 
 # ---- 1. APT packages -------------------------------------------------------
 # --no-install-recommends keeps TeX Live from pulling ~GBs of docs onto the SD card.
-step "Installing system packages (Python, git, pdflatex + Helvetica)"
+step "Installing system packages (Python, git, pdflatex + Helvetica, qpdf)"
 $SUDO apt-get update -qq
 # Helvetica (URW Nimbus Sans) ships in texlive-fonts-recommended, so no separate
 # font package or fontconfig is needed. pdflatex is in texlive-binaries, pulled
 # in as a dependency of texlive-latex-recommended.
+# qpdf encrypts the tailored CVs before they are uploaded to the file host on
+# the telegra.ph delivery path. It is ~3 MB and its absence is silent: the run
+# keeps working and just never publishes a page again.
 $SUDO apt-get install -y --no-install-recommends \
   git ca-certificates python3 python3-venv \
-  texlive-latex-recommended texlive-fonts-recommended
+  texlive-latex-recommended texlive-fonts-recommended qpdf
 
 # ---- 2. Swap ---------------------------------------------------------------
 step "Configuring ${SWAP_MB} MB swap"
