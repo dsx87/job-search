@@ -37,7 +37,7 @@ def sample_fit(
     summary="Swift and SwiftUI team, fully remote across the EU.",
     reason="Remote-EU iOS role matching Swift and SwiftUI.",
     timezone_note=None,
-    cv_filename="igor_pivnyk_cv_acme_ab12cd.pdf",
+    cv_filename="igor_pivnyk_cv_acme.pdf",
     description="Long job description sentence. " * 40,
 ):
     job = Job(
@@ -103,10 +103,10 @@ def sample_context(date=None, *, grouped=True, **over):
         sample_fit(),
         sample_fit(title="R&D <Lead> \U0001f680", company="Delta & Sons",
                    url="", is_remote=False, region=Region.UNKNOWN,
-                   cv_filename="igor_pivnyk_cv_delta_ef34gh.pdf"),
+                   cv_filename="igor_pivnyk_cv_delta_sons.pdf"),
         sample_fit(title="Very " + "long " * 30 + "title", company="Epsilon",
                    url="mailto:jobs@example.com", evaluation=False,
-                   cv_filename="igor_pivnyk_cv_epsilon_ij56kl.pdf"),
+                   cv_filename="igor_pivnyk_cv_epsilon.pdf"),
     ]
     values = dict(
         date=date or _DEFAULT_DATE,

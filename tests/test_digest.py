@@ -189,15 +189,37 @@ def test_digest_filename_uses_iso_date():
     assert digest_filename(datetime.date(2026, 7, 21)) == "job-digest-2026-07-21.zip"
 
 
+def test_cv_filename_has_no_random_suffix():
+    # The name is downloaded by a human and mailed to a recruiter; a six-hex
+    # SHA-256 prefix reads as noise on it. The company alone is enough, and it
+    # matches what the legacy per-job path has always sent.
+    assert cv_filename_for(Job(title="iOS", company="Acme", url="https://x/1"), set()) == (
+        "igor_pivnyk_cv_acme.pdf"
+    )
+
+
 def test_cv_filenames_are_unique_even_for_same_company():
     taken = set()
     job = Job(title="iOS", company="Acme", url="https://x/1")
     job2 = Job(title="iOS Senior", company="Acme", url="https://x/2")
     n1 = cv_filename_for(job, taken); taken.add(n1)
     n2 = cv_filename_for(job2, taken); taken.add(n2)
-    assert n1 != n2
-    assert n1.startswith("igor_pivnyk_cv_acme") and n1.endswith(".pdf")
-    assert n2.startswith("igor_pivnyk_cv_acme") and n2.endswith(".pdf")
+    # The numeric loop, not a hash, is what keeps two Acme fits apart now.
+    assert (n1, n2) == ("igor_pivnyk_cv_acme.pdf", "igor_pivnyk_cv_acme_2.pdf")
+
+
+def test_cv_filename_is_stable_across_runs():
+    # The URL used to feed a hash into the name, so the same job could be
+    # downloaded twice under two names. It cannot now.
+    first = cv_filename_for(Job(title="iOS", company="Acme", url="https://x/1"), set())
+    later = cv_filename_for(Job(title="iOS", company="Acme", url="https://x/1?ref=2"), set())
+    assert first == later == "igor_pivnyk_cv_acme.pdf"
+
+
+def test_cv_filename_falls_back_when_the_company_is_missing():
+    assert cv_filename_for(Job(title="iOS", company="", url="https://x/1"), set()) == (
+        "igor_pivnyk_cv_unknown.pdf"
+    )
 
 
 # ── user-defined sections ─────────────────────────────────────────────────────

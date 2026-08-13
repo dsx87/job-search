@@ -38,6 +38,17 @@ def test_sample_fit_covers_the_shapes_that_break_renderers():
     assert "&" in sample_fit(title="R&D <Lead> 🚀").job.title
 
 
+def test_fixture_cv_filenames_match_what_bundle_now_produces():
+    # The fixtures drive scripts/telegraph_preview.py, so a stale hashed name
+    # here would show a human something no real run can emit.
+    names = [entry.cv_filename for entry in sample_context().fits]
+    assert names == [
+        "igor_pivnyk_cv_acme.pdf",
+        "igor_pivnyk_cv_delta_sons.pdf",
+        "igor_pivnyk_cv_epsilon.pdf",
+    ]
+
+
 def test_oversized_context_is_far_past_the_60kb_budget():
     ctx = oversized_context()
     total = sum(len(e.job.description) for e in ctx.review)
