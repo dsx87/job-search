@@ -1,6 +1,8 @@
 """TDD for the mock-page preview tool."""
 import importlib
+import io
 import json
+import zipfile
 
 import pytest
 
@@ -161,6 +163,79 @@ def test_empty_minted_token_is_reported_and_publishes_nothing(monkeypatch, capsy
 
     assert client.created == []
     assert "no access token" in capsys.readouterr().err
+
+
+# ── --upload (real files on the real host) ────────────────────────────────────
+
+class FakeHost:
+    def __init__(self):
+        self.uploads = []
+
+    def upload(self, filename, content):
+        self.uploads.append((filename, content))
+        return "https://x0.at/{}_{}".format(filename.rsplit(".", 1)[0], "u" * 24)
+
+
+def _install_host(monkeypatch):
+    host = FakeHost()
+    monkeypatch.setattr(preview, "X0Client", lambda: host)
+    monkeypatch.setattr(preview, "encrypt_pdf", lambda content, _pw: b"ENC:" + content)
+    return host
+
+
+def test_uploading_is_off_by_default_and_touches_no_host(monkeypatch):
+    monkeypatch.setenv("TELEGRAPH_PREVIEW_TOKEN", "preview-tok")
+    monkeypatch.delenv("TELEGRAPH_ACCESS_TOKEN", raising=False)
+    host = _install_host(monkeypatch)
+    client = FakeClient()
+
+    assert preview.main(["--days", "1"], client=client) == 0
+
+    assert host.uploads == []
+    # The fixture links are still on the page — real-shaped, just not real.
+    assert "x0.at" in json.dumps(client.created[-1][1])
+
+
+def test_upload_publishes_pages_carrying_real_urls(monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAPH_PREVIEW_TOKEN", "preview-tok")
+    monkeypatch.delenv("TELEGRAPH_ACCESS_TOKEN", raising=False)
+    host = _install_host(monkeypatch)
+    client = FakeClient()
+
+    assert preview.main(["--days", "1", "--upload"], client=client) == 0
+
+    # Three sample fits plus the combined archive.
+    names = [name for name, _content in host.uploads]
+    assert names[-1].startswith("job-cvs-") and names[-1].endswith(".zip")
+    assert len(names) == 4
+    # Only ciphertext leaves the machine, exactly as a real run does — the
+    # archive is a plain zip *of* the encrypted files.
+    assert all(content.startswith(b"ENC:") for _n, content in host.uploads[:-1])
+    archive = zipfile.ZipFile(io.BytesIO(host.uploads[-1][1]))
+    assert archive.namelist() == [
+        "igor_pivnyk_cv_acme.pdf",
+        "igor_pivnyk_cv_delta_sons.pdf",
+        "igor_pivnyk_cv_epsilon.pdf",
+    ]
+    assert all(archive.read(name).startswith(b"ENC:") for name in archive.namelist())
+
+    page = json.dumps(client.created[-1][1])
+    assert "_uuuuuuuuuuuuuuuuuuuuuuuu" in page   # the URLs the fake host returned
+    # The password is printed for the human, never published.
+    out = capsys.readouterr().out
+    password = [line for line in out.splitlines() if "password" in line.lower()]
+    assert password, out
+    assert password[0].rsplit(" ", 1)[-1] not in page
+
+
+def test_upload_with_dump_still_writes_offline_without_uploading(monkeypatch, tmp_path):
+    host = _install_host(monkeypatch)
+    target = tmp_path / "nodes.json"
+
+    assert preview.main(["--dump", str(target), "--upload"], client=FakeClient()) == 0
+
+    assert host.uploads == []
+    assert "x0.at" in target.read_text(encoding="utf-8")
 
 
 def test_dump_writes_utf8_regardless_of_locale(tmp_path):
