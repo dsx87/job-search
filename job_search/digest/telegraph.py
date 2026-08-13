@@ -5,13 +5,18 @@ allows only ``a aside b blockquote br code em figcaption figure h3 h4 hr i
 iframe img li ol p pre s strong u ul video`` — no div, table, style, details,
 h1 or h2 — and the dashboard is built almost entirely from the forbidden set.
 
-Two rules this module lives by:
+Three rules this module lives by:
 
 * **Text is plain text.** Telegraph escapes on render, so nothing here may go
   through html.escape / render._esc: that would publish a literal ``&amp;``.
 * **No full job descriptions.** They were free in the ZIP behind ``<details>``,
   which Telegraph forbids; inline they are walls of text and the only realistic
   threat to the 64 KB content cap. The posting link carries them instead.
+* **No secrets.** Anyone with the page URL can read everything rendered here.
+  Telegraph cannot host files, so CVs live on a file host and this page carries
+  links to them — encrypted, with the password sent separately over Telegram.
+  The password is deliberately absent from DigestContext so it cannot reach
+  this renderer even by accident.
 """
 import json
 import re
@@ -31,6 +36,11 @@ CONTENT_LIMIT_BYTES = 60 * 1024
 # How many review / deferred entries survive successive trims. The last entry is
 # 0: fits are never trimmed, because they are the payload.
 _TRIM_LADDER = (10, 3, 0)
+
+# Roughly how long a CV-sized upload survives on the file host. Duplicated from
+# notify.x0.LINK_TTL_DAYS rather than imported, so this module stays free of any
+# network-facing import (a test pins the two together).
+CV_LINK_TTL_DAYS = 100
 
 
 def content_size(nodes) -> int:
@@ -122,7 +132,7 @@ def _reason(evaluation) -> str:
     return "{} ⚠ {}".format(reason, note) if note else reason
 
 
-def _job_node(entry, *, cv_note=False):
+def _job_node(entry, *, cv_link=False):
     """One job as a single ``p``, lines separated by ``br``."""
     job = coerce_job(entry.job)
     children = [_node("b", [_link(job.url, [job.title or "Untitled role"])])]
@@ -141,8 +151,13 @@ def _job_node(entry, *, cv_note=False):
     facts = _fact_labels(getattr(entry, "evaluation", None), job)
     if facts:
         line(_node("i", [facts]))
-    if cv_note:
-        line(_node("i", ["CV sent as a document below"]))
+    if cv_link:
+        # Deliberately not _link(): for a non-http URL that returns the bare
+        # child, which would publish a dead literal "Download CV" on a fit whose
+        # upload never happened. No URL, no line at all.
+        url = _text(getattr(entry, "cv_url", "")).strip()
+        if _is_http(url):
+            line(_node("a", ["⬇ Download CV"], href=url))
     return _node("p", children)
 
 
@@ -158,7 +173,7 @@ def _deferred_node(deferred):
 
 
 # ── list sections ─────────────────────────────────────────────────────────────
-def _list_nodes(ctx, list_name, heading, entries, warnings, *, cv_note, total=None):
+def _list_nodes(ctx, list_name, heading, entries, warnings, *, cv_link, total=None):
     """Cards for one list, headed by its true count even when trimmed empty.
 
     ``total`` is what the heading reports; it defaults to ``len(entries)`` but
@@ -178,14 +193,14 @@ def _list_nodes(ctx, list_name, heading, entries, warnings, *, cv_note, total=No
     groups, group_warnings = group_entries(entries, ctx.sections, list_name)
     warnings.extend(group_warnings)
     if not groups:
-        nodes.extend(_job_node(entry, cv_note=cv_note) for entry in entries)
+        nodes.extend(_job_node(entry, cv_link=cv_link) for entry in entries)
         return nodes
     for section, bucket in groups:
         label = " ".join(
             part for part in (_text(section.icon).strip(), _text(section.name)) if part
         )
         nodes.append(_node("h4", ["{} ({})".format(label, len(bucket))]))
-        nodes.extend(_job_node(entry, cv_note=cv_note) for entry in bucket)
+        nodes.extend(_job_node(entry, cv_link=cv_link) for entry in bucket)
     return nodes
 
 
@@ -231,6 +246,28 @@ def _issues_nodes(stats):
     return [_node("blockquote", ["⚠️ " + " · ".join(active)])]
 
 
+def _cv_download_nodes(ctx):
+    """The "download all CVs" block, plus what a reader needs to use it.
+
+    Only rendered when there is an archive to link: a run whose uploads failed
+    never reaches Telegraph at all (the caller falls back to the ZIP), but a
+    review-only run legitimately has nothing to host.
+    """
+    url = _text(getattr(ctx, "cv_zip_url", "")).strip()
+    if not _is_http(url):
+        return []
+    notes = []
+    if getattr(ctx, "cv_encrypted", False):
+        notes.append("Password-protected; the password is in the Telegram message.")
+    notes.append(
+        "Links expire about {} days after the run.".format(CV_LINK_TTL_DAYS)
+    )
+    return [
+        _node("p", [_node("a", ["⬇ Download all CVs (zip)"], href=url)]),
+        _node("p", [_node("i", [" ".join(notes)])]),
+    ]
+
+
 def _counts_line(ctx) -> str:
     return " · ".join([
         "{} new".format(int(getattr(ctx.stats, "new_jobs", 0) or 0)),
@@ -255,9 +292,9 @@ def _render(ctx, index_url, keep_review, keep_deferred):
     # Body first: grouping is what discovers a predicate that raises, and that
     # warning belongs above the body it happened in.
     warnings = []
-    body = _list_nodes(ctx, "fits", "✅ Fits", ctx.fits, warnings, cv_note=True)
+    body = _list_nodes(ctx, "fits", "✅ Fits", ctx.fits, warnings, cv_link=True)
     body.extend(_list_nodes(
-        ctx, "review", "🔍 Needs review", review, warnings, cv_note=False, total=len(ctx.review)
+        ctx, "review", "🔍 Needs review", review, warnings, cv_link=False, total=len(ctx.review)
     ))
     if dropped_review:
         body.append(_node("p", [_node("i", ["… and {} more to review".format(dropped_review)])]))
@@ -284,6 +321,7 @@ def _render(ctx, index_url, keep_review, keep_deferred):
         _node("h3", ["Job Search Digest — " + date_str]),
         _node("p", [_counts_line(ctx)]),
     ]
+    nodes.extend(_cv_download_nodes(ctx))
     nodes.extend(_issues_nodes(ctx.stats))
     nodes.extend(_warning_nodes(ctx, warnings))
     nodes.extend(body)

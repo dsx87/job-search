@@ -68,8 +68,11 @@ def test_http_url_becomes_a_link_and_other_urls_do_not():
     hrefs = [n["attrs"]["href"] for n in _walk(linked) if n["tag"] == "a"]
     assert "https://jobs.example.com/1" in hrefs
 
+    # No CV upload either, so the only link this page could carry is the
+    # posting one — and a mailto: is not linkable.
     unlinked = tg.render_digest_nodes(
-        sample_context(fits=[sample_fit(url="mailto:jobs@example.com")], review=[], deferred=[])
+        sample_context(fits=[sample_fit(url="mailto:jobs@example.com", cv_url="")],
+                       review=[], deferred=[], cv_zip_url="")
     )
     assert [n for n in _walk(unlinked) if n["tag"] == "a"] == []
     assert "Senior iOS Engineer" in _all_text(unlinked)  # the card survives, just unlinked
@@ -108,9 +111,14 @@ def test_deferred_entries_are_a_list():
 def test_source_and_sections_warnings_appear_near_the_top():
     ctx = sample_context(source_warning="linkedin timed out", sections_error="bad predicate")
     nodes = tg.render_digest_nodes(ctx)
-    head = _all_text(nodes[:4])
+    # The CV download block sits between the counts line and the warnings, so
+    # "near the top" is now six nodes rather than four; both must still land
+    # above the first job card.
+    head = _all_text(nodes[:6])
     assert "linkedin timed out" in head
     assert "bad predicate" in head
+    body_starts = next(i for i, n in enumerate(nodes) if n["tag"] == "h3" and i > 0)
+    assert body_starts >= 5
 
 
 def test_issues_strip_matches_the_html_dashboard_wording():
@@ -158,6 +166,137 @@ def test_index_url_becomes_a_back_link_when_given():
 
     plain = tg.render_digest_nodes(sample_context())
     assert "All digests" not in _all_text(plain)
+
+
+# ── hosted CV links ───────────────────────────────────────────────────────────
+
+def _hrefs(nodes):
+    return [
+        node.get("attrs", {}).get("href")
+        for node in _walk(nodes)
+        if node.get("tag") == "a"
+    ]
+
+
+def test_each_fit_links_to_its_hosted_cv():
+    entry = sample_fit(cv_url="https://x0.at/igor_pivnyk_cv_acme_AAA.pdf")
+    nodes = tg.render_digest_nodes(sample_context(fits=[entry]))
+
+    assert "Download CV" in _all_text(nodes)
+    assert "https://x0.at/igor_pivnyk_cv_acme_AAA.pdf" in _hrefs(nodes)
+
+
+def test_a_fit_without_a_cv_url_renders_no_download_text_at_all():
+    """The _link trap: for a non-http URL it falls back to the bare child, so
+    routing an empty cv_url through it would publish a dead literal
+    "Download CV" the reader can click nothing on."""
+    nodes = tg.render_digest_nodes(sample_context(fits=[sample_fit(cv_url="")]))
+
+    assert "Download CV" not in _all_text(nodes)
+
+
+def test_a_non_http_cv_url_is_not_linked():
+    nodes = tg.render_digest_nodes(
+        sample_context(fits=[sample_fit(cv_url="javascript:alert(1)")])
+    )
+
+    assert "Download CV" not in _all_text(nodes)
+    assert "javascript:alert(1)" not in _hrefs(nodes)
+
+
+def test_review_entries_never_get_a_cv_link():
+    nodes = tg.render_digest_nodes(sample_context(fits=[]))
+
+    assert "Download CV" not in _all_text(nodes)
+
+
+def test_the_page_leads_with_the_download_all_zip_link():
+    ctx = sample_context(cv_zip_url="https://x0.at/job-cvs-2026-08-01_ZZZ.zip")
+    nodes = tg.render_digest_nodes(ctx)
+
+    text = _all_text(nodes)
+    assert "Download all CVs" in text
+    assert "https://x0.at/job-cvs-2026-08-01_ZZZ.zip" in _hrefs(nodes)
+    # Above the fits, right under the counts line, so it is the first thing a
+    # reader reaches for.
+    assert text.index("Download all CVs") < text.index("Fits")
+
+
+def test_no_zip_url_means_no_download_block():
+    nodes = tg.render_digest_nodes(sample_context(cv_zip_url=""))
+
+    text = _all_text(nodes)
+    assert "Download all CVs" not in text
+    assert "Links expire" not in text
+
+
+def test_the_password_note_appears_only_when_the_cvs_are_encrypted():
+    encrypted = tg.render_digest_nodes(
+        sample_context(cv_zip_url="https://x0.at/z.zip", cv_encrypted=True)
+    )
+    assert "password is in the Telegram message" in _all_text(encrypted)
+
+    plain = tg.render_digest_nodes(
+        sample_context(cv_zip_url="https://x0.at/z.zip", cv_encrypted=False)
+    )
+    assert "password" not in _all_text(plain).lower()
+
+
+def test_the_expiry_is_stated_on_the_page():
+    nodes = tg.render_digest_nodes(sample_context(cv_zip_url="https://x0.at/z.zip"))
+
+    text = _all_text(nodes)
+    assert "expire" in text
+    assert str(tg.CV_LINK_TTL_DAYS) in text
+
+
+def test_the_link_ttl_matches_the_upload_clients():
+    # Duplicated rather than imported so this module stays free of network
+    # imports; the two must not drift.
+    from job_search.notify.x0 import LINK_TTL_DAYS
+
+    assert tg.CV_LINK_TTL_DAYS == LINK_TTL_DAYS
+
+
+def test_the_rendered_page_never_carries_the_password():
+    """The one test guarding the whole security model.
+
+    The links are public to anyone with the page URL, so the password must
+    travel only in the private Telegram message. It is deliberately not on
+    DigestContext — if it ever gets added there, this fails.
+    """
+    sentinel = "S3CRET-sentinel-password"
+    ctx = sample_context(cv_zip_url="https://x0.at/z.zip", cv_encrypted=True)
+    ctx.fits = [sample_fit(cv_url="https://x0.at/cv_AAA.pdf")]
+    # Anything the renderer might plausibly reach for.
+    ctx.usage_summary = ctx.usage_summary + ""
+    for attribute in ("password", "cv_password"):
+        assert not hasattr(ctx, attribute), (
+            "the password must not be reachable from the renderer"
+        )
+
+    rendered = json.dumps(tg.render_digest_nodes(ctx), ensure_ascii=False)
+    assert sentinel not in rendered
+
+
+def test_twenty_fits_with_links_stay_well_under_the_content_budget():
+    fits = [
+        sample_fit(
+            title="Role {}".format(index), company="Company {}".format(index),
+            url="https://jobs.example.com/{}".format(index),
+            cv_url="https://x0.at/igor_pivnyk_cv_company_{}_{}.pdf".format(index, "y" * 24),
+        )
+        for index in range(20)
+    ]
+    ctx = sample_context(
+        fits=fits, grouped=False, cv_zip_url="https://x0.at/job-cvs-2026-08-01_ZZZ.zip",
+        cv_encrypted=True,
+    )
+
+    nodes = tg.render_digest_nodes(ctx)
+
+    assert tg.content_size(nodes) < tg.CONTENT_LIMIT_BYTES
+    assert len([href for href in _hrefs(nodes) if "x0.at" in str(href)]) == 21
 
 
 def test_usage_summary_is_on_the_page():

@@ -38,6 +38,7 @@ def sample_fit(
     reason="Remote-EU iOS role matching Swift and SwiftUI.",
     timezone_note=None,
     cv_filename="igor_pivnyk_cv_acme.pdf",
+    cv_url="https://x0.at/igor_pivnyk_cv_acme_AbCdEfGhIjKlMnOpQrStUvWx.pdf",
     description="Long job description sentence. " * 40,
 ):
     job = Job(
@@ -51,7 +52,7 @@ def sample_fit(
         ev = {"fit": True, "reason": reason, "timezone_note": timezone_note, "facts": facts}
     return FitEntry(
         job=job, evaluation=ev, summary=summary,
-        pdf_bytes=b"%PDF-1.4 mock cv", cv_filename=cv_filename,
+        pdf_bytes=b"%PDF-1.4 mock cv", cv_filename=cv_filename, cv_url=cv_url,
     )
 
 
@@ -98,15 +99,23 @@ def sample_context(date=None, *, grouped=True, **over):
     Deliberately includes a fit with no evaluation, a fit with no URL, a fit
     with a non-http URL, and a title carrying ``&``, angle brackets and an
     emoji — the four shapes that break renderers.
+
+    The hosted-CV links are real-shaped (24-character ids, the filename kept by
+    ``keep_name``) so ``--dump`` shows offline exactly what a published page
+    carries; ``--upload`` replaces them with links to genuine uploads.
     """
     fits = [
         sample_fit(),
         sample_fit(title="R&D <Lead> \U0001f680", company="Delta & Sons",
                    url="", is_remote=False, region=Region.UNKNOWN,
-                   cv_filename="igor_pivnyk_cv_delta_sons.pdf"),
+                   cv_filename="igor_pivnyk_cv_delta_sons.pdf",
+                   cv_url="https://x0.at/igor_pivnyk_cv_delta_sons_"
+                          "BbCcDdEeFfGgHhIiJjKkLl.pdf"),
         sample_fit(title="Very " + "long " * 30 + "title", company="Epsilon",
                    url="mailto:jobs@example.com", evaluation=False,
-                   cv_filename="igor_pivnyk_cv_epsilon.pdf"),
+                   cv_filename="igor_pivnyk_cv_epsilon.pdf",
+                   cv_url="https://x0.at/igor_pivnyk_cv_epsilon_"
+                          "MmNnOoPpQqRrSsTtUuVvWw.pdf"),
     ]
     values = dict(
         date=date or _DEFAULT_DATE,
@@ -120,6 +129,8 @@ def sample_context(date=None, *, grouped=True, **over):
                                                      url="https://jobs.example.com/5")],
         sections=sample_sections() if grouped else (),
         sections_error="",
+        cv_zip_url="https://x0.at/job-cvs-2026-08-01_ZzYyXxWwVvUuTtSsRrQqPp.zip",
+        cv_encrypted=True,
     )
     values.update(over)
     return DigestContext(**values)
