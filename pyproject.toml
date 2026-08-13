@@ -6,4 +6,5 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "requires_pdflatex: integration check that needs a real pdflatex toolchain (skipped when absent)",
+    "requires_qpdf: integration check that needs a real qpdf binary (skipped when absent)",
 ]
