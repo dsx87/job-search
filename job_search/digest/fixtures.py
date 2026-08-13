@@ -15,6 +15,35 @@ from .sections import Section, all_of, in_region, is_remote
 _DEFAULT_DATE = datetime.date(2026, 8, 1)
 
 
+def one_page_pdf() -> bytes:
+    """A structurally valid one-page PDF, xref offsets and all.
+
+    A stand-in string like ``b"%PDF mock cv"`` would be enough for the renderer
+    tests, but ``scripts/telegraph_preview.py --upload`` runs these bytes
+    through the real qpdf, which exits non-zero on a damaged file — so the mock
+    CV has to be a real PDF or the preview cannot exercise encryption at all.
+    """
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1)
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1, xref_at,
+    )
+    return bytes(out)
+
+
 def sample_stats(**over):
     base = dict(
         new_jobs=12, evaluated=8, non_fit=3, fits=3, uncertain=2, deferred=2,
@@ -52,7 +81,7 @@ def sample_fit(
         ev = {"fit": True, "reason": reason, "timezone_note": timezone_note, "facts": facts}
     return FitEntry(
         job=job, evaluation=ev, summary=summary,
-        pdf_bytes=b"%PDF-1.4 mock cv", cv_filename=cv_filename, cv_url=cv_url,
+        pdf_bytes=one_page_pdf(), cv_filename=cv_filename, cv_url=cv_url,
     )
 
 

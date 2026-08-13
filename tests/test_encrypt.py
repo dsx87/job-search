@@ -9,6 +9,7 @@ import subprocess
 
 import pytest
 
+from job_search.digest.fixtures import one_page_pdf
 from job_search.latex import encrypt
 
 _HAS_QPDF = shutil.which("qpdf") is not None
@@ -110,35 +111,6 @@ def test_the_password_is_passed_as_an_argument_not_a_shell_string(monkeypatch):
 
 # ── the real thing ────────────────────────────────────────────────────────────
 
-def _one_page_pdf() -> bytes:
-    """A structurally valid one-page PDF, xref offsets and all.
-
-    Hand-written rather than shipped as a fixture so the test needs no build
-    artifact — but it must be *valid*: qpdf exits non-zero on a damaged file
-    (having repaired it), which encrypt_pdf correctly treats as a failure, so a
-    sloppy fixture would fail this test for the wrong reason.
-    """
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>",
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for number, body in enumerate(objects, 1):
-        offsets.append(len(out))
-        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
-    xref_at = len(out)
-    out += b"xref\n0 %d\n" % (len(objects) + 1)
-    out += b"0000000000 65535 f \n"
-    for offset in offsets:
-        out += b"%010d 00000 n \n" % offset
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
-        len(objects) + 1, xref_at,
-    )
-    return bytes(out)
-
-
 @pytest.mark.requires_qpdf
 @pytest.mark.skipif(not _HAS_QPDF, reason="qpdf is not installed")
 def test_a_real_pdf_encrypts_and_only_opens_with_the_password(tmp_path):
@@ -146,8 +118,12 @@ def test_a_real_pdf_encrypts_and_only_opens_with_the_password(tmp_path):
 
     Everything above stubs subprocess, so a wrong flag would sail past them and
     only show up in production as a permanent ZIP fallback.
+
+    The PDF comes from the digest fixtures, which is also what
+    ``telegraph_preview.py --upload`` encrypts for real — one source of truth
+    for "a mock CV that qpdf accepts".
     """
-    source = _one_page_pdf()
+    source = one_page_pdf()
     password = encrypt.new_password()
 
     encrypted = encrypt.encrypt_pdf(source, password)
