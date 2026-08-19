@@ -17,8 +17,8 @@ class FitEntry:
     summary: str
     pdf_bytes: bytes
     cv_filename: str
-    # Where the (encrypted) CV was uploaded, when the digest is published as a
-    # telegra.ph page. Empty on the ZIP path, where the CV rides in the archive.
+    # Retained for compatibility with older fixture/custom-context callers.
+    # Production Telegraph pages intentionally publish only the archive URL.
     cv_url: str = ""
 
 
@@ -29,6 +29,8 @@ class ReviewEntry:
     job: object
     evaluation: dict
     summary: str = ""
+    pdf_bytes: bytes = b""
+    cv_filename: str = ""
 
 
 @dataclass

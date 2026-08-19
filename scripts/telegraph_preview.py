@@ -10,30 +10,28 @@ test can show you.
     python scripts/telegraph_preview.py --days 3
     python scripts/telegraph_preview.py --days 1 --upload
 
-``--upload`` additionally encrypts the mock CVs and puts them on the real file
-host, so the page's "Download CV" links are live. That is the only way to check
-end to end — before trusting a scheduled run — that the downloaded file keeps
-its clean name, opens with the password and refuses without it. Without the
-flag the page carries the fixtures' real-shaped but fake links and nothing
-leaves the machine.
+``--upload`` additionally puts one AES-256 protected archive of mock CVs on the
+real file host. That is the only way to check end to end — before trusting a
+scheduled run — that the archive refuses the wrong password and extracts
+ordinary PDFs with the right one. Without the flag the page carries the
+fixture's real-shaped but fake archive link and nothing leaves the machine.
 
 The preview account is deliberately separate from the production one: mock
 digests must never land in the real index.
 """
 import argparse
 import datetime
-import io
 import json
 import os
 import sys
-import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from job_search.digest.fixtures import sample_context  # noqa: E402
+from job_search.digest import build_encrypted_cv_zip  # noqa: E402
 from job_search.digest.publish import publish_digest  # noqa: E402
 from job_search.digest.telegraph import render_digest_nodes, render_index_nodes  # noqa: E402
-from job_search.latex.encrypt import encrypt_pdf, new_password  # noqa: E402
+from job_search.latex.encrypt import new_password  # noqa: E402
 from job_search.notify.telegraph import TelegraphClient  # noqa: E402
 from job_search.notify.x0 import X0Client  # noqa: E402
 
@@ -49,32 +47,24 @@ def _parse_args(argv):
     parser.add_argument("--force", action="store_true",
                         help="suppress the refusal below and proceed with a preview account")
     parser.add_argument("--upload", action="store_true",
-                        help="encrypt the mock CVs and put them on the real file host, so "
-                             "the page's download links are live (they expire in ~100 days)")
+                        help="encrypt one mock CV archive and put it on the real file host, "
+                             "so the page's download link is live (expires in ~100 days)")
     return parser.parse_args(argv)
 
 
 def _upload_cvs(ctx):
-    """Host the fixture CVs for real and rewrite the context's links.
+    """Host one protected fixture archive and rewrite its context URL.
 
     Deliberately mirrors pipeline/run.py::_publish_cvs rather than importing it:
     that one is wired into the run's state machine and its failure handling, and
-    what a preview needs to exercise is the encrypt → upload → link chain.
+    what a preview needs to exercise is the archive → upload → link chain.
     """
     password = new_password()
     host = X0Client()
-    encrypted = []
-    for entry in ctx.fits:
-        payload = encrypt_pdf(entry.pdf_bytes, password)
-        entry.cv_url = host.upload(entry.cv_filename, payload)
-        encrypted.append((entry.cv_filename, payload))
-        print("  {}  {}".format(entry.cv_filename, entry.cv_url))
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, payload in encrypted:
-            archive.writestr(name, payload)
+    entries = list(ctx.fits) + list(ctx.review)
+    archive = build_encrypted_cv_zip(entries, password)
     iso = ctx.date.isoformat() if hasattr(ctx.date, "isoformat") else str(ctx.date)
-    ctx.cv_zip_url = host.upload("job-cvs-{}.zip".format(iso), buffer.getvalue())
+    ctx.cv_zip_url = host.upload("job-cvs-{}.zip".format(iso), archive)
     ctx.cv_encrypted = True
     print("  all CVs           {}".format(ctx.cv_zip_url))
     # Printed, not published: in a real run this reaches the user over Telegram

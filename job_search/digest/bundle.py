@@ -52,13 +52,32 @@ def digest_filename(date) -> str:
     return "job-digest-{}.zip".format(iso)
 
 
+def build_encrypted_cv_zip(entries, password: str) -> bytes:
+    """Return one AES-256 ZIP whose members are ordinary tailored PDFs."""
+    import pyzipper
+
+    buffer = io.BytesIO()
+    with pyzipper.AESZipFile(
+        buffer,
+        "w",
+        compression=pyzipper.ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as archive:
+        archive.setpassword(password.encode("utf-8"))
+        archive.setencryption(pyzipper.WZ_AES, nbits=256)
+        for entry in entries:
+            if entry.pdf_bytes:
+                archive.writestr(entry.cv_filename, entry.pdf_bytes)
+    return buffer.getvalue()
+
+
 def build_digest_zip(ctx) -> bytes:
-    """Render the dashboard and bundle it with every fit's tailored CV."""
+    """Render the dashboard and bundle every generated tailored CV."""
     html = render_digest_html(ctx)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("index.html", html)
-        for entry in ctx.fits:
+        for entry in list(ctx.fits) + list(ctx.review):
             if entry.pdf_bytes:
                 archive.writestr("cvs/{}".format(entry.cv_filename), entry.pdf_bytes)
     return buffer.getvalue()

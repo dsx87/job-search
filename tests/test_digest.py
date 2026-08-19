@@ -4,12 +4,16 @@ import io
 import zipfile
 from types import SimpleNamespace
 
+import pyzipper
+import pytest
+
 from job_search.digest import (
     DeferredEntry,
     DigestContext,
     FitEntry,
     ReviewEntry,
     build_digest_zip,
+    build_encrypted_cv_zip,
     cv_filename_for,
     digest_filename,
     render_digest_html,
@@ -96,6 +100,19 @@ def test_html_includes_review_and_deferred_sections():
     assert 'href="https://x/3"' in html
 
 
+def test_review_with_a_cv_renders_a_local_download_link():
+    entry = ReviewEntry(
+        job=Job(title="Maybe iOS", company="Beta", url="https://x/2"),
+        evaluation={"reason": "unclear", "timezone_note": None},
+        pdf_bytes=b"REVIEW-PDF",
+        cv_filename="igor_pivnyk_cv_beta.pdf",
+    )
+
+    html = render_digest_html(_context(fits=[], review=[entry]))
+
+    assert 'href="cvs/igor_pivnyk_cv_beta.pdf"' in html
+
+
 def test_header_counts_reflect_shown_entries_not_stats():
     # stats can over-count (a fit whose CV failed to compile is dropped from the
     # bundle); the dashboard must report what it actually shows.
@@ -154,6 +171,19 @@ def test_review_renders_as_a_card():
 
 # ── build_digest_zip ──────────────────────────────────────────────────────────
 
+def test_encrypted_cv_zip_requires_the_password_and_contains_plain_pdfs():
+    entry = _fit(pdf=b"%PDF-1.4 plaintext", cv="igor_pivnyk_cv_acme.pdf")
+
+    data = build_encrypted_cv_zip([entry], "correct horse battery staple")
+
+    with pyzipper.AESZipFile(io.BytesIO(data)) as archive:
+        with pytest.raises(RuntimeError, match="Bad password"):
+            archive.read(entry.cv_filename, pwd=b"wrong password")
+        assert archive.read(
+            entry.cv_filename, pwd=b"correct horse battery staple"
+        ) == b"%PDF-1.4 plaintext"
+
+
 def test_zip_contains_index_and_one_pdf_per_fit():
     a = _fit(company="Acme", pdf=b"PDF-A", cv="igor_pivnyk_cv_acme_a1.pdf")
     b = _fit(company="Beta", pdf=b"PDF-B", cv="igor_pivnyk_cv_beta_b2.pdf")
@@ -166,6 +196,20 @@ def test_zip_contains_index_and_one_pdf_per_fit():
     assert f"cvs/{b.cv_filename}" in names
     assert zf.read(f"cvs/{a.cv_filename}") == b"PDF-A"
     assert zf.read(f"cvs/{b.cv_filename}") == b"PDF-B"
+
+
+def test_zip_contains_a_tailored_pdf_for_a_review_job():
+    entry = ReviewEntry(
+        job=Job(title="Maybe iOS", company="Beta", url="https://x/2"),
+        evaluation={"reason": "unclear", "timezone_note": None},
+        pdf_bytes=b"REVIEW-PDF",
+        cv_filename="igor_pivnyk_cv_beta.pdf",
+    )
+
+    data = build_digest_zip(_context(fits=[], review=[entry]))
+
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert archive.read("cvs/igor_pivnyk_cv_beta.pdf") == b"REVIEW-PDF"
 
 
 def test_zip_html_links_resolve_to_bundled_pdfs():

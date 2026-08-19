@@ -293,8 +293,13 @@ def _fit_card(entry) -> str:
 
 def _review_card(entry) -> str:
     job = coerce_job(entry.job)
+    cv_filename = getattr(entry, "cv_filename", "")
+    cv = (
+        '<a class="btn cv" href="cvs/{}">↓ Download CV</a>'.format(_attr(cv_filename))
+        if cv_filename else ""
+    )
     posting = _posting_button(job)
-    actions = '<div class="actions">{}</div>'.format(posting) if posting else ""
+    actions = '<div class="actions">{}{}</div>'.format(cv, posting) if cv or posting else ""
     return (
         '<article class="job review">{head}{summary}'
         '<div class="meta single">{why}</div>{desc}{actions}</article>'

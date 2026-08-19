@@ -7,9 +7,7 @@ save points) is preserved exactly from the original pipeline.
 import concurrent.futures
 import datetime
 import html
-import io
 import sys
-import zipfile
 from dataclasses import dataclass, field
 
 from ..config import load_base_tex, load_criteria, load_tailoring_instructions
@@ -19,6 +17,7 @@ from ..digest import (
     FitEntry,
     ReviewEntry,
     build_digest_zip,
+    build_encrypted_cv_zip,
     cv_filename_for,
     digest_filename,
     load_sections,
@@ -26,7 +25,7 @@ from ..digest import (
     retract_digest,
 )
 from ..identity import job_identity_keys, normalize_url
-from ..latex.encrypt import EncryptionUnavailable, encrypt_pdf, new_password
+from ..latex.encrypt import new_password
 from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
@@ -318,68 +317,35 @@ def _cv_archive_filename(date) -> str:
     return "job-cvs-{}.zip".format(iso)
 
 
-def _publish_cvs(fit_entries, date):
-    """Encrypt every tailored CV, host it, and host a combined archive too.
+def _publish_cvs(entries, date):
+    """Encrypt and host one archive containing the tailored CVs.
 
-    Returns ``(ok, password, zip_url)`` and sets ``cv_url`` on each entry it
-    uploaded. The page needs those URLs, so this runs *before* publishing —
-    which also means a failure here leaves no page to retract.
+    Returns ``(ok, password, zip_url)``. The page needs that URL, so this runs
+    *before* publishing — which also means a failure leaves no page to retract.
 
     Nothing to upload is success, not failure: a review-only or deferred-only
     run has no CVs and must still get its page.
 
-    Any exception — a failed upload, and specifically EncryptionUnavailable when
-    qpdf is missing or broken — takes the whole run back to the Telegram ZIP.
-    That is the designed fallback, and it is the only reason an unencrypted CV
-    can never reach a public host.
+    Any encryption or upload exception takes the whole run back to the Telegram
+    ZIP. The host is called only after the AES archive is complete, so raw PDF
+    bytes can never reach it.
     """
-    entries = [entry for entry in fit_entries if entry.pdf_bytes]
+    entries = [entry for entry in entries if entry.pdf_bytes]
     if not entries:
         return True, "", ""
 
     password = new_password()
     host = X0Client()
     try:
-        encrypted = []
-        for entry in entries:
-            payload = encrypt_pdf(entry.pdf_bytes, password)
-            entry.cv_url = host.upload(entry.cv_filename, payload)
-            encrypted.append((entry.cv_filename, payload))
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            for name, payload in encrypted:
-                # Already-encrypted PDFs in a plain archive: stdlib zipfile
-                # cannot encrypt, and the protection belongs in the files
-                # themselves anyway, since they are also linked individually.
-                archive.writestr(name, payload)
-        zip_url = host.upload(_cv_archive_filename(date), buffer.getvalue())
-    except EncryptionUnavailable as exc:
-        # Loud, because absence of qpdf is silent degradation otherwise: the run
-        # keeps working, it just never uses the feature again.
-        print(
-            "  Cannot encrypt the CVs ({}) — falling back to the Telegram ZIP. "
-            "Install qpdf on this runner to publish a digest page.".format(exc),
-            file=sys.stderr,
-        )
-        _reset_cv_urls(fit_entries)
-        return False, "", ""
+        archive = build_encrypted_cv_zip(entries, password)
+        zip_url = host.upload(_cv_archive_filename(date), archive)
     except Exception as exc:
         print(
-            "  CV upload failed — falling back to the Telegram ZIP: {}".format(exc),
+            "  CV archive encryption/upload failed — falling back to the Telegram ZIP: {}".format(exc),
             file=sys.stderr,
         )
-        # Whatever did upload stays on the host until it expires; it is
-        # unguessable and nothing links to it. There is no deletion API
-        # (see notify/x0.py), so the URLs are simply dropped.
-        _reset_cv_urls(fit_entries)
         return False, "", ""
     return True, password, zip_url
-
-
-def _reset_cv_urls(fit_entries) -> None:
-    """Drop every hosted URL, so a half-finished upload run cannot be rendered."""
-    for entry in fit_entries:
-        entry.cv_url = ""
 
 
 def _commit_deferrals(seen, deferrals, today) -> None:
@@ -394,16 +360,16 @@ def _commit_deferrals(seen, deferrals, today) -> None:
 
 
 def _deliver_digest(
-    llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
+    llm, cfg, seen, stats, today, prepared, prepared_reviews, uncertain, newly_deferred,
     source_warning, telegram, signature_for, deferrals=(),
 ):
     """Deliver a whole run in ONE Telegram message, by one of two routes.
 
-    With ``TELEGRAPH_ACCESS_TOKEN`` set: encrypt and host every CV, publish a
-    telegra.ph page linking to them, and send one message carrying the page link
-    and the CV password. Without it — or if encryption, an upload or the publish
-    fails — send the ZIP (HTML dashboard + tailored CVs) as one document, which
-    is the delivery this pipeline has always done.
+    With ``TELEGRAPH_ACCESS_TOKEN`` set: host one encrypted archive of ordinary
+    CV PDFs, publish a telegra.ph page linking to it, and send one message with
+    the page URL and archive password. Without it — or if encryption, upload or
+    publishing fails — send the ZIP (HTML dashboard + tailored CVs) as one
+    document, which is the delivery this pipeline has always done.
 
     Either way it is a single send, and the two routes are mutually exclusive by
     construction: the uploads happen before the page exists, so a failure leaves
@@ -439,10 +405,22 @@ def _deliver_digest(
                 cv_filename=name,
             )
         )
-    review_entries = [
-        ReviewEntry(job=job, evaluation=evaluation, summary=summary)
-        for (job, evaluation), summary in zip(uncertain, review_summaries)
-    ]
+    review_payloads = {id(job): payload for job, payload, _evaluation in prepared_reviews}
+    review_entries = []
+    for (job, evaluation), summary in zip(uncertain, review_summaries):
+        payload = review_payloads.get(id(job))
+        name = cv_filename_for(job, taken) if payload else ""
+        if name:
+            taken.add(name)
+        review_entries.append(
+            ReviewEntry(
+                job=job,
+                evaluation=evaluation,
+                summary=summary,
+                pdf_bytes=payload.get("pdf_bytes") if payload else b"",
+                cv_filename=name,
+            )
+        )
     deferred_entries = [DeferredEntry(job=job) for job in newly_deferred]
 
     if not (fit_entries or review_entries or deferred_entries):
@@ -463,12 +441,14 @@ def _deliver_digest(
         return
 
     # Host the CVs before anything is published: the page carries links, so it
-    # cannot be built until the URLs exist — and a failure here means no page
+    # cannot be built until the archive URL exists — and a failure here means no page
     # was ever created, so there is nothing to retract. Gated on the token
     # because without one the run sends the ZIP and the file host is irrelevant.
     uploads_ok, cv_password, cv_zip_url = True, "", ""
     if cfg.telegraph_access_token:
-        uploads_ok, cv_password, cv_zip_url = _publish_cvs(fit_entries, today)
+        uploads_ok, cv_password, cv_zip_url = _publish_cvs(
+            fit_entries + review_entries, today
+        )
 
     # Loaded here rather than in run_daily so the legacy per-job delivery path
     # never pays for it, and so a config problem is announced only on a run that
@@ -499,8 +479,8 @@ def _deliver_digest(
         cv_encrypted=bool(cv_password),
     )
     # Telegraph first: a page plus a link message is the whole digest. Any
-    # failure here (no token, API down, content rejected, a CV that could not be
-    # encrypted or hosted) falls through to the ZIP, which is the same delivery
+    # failure here (no token, API down, content rejected, or an archive that
+    # could not be encrypted/hosted) falls through to the ZIP, which is the same delivery
     # this pipeline has always done.
     page_url = ""
     if cfg.telegraph_access_token and uploads_ok:
@@ -562,9 +542,8 @@ def _deliver_digest(
         return
 
     # Every fit is delivered by now, whichever route the digest took: the ZIP
-    # carries the CVs inside it, and a published page carries links to CVs that
-    # were all hosted before the page existed. There is no per-CV failure left
-    # to handle here.
+    # carries the CVs itself, and a published page links the archive that was
+    # hosted before the page existed. There is no per-CV delivery step here.
     for _entry, (job, _payload, retry_state, _ev) in zip(fit_entries, prepared):
         # Only count a notification the user is actually seeing for the first
         # time; a retried fit was announced in an earlier run, and the legacy
@@ -587,12 +566,14 @@ def _deliver_digest(
     # The review and deferral sections rode on this same (now-delivered) ZIP, so
     # it is finally safe to record them — a failed send above returns early and
     # leaves them unrecorded to re-surface next run.
-    for job, evaluation in uncertain:
+    for entry, (job, evaluation) in zip(review_entries, uncertain):
+        if not entry.pdf_bytes:
+            continue
         seen.update(job_identity_keys(job))
         sig = signature_for(job)
         if sig is not None:
             record_evaluation(seen, job, sig, "uncertain", today)
-    if uncertain:
+    if any(entry.pdf_bytes for entry in review_entries):
         save_seen_jobs(seen)
     _commit_deferrals(seen, deferrals, today)
     # Finding 4 ("every delivery-failure branch ends in a Telegram notice") is
@@ -864,17 +845,29 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
         # Persist the non-fits and uncertain jobs captured above in one write.
         save_seen_jobs(seen)
-        print(f"{len(fits)} fit(s) to tailor.", flush=True)
+        review_to_tailor = uncertain if cfg.digest_delivery else []
+        print(
+            "{} fit(s) and {} review job(s) to tailor.".format(
+                len(fits), len(review_to_tailor)
+            ),
+            flush=True,
+        )
 
-        # ── Stage 3: Tailor + compile the fits concurrently ──────────────────
+        # ── Stage 3: Tailor + compile actionable jobs concurrently ───────────
         # Tailoring is LLM-bound and compilation is CPU-bound; a smaller pool
         # keeps parallel pdflatex runs from starving the runner. No Telegram I/O
         # happens here, so order doesn't matter and failures stay soft.
         prepared = []  # list of (job, payload, retry_state, evaluation) ready to send
-        if fits:
-            print(f"Tailoring {len(fits)} CV(s) with {cfg.tailor_workers} workers...", flush=True)
+        prepared_reviews = []  # list of (job, payload, evaluation) ready to bundle
+        if fits or review_to_tailor:
+            print(
+                "Tailoring {} CV(s) with {} workers...".format(
+                    len(fits) + len(review_to_tailor), cfg.tailor_workers
+                ),
+                flush=True,
+            )
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.tailor_workers) as pool:
-                future_to_fit = {}
+                future_to_candidate = {}
                 for job, evaluation, retry_state in fits:
                     if retry_state.notified:
                         future = pool.submit(
@@ -893,13 +886,31 @@ def run_daily(cfg, test: bool = False) -> int:
                             job,
                             evaluation,
                         )
-                    future_to_fit[future] = (job, evaluation, retry_state)
-                for future in concurrent.futures.as_completed(future_to_fit):
-                    job, evaluation, retry_state = future_to_fit[future]
+                    future_to_candidate[future] = ("fit", job, evaluation, retry_state)
+                for job, evaluation in review_to_tailor:
+                    future = pool.submit(
+                        prepare_fit,
+                        llm,
+                        tailoring_instructions,
+                        base_tex,
+                        job,
+                        evaluation,
+                    )
+                    future_to_candidate[future] = ("review", job, evaluation, None)
+                for future in concurrent.futures.as_completed(future_to_candidate):
+                    kind, job, evaluation, retry_state = future_to_candidate[future]
                     try:
                         payload = future.result()
                     except Exception as exc:
                         stats.preparation_failed += 1
+                        if kind == "review":
+                            print(
+                                "  Error preparing review CV for '{}'; it will retry next run: {}".format(
+                                    job.get("title"), exc
+                                ),
+                                file=sys.stderr,
+                            )
+                            continue
                         failure_state = _record_fit_failure(
                             seen,
                             stats,
@@ -927,7 +938,10 @@ def run_daily(cfg, test: bool = False) -> int:
                                 mark_delivery_notified(seen, **job)
                                 save_seen_jobs(seen)
                         continue
-                    prepared.append((job, payload, retry_state, evaluation))
+                    if kind == "review":
+                        prepared_reviews.append((job, payload, evaluation))
+                    else:
+                        prepared.append((job, payload, retry_state, evaluation))
 
         # ── Stage 4: Deliver ─────────────────────────────────────────────────
         if cfg.digest_delivery:
@@ -936,8 +950,9 @@ def run_daily(cfg, test: bool = False) -> int:
             # seen on success, record delivery failure on send error) happens
             # inside _deliver_digest.
             _deliver_digest(
-                llm, cfg, seen, stats, today, prepared, uncertain, newly_deferred,
-                source_warning, telegram, _signature_for, pending_deferrals,
+                llm, cfg, seen, stats, today, prepared, prepared_reviews,
+                uncertain, newly_deferred, source_warning, telegram,
+                _signature_for, pending_deferrals,
             )
         else:
             # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per

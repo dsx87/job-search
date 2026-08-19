@@ -4,6 +4,7 @@ import io
 import zipfile
 from types import SimpleNamespace
 
+import pyzipper
 import pytest
 
 from job_search.models import Job
@@ -976,6 +977,7 @@ def test_digest_success_marks_uncertain_seen(monkeypatch):
         "evaluate_job",
         lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
+    monkeypatch.setattr(run, "prepare_fit", lambda *_a: {"pdf_bytes": b"REVIEW-PDF"})
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
 
     run.run_daily(make_config(digest_delivery=True))
@@ -1352,17 +1354,12 @@ class FakeX0Client:
         return "https://x0.at/{}_{}".format(filename.rsplit(".", 1)[0], "i" * 24)
 
 
-def _install_x0(monkeypatch, client=None, encrypt=None):
-    """The file host and the encryptor, both faked, mirroring _install_telegraph.
-
-    The default encryptor tags the plaintext so a test can tell ciphertext from
-    the raw pdf_bytes — the property the whole feature rests on.
-    """
+def _install_x0(monkeypatch, client=None, archive_builder=None):
+    """Install the file-host fake and a deterministic archive password."""
     client = client or FakeX0Client()
     monkeypatch.setattr(run, "X0Client", lambda: client)
-    monkeypatch.setattr(
-        run, "encrypt_pdf", encrypt or (lambda content, _password: b"ENC:" + content)
-    )
+    if archive_builder is not None:
+        monkeypatch.setattr(run, "build_encrypted_cv_zip", archive_builder)
     monkeypatch.setattr(run, "new_password", lambda: "test-password-1234")
     return client
 
@@ -1375,7 +1372,7 @@ def _telegraph_config():
     return make_config(digest_delivery=True, telegraph_access_token="tok")
 
 
-def test_telegraph_sends_one_message_with_hosted_cv_links(monkeypatch):
+def test_telegraph_sends_one_message_with_one_hosted_cv_archive(monkeypatch):
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
@@ -1385,24 +1382,23 @@ def test_telegraph_sends_one_message_with_hosted_cv_links(monkeypatch):
 
     run.run_daily(_telegraph_config())
 
-    # ONE message, no documents at all: the CVs are on the page now.
+    # ONE message, no documents: the page links one protected archive.
     assert len(telegram.messages) == 1
     assert "https://telegra.ph/Job-Digest-2026-07-21-" in telegram.messages[0]
     assert telegram.documents == []
-    # One upload per fit under its clean name, plus the combined archive.
+    # The host receives only the combined archive, never an individual PDF.
     names = [name for name, _content in host.uploads]
-    assert names == ["igor_pivnyk_cv_acme.pdf", "job-cvs-2026-07-21.zip"]
-    # ...and both URLs made it onto the page.
+    assert names == ["job-cvs-2026-07-21.zip"]
     nodes = _created_nodes(client)
-    assert "https://x0.at/igor_pivnyk_cv_acme_" in nodes
+    assert "https://x0.at/igor_pivnyk_cv_acme_" not in nodes
     assert "https://x0.at/job-cvs-2026-07-21_" in nodes
     # The job is marked seen exactly as the ZIP path marks it.
     assert "https://x/match" in saved[-1]
     assert client.edited
 
 
-def test_only_the_encrypted_bytes_ever_reach_the_host(monkeypatch):
-    """The security property: a public link must never serve a plaintext CV."""
+def test_host_receives_only_an_encrypted_archive_of_plain_pdfs(monkeypatch):
+    """The host gets ciphertext; extraction yields a normal PDF."""
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     _t, _saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
@@ -1412,14 +1408,16 @@ def test_only_the_encrypted_bytes_ever_reach_the_host(monkeypatch):
 
     run.run_daily(_telegraph_config())
 
-    cv_name, cv_content = host.uploads[0]
-    assert cv_content == b"ENC:PLAINTEXTCV"
-    assert b"PLAINTEXTCV" != cv_content and cv_content.startswith(b"ENC:")
-    assert cv_name.endswith(".pdf")
-    # The archive holds the encrypted copy too, not the original.
-    _zip_name, zip_content = host.uploads[1]
-    archive = zipfile.ZipFile(io.BytesIO(zip_content))
-    assert archive.read("igor_pivnyk_cv_acme.pdf") == b"ENC:PLAINTEXTCV"
+    assert len(host.uploads) == 1
+    zip_name, zip_content = host.uploads[0]
+    assert zip_name == "job-cvs-2026-07-21.zip"
+    assert b"PLAINTEXTCV" not in zip_content
+    with pyzipper.AESZipFile(io.BytesIO(zip_content)) as archive:
+        with pytest.raises(RuntimeError, match="Bad password"):
+            archive.read("igor_pivnyk_cv_acme.pdf", pwd=b"wrong")
+        assert archive.read(
+            "igor_pivnyk_cv_acme.pdf", pwd=b"test-password-1234"
+        ) == b"PLAINTEXTCV"
 
 
 def test_the_password_is_in_the_message_and_not_on_the_page(monkeypatch):
@@ -1461,13 +1459,50 @@ def test_cvs_are_uploaded_before_the_page_is_published(monkeypatch):
     run.run_daily(_telegraph_config())
 
     assert order.index("upload") < order.index("publish")
-    assert order.count("upload") == 2
+    assert order.count("upload") == 1
 
 
-def test_encryption_unavailable_falls_back_to_the_zip_and_uploads_nothing(monkeypatch):
-    """qpdf missing is the designed fallback, NOT a delivery failure: the ZIP
-    goes out over Telegram exactly as before and the fits commit."""
-    from job_search.latex.encrypt import EncryptionUnavailable
+def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
+    job = Job(title="Maybe", company="Beta", url="https://x/maybe", description="x" * 200)
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
+    monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
+    monkeypatch.setattr(
+        run,
+        "evaluate_job",
+        lambda *_a: {
+            "fit": False,
+            "verdict": "uncertain",
+            "reason": "unclear",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
+    tailored = []
+
+    def prepare(_llm, _instructions, _base, candidate, evaluation):
+        tailored.append((candidate.title, evaluation["verdict"]))
+        return {"pdf_bytes": b"REVIEW-PLAINTEXT"}
+
+    monkeypatch.setattr(run, "prepare_fit", prepare)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    _install_telegraph(monkeypatch)
+    host = _install_x0(monkeypatch)
+
+    run.run_daily(_telegraph_config())
+
+    assert tailored == [("Maybe", "uncertain")]
+    assert len(host.uploads) == 1
+    with pyzipper.AESZipFile(io.BytesIO(host.uploads[0][1])) as archive:
+        names = archive.namelist()
+        assert names == ["igor_pivnyk_cv_beta.pdf"]
+        assert archive.read(names[0], pwd=b"test-password-1234") == b"REVIEW-PLAINTEXT"
+    assert "https://x/maybe" in saved[-1]
+    assert len(telegram.messages) == 1
+
+
+def test_archive_encryption_unavailable_falls_back_and_uploads_nothing(monkeypatch):
+    """An unavailable AES writer falls back without exposing plaintext."""
 
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, saved = install_daily_fakes(monkeypatch, [job])
@@ -1475,10 +1510,10 @@ def test_encryption_unavailable_falls_back_to_the_zip_and_uploads_nothing(monkey
     _install_digest_fit(monkeypatch)
     client = _install_telegraph(monkeypatch)
 
-    def no_qpdf(_content, _password):
-        raise EncryptionUnavailable("qpdf is not installed")
+    def no_encryption(_entries, _password):
+        raise ImportError("pyzipper is not installed")
 
-    host = _install_x0(monkeypatch, encrypt=no_qpdf)
+    host = _install_x0(monkeypatch, archive_builder=no_encryption)
 
     run.run_daily(_telegraph_config())
 
@@ -1512,15 +1547,14 @@ def test_an_upload_failure_falls_back_to_the_zip_with_no_page(monkeypatch):
 
 
 def test_a_failed_archive_upload_leaves_no_half_linked_page(monkeypatch):
-    # The per-fit uploads succeeded and the archive did not. Publishing anyway
-    # would give a page whose "download all" link is missing while the entries
-    # point at real files — take the ZIP instead, so one run is one story.
+    # If the sole archive upload fails, no page is published and Telegram gets
+    # the self-contained fallback ZIP.
     job = Job(title="Match", company="Acme", url="https://x/match", description="x" * 200)
     telegram, _saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
     client = _install_telegraph(monkeypatch)
-    _install_x0(monkeypatch, FakeX0Client(fail_upload=2))
+    _install_x0(monkeypatch, FakeX0Client(fail_upload=1))
 
     run.run_daily(_telegraph_config())
 
@@ -1578,7 +1612,7 @@ def test_a_telegraph_failure_after_successful_uploads_still_sends_the_zip(monkey
 
     run.run_daily(_telegraph_config())
 
-    assert len(host.uploads) == 2      # the uploads happened, then expire unused
+    assert len(host.uploads) == 1      # the archive upload expires unused
     assert telegram.messages == []
     name, _zf, html = _read_digest(telegram)
     assert name == "job-digest-2026-07-21.zip"
@@ -1618,7 +1652,7 @@ def test_every_fit_commits_when_the_page_is_delivered(monkeypatch):
 
     assert len(telegram.messages) == 1
     assert telegram.documents == []
-    assert len(host.uploads) == 4      # three CVs and the archive
+    assert len(host.uploads) == 1      # one archive containing all three CVs
     for index in (1, 2, 3):
         assert "https://x/match{}".format(index) in saved[-1]
     assert not any(marker.startswith("delivery:attempt:") for marker in saved[-1])

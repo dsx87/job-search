@@ -19,9 +19,9 @@ def one_page_pdf() -> bytes:
     """A structurally valid one-page PDF, xref offsets and all.
 
     A stand-in string like ``b"%PDF mock cv"`` would be enough for the renderer
-    tests, but ``scripts/telegraph_preview.py --upload`` runs these bytes
-    through the real qpdf, which exits non-zero on a damaged file — so the mock
-    CV has to be a real PDF or the preview cannot exercise encryption at all.
+    tests, but ``scripts/telegraph_preview.py --upload`` places these bytes in
+    the real protected archive, so a valid PDF makes the manual extraction check
+    meaningful too.
     """
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -67,7 +67,7 @@ def sample_fit(
     reason="Remote-EU iOS role matching Swift and SwiftUI.",
     timezone_note=None,
     cv_filename="igor_pivnyk_cv_acme.pdf",
-    cv_url="https://x0.at/igor_pivnyk_cv_acme_AbCdEfGhIjKlMnOpQrStUvWx.pdf",
+    cv_url="",
     description="Long job description sentence. " * 40,
 ):
     job = Job(
@@ -95,6 +95,7 @@ def sample_review(
     region=Region.EU,
     summary="Platform role, relocation unclear.",
     reason="Could not confirm remote eligibility.",
+    cv_filename="igor_pivnyk_cv_beta_gmbh.pdf",
     description="Another long description sentence. " * 40,
 ):
     job = Job(
@@ -106,7 +107,13 @@ def sample_review(
         "fit": None, "reason": reason, "timezone_note": None,
         "facts": {"work_arrangement": "hybrid"},
     }
-    return ReviewEntry(job=job, evaluation=evaluation, summary=summary)
+    return ReviewEntry(
+        job=job,
+        evaluation=evaluation,
+        summary=summary,
+        pdf_bytes=one_page_pdf(),
+        cv_filename=cv_filename,
+    )
 
 
 def sample_deferred(title="Mobile Engineer", company="Gamma", url="https://jobs.example.com/3"):
@@ -129,22 +136,17 @@ def sample_context(date=None, *, grouped=True, **over):
     with a non-http URL, and a title carrying ``&``, angle brackets and an
     emoji — the four shapes that break renderers.
 
-    The hosted-CV links are real-shaped (24-character ids, the filename kept by
-    ``keep_name``) so ``--dump`` shows offline exactly what a published page
-    carries; ``--upload`` replaces them with links to genuine uploads.
+    The hosted archive link is real-shaped so ``--dump`` shows offline exactly
+    what a published page carries; ``--upload`` replaces it with a genuine URL.
     """
     fits = [
         sample_fit(),
         sample_fit(title="R&D <Lead> \U0001f680", company="Delta & Sons",
                    url="", is_remote=False, region=Region.UNKNOWN,
-                   cv_filename="igor_pivnyk_cv_delta_sons.pdf",
-                   cv_url="https://x0.at/igor_pivnyk_cv_delta_sons_"
-                          "BbCcDdEeFfGgHhIiJjKkLl.pdf"),
+                   cv_filename="igor_pivnyk_cv_delta_sons.pdf"),
         sample_fit(title="Very " + "long " * 30 + "title", company="Epsilon",
                    url="mailto:jobs@example.com", evaluation=False,
-                   cv_filename="igor_pivnyk_cv_epsilon.pdf",
-                   cv_url="https://x0.at/igor_pivnyk_cv_epsilon_"
-                          "MmNnOoPpQqRrSsTtUuVvWw.pdf"),
+                   cv_filename="igor_pivnyk_cv_epsilon.pdf"),
     ]
     values = dict(
         date=date or _DEFAULT_DATE,
@@ -152,8 +154,11 @@ def sample_context(date=None, *, grouped=True, **over):
         source_warning="",
         usage_summary="tokens in 12,400 / out 3,100 · state 84 KB",
         fits=fits,
-        review=[sample_review(), sample_review(title="Backend Engineer", company="Zeta",
-                                               url="https://jobs.example.com/4")],
+        review=[sample_review(), sample_review(
+            title="Backend Engineer", company="Zeta",
+            url="https://jobs.example.com/4",
+            cv_filename="igor_pivnyk_cv_zeta.pdf",
+        )],
         deferred=[sample_deferred(), sample_deferred(title="QA Engineer", company="Eta",
                                                      url="https://jobs.example.com/5")],
         sections=sample_sections() if grouped else (),

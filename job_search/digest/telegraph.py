@@ -13,8 +13,8 @@ Three rules this module lives by:
   which Telegraph forbids; inline they are walls of text and the only realistic
   threat to the 64 KB content cap. The posting link carries them instead.
 * **No secrets.** Anyone with the page URL can read everything rendered here.
-  Telegraph cannot host files, so CVs live on a file host and this page carries
-  links to them — encrypted, with the password sent separately over Telegram.
+  Telegraph cannot host files, so one encrypted CV archive lives on a file host
+  and its password is sent separately over Telegram.
   The password is deliberately absent from DigestContext so it cannot reach
   this renderer even by accident.
 """
@@ -292,7 +292,7 @@ def _render(ctx, index_url, keep_review, keep_deferred):
     # Body first: grouping is what discovers a predicate that raises, and that
     # warning belongs above the body it happened in.
     warnings = []
-    body = _list_nodes(ctx, "fits", "✅ Fits", ctx.fits, warnings, cv_link=True)
+    body = _list_nodes(ctx, "fits", "✅ Fits", ctx.fits, warnings, cv_link=False)
     body.extend(_list_nodes(
         ctx, "review", "🔍 Needs review", review, warnings, cv_link=False, total=len(ctx.review)
     ))

@@ -1,16 +1,16 @@
 """x0.at file-host client (stdlib only, same shape as notify/telegraph.py).
 
-telegra.ph cannot host files, so the digest page carries *links* and the PDFs
-live here. Everything uploaded is already AES-256 encrypted (see
-``latex/encrypt.py``) — on this host the link is the credential, and the page
-carrying it is public to anyone who has its URL.
+telegra.ph cannot host files, so the digest page links one CV archive stored
+here. The archive is already AES-256 protected before upload — on this host the
+link is the credential, and the page carrying it is public to anyone who has
+its URL.
 
 Why x0.at, verified live 2026-08-12: the response body **is** the URL in plain
 text, ``keep_name=1`` keeps the real filename in it, ``id_length=24`` makes the
 id unguessable, and the bytes are served directly with no interstitial and no
 cookie gate. Retention is size-derived —
 ``MIN_AGE + (MAX_AGE-MIN_AGE)*(1-(SIZE/MAX_SIZE))^2`` over 3/100 days with a
-1024 MiB cap — so a ~50 KB PDF sits near the 100-day maximum.
+1024 MiB cap — so a small CV archive sits near the 100-day maximum.
 
 **No deletion.** The Null Pointer software this runs returns an ``X-Token``
 header for later management, but x0.at does not: a throwaway upload during
@@ -43,8 +43,7 @@ RETRY_BACKOFF = (2, 6, 0)
 # imports; keep the two in step.
 LINK_TTL_DAYS = 100
 
-# Uploads are slower than the JSON calls this project otherwise makes, and a
-# handful of them run back to back.
+# Uploads are slower than the JSON calls this project otherwise makes.
 UPLOAD_TIMEOUT_SECONDS = 120
 
 
@@ -101,7 +100,7 @@ class X0Client:
             url = str(text or "").strip()
             # A rejection, an error page or a maintenance notice all arrive as a
             # 200 with a body. Publishing one as an href would put a dead
-            # "Download CV" link on the page; failing here takes the ZIP instead.
+            # archive link on the page; failing here takes the Telegram ZIP instead.
             if not url.startswith("https://") or "\n" in url or " " in url:
                 raise FileHostError(
                     "x0.at answered with something other than a URL: {!r}".format(url[:200])

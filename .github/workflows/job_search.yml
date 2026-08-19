@@ -42,17 +42,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      # qpdf encrypts the tailored CVs before they are uploaded to the file host
-      # on the telegra.ph delivery path. Without it the run silently falls back
-      # to sending the ZIP, so it belongs in the same step as the toolchain.
-      - name: Install LaTeX and qpdf
+      - name: Install LaTeX
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             texlive-latex-recommended \
-            texlive-fonts-recommended \
-            qpdf
-          qpdf --version
+            texlive-fonts-recommended
 
       - name: Install dependencies
         run: pip install -r requirements.txt

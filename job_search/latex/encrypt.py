@@ -1,17 +1,14 @@
-"""AES-256 password protection for tailored CVs, via qpdf.
+"""Standalone AES-256 PDF password protection via qpdf.
 
 Sits beside compile.py and borrows its subprocess shape: a temp dir, one run of
 the binary, read the bytes back. Nothing here touches the network.
 
-**Why this exists.** With a telegra.ph digest the CVs are uploaded to a public
-file host and the page carries links — so on that host a link *is* the
-credential. Encrypting before upload means the host only ever holds ciphertext,
-and the per-run password travels separately in the private Telegram message.
+The current Telegraph path protects the combined archive instead; this helper
+is retained as a fail-closed PDF utility rather than deleting existing logic.
 
 **Failure is never silent-plaintext.** Every way this can go wrong — qpdf
 missing, a rejected flag, a timeout, an empty output — raises
-EncryptionUnavailable, and the caller falls back to sending the ZIP through
-Telegram. An unencrypted CV must never reach the host.
+EncryptionUnavailable.
 """
 import os
 import secrets
@@ -32,11 +29,9 @@ class EncryptionUnavailable(Exception):
 
 
 def new_password() -> str:
-    """One fresh password per run, shared by every CV and the combined ZIP.
+    """One fresh password per run for the hosted CV archive.
 
-    Per-CV passwords would be unusable (a message full of secrets to match
-    against files), and the ZIP would need one of its own anyway. The blast
-    radius of a leak is one run's digest.
+    The blast radius of a leak is one run's digest.
     """
     return secrets.token_urlsafe(_PASSWORD_BYTES)
 

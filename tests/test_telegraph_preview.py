@@ -2,9 +2,9 @@
 import importlib
 import io
 import json
-import zipfile
 
 import pytest
+import pyzipper
 
 preview = importlib.import_module("scripts.telegraph_preview")
 
@@ -179,7 +179,6 @@ class FakeHost:
 def _install_host(monkeypatch):
     host = FakeHost()
     monkeypatch.setattr(preview, "X0Client", lambda: host)
-    monkeypatch.setattr(preview, "encrypt_pdf", lambda content, _pw: b"ENC:" + content)
     return host
 
 
@@ -204,28 +203,30 @@ def test_upload_publishes_pages_carrying_real_urls(monkeypatch, capsys):
 
     assert preview.main(["--days", "1", "--upload"], client=client) == 0
 
-    # Three sample fits plus the combined archive.
+    # One protected archive contains every fit and review CV.
     names = [name for name, _content in host.uploads]
-    assert names[-1].startswith("job-cvs-") and names[-1].endswith(".zip")
-    assert len(names) == 4
-    # Only ciphertext leaves the machine, exactly as a real run does — the
-    # archive is a plain zip *of* the encrypted files.
-    assert all(content.startswith(b"ENC:") for _n, content in host.uploads[:-1])
-    archive = zipfile.ZipFile(io.BytesIO(host.uploads[-1][1]))
-    assert archive.namelist() == [
-        "igor_pivnyk_cv_acme.pdf",
-        "igor_pivnyk_cv_delta_sons.pdf",
-        "igor_pivnyk_cv_epsilon.pdf",
-    ]
-    assert all(archive.read(name).startswith(b"ENC:") for name in archive.namelist())
+    assert len(names) == 1
+    assert names[0].startswith("job-cvs-") and names[0].endswith(".zip")
 
-    page = json.dumps(client.created[-1][1])
-    assert "_uuuuuuuuuuuuuuuuuuuuuuuu" in page   # the URLs the fake host returned
     # The password is printed for the human, never published.
     out = capsys.readouterr().out
     password = [line for line in out.splitlines() if "password" in line.lower()]
     assert password, out
-    assert password[0].rsplit(" ", 1)[-1] not in page
+    secret = password[0].rsplit(" ", 1)[-1]
+    with pyzipper.AESZipFile(io.BytesIO(host.uploads[0][1])) as archive:
+        assert archive.namelist() == [
+            "igor_pivnyk_cv_acme.pdf",
+            "igor_pivnyk_cv_delta_sons.pdf",
+            "igor_pivnyk_cv_epsilon.pdf",
+            "igor_pivnyk_cv_beta_gmbh.pdf",
+            "igor_pivnyk_cv_zeta.pdf",
+        ]
+        assert all(archive.read(name, pwd=secret.encode()).startswith(b"%PDF")
+                   for name in archive.namelist())
+
+    page = json.dumps(client.created[-1][1])
+    assert "_uuuuuuuuuuuuuuuuuuuuuuuu" in page   # the archive URL
+    assert secret not in page
 
 
 def test_upload_with_dump_still_writes_offline_without_uploading(monkeypatch, tmp_path):

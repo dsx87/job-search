@@ -178,12 +178,12 @@ def _hrefs(nodes):
     ]
 
 
-def test_each_fit_links_to_its_hosted_cv():
+def test_individual_cv_urls_are_never_published():
     entry = sample_fit(cv_url="https://x0.at/igor_pivnyk_cv_acme_AAA.pdf")
     nodes = tg.render_digest_nodes(sample_context(fits=[entry]))
 
-    assert "Download CV" in _all_text(nodes)
-    assert "https://x0.at/igor_pivnyk_cv_acme_AAA.pdf" in _hrefs(nodes)
+    assert "Download CV" not in _all_text(nodes)
+    assert "https://x0.at/igor_pivnyk_cv_acme_AAA.pdf" not in _hrefs(nodes)
 
 
 def test_a_fit_without_a_cv_url_renders_no_download_text_at_all():
@@ -279,7 +279,7 @@ def test_the_rendered_page_never_carries_the_password():
     assert sentinel not in rendered
 
 
-def test_twenty_fits_with_links_stay_well_under_the_content_budget():
+def test_twenty_fits_with_one_archive_link_stay_well_under_the_content_budget():
     fits = [
         sample_fit(
             title="Role {}".format(index), company="Company {}".format(index),
@@ -296,7 +296,7 @@ def test_twenty_fits_with_links_stay_well_under_the_content_budget():
     nodes = tg.render_digest_nodes(ctx)
 
     assert tg.content_size(nodes) < tg.CONTENT_LIMIT_BYTES
-    assert len([href for href in _hrefs(nodes) if "x0.at" in str(href)]) == 21
+    assert len([href for href in _hrefs(nodes) if "x0.at" in str(href)]) == 1
 
 
 def test_usage_summary_is_on_the_page():
