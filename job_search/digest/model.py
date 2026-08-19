@@ -17,6 +17,9 @@ class FitEntry:
     summary: str
     pdf_bytes: bytes
     cv_filename: str
+    # Retained for compatibility with older fixture/custom-context callers.
+    # Production Telegraph pages intentionally publish only the archive URL.
+    cv_url: str = ""
 
 
 @dataclass
@@ -26,6 +29,8 @@ class ReviewEntry:
     job: object
     evaluation: dict
     summary: str = ""
+    pdf_bytes: bytes = b""
+    cv_filename: str = ""
 
 
 @dataclass
@@ -50,3 +55,9 @@ class DigestContext:
     # the reader to know about them. Both empty → today's ungrouped dashboard.
     sections: tuple = ()
     sections_error: str = ""
+    # The "download all CVs" archive, and whether the uploaded files are
+    # password-protected. The password itself is deliberately NOT here: the
+    # renderer publishes this context to a public page, so it must not be able
+    # to reach the one secret that keeps those uploads private.
+    cv_zip_url: str = ""
+    cv_encrypted: bool = False

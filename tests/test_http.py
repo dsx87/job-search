@@ -2,6 +2,8 @@
 import ssl
 import urllib.error
 
+import pytest
+
 # --- module under test (repoint on migration) ---
 from job_search import http as http_mod
 from job_search.config import MAX_RESPONSE_BYTES
@@ -147,6 +149,66 @@ def test_verbose_source_error(capsys):
 
     verbose_source_error("src", False, RuntimeError("boom"))
     assert capsys.readouterr().out == ""  # silent when not verbose
+
+
+def test_raw_body_is_sent_verbatim_with_the_given_content_type(monkeypatch):
+    # The file-host uploader posts a multipart body it built itself; it must
+    # reach the wire unchanged (a re-encode would corrupt the PDF part) and
+    # carry the boundary-bearing content type it was built with.
+    captured = {}
+    payload = b"--B\r\nbinary \x00\xff bytes\r\n--B--\r\n"
+
+    def fake_urlopen(request, timeout=None, context=None):
+        captured["request"] = request
+        return _Resp("https://x0.at/abc.pdf", ctype="text/plain; charset=utf-8")
+
+    monkeypatch.setattr(http_mod.urllib.request, "urlopen", fake_urlopen)
+    status, text = http_request(
+        "https://x0.at/", method="POST", data=payload,
+        content_type="multipart/form-data; boundary=B",
+    )
+
+    request = captured["request"]
+    assert request.data == payload
+    assert request.get_header("Content-type") == "multipart/form-data; boundary=B"
+    assert status == 200 and text == "https://x0.at/abc.pdf"
+
+
+def test_raw_body_still_carries_the_browser_user_agent(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None, context=None):
+        captured["request"] = request
+        return _Resp("ok", ctype="text/plain")
+
+    monkeypatch.setattr(http_mod.urllib.request, "urlopen", fake_urlopen)
+    http_request("https://x0.at/", method="POST", data=b"x", content_type="text/plain")
+
+    assert "Mozilla/5.0" in captured["request"].get_header("User-agent")
+
+
+def test_raw_body_without_a_content_type_sets_none(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None, context=None):
+        captured["request"] = request
+        return _Resp("ok", ctype="text/plain")
+
+    monkeypatch.setattr(http_mod.urllib.request, "urlopen", fake_urlopen)
+    http_request("https://x/api", method="POST", data=b"x")
+
+    assert captured["request"].data == b"x"
+    assert captured["request"].get_header("Content-type") is None
+
+
+def test_data_and_json_body_together_is_a_programming_error(monkeypatch):
+    # Two bodies, one request: silently picking one would send the wrong thing.
+    monkeypatch.setattr(
+        http_mod.urllib.request, "urlopen",
+        lambda r, timeout=None, context=None: _Resp("{}"),
+    )
+    with pytest.raises(ValueError):
+        http_request("https://x/api", method="POST", data=b"x", json_body={"a": 1})
 
 
 def test_ssl_contexts_are_built_once_and_reused(monkeypatch):

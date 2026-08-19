@@ -1,8 +1,13 @@
 # Pinned to compatible releases (~=) rather than left floating: these are the
-# only third-party dependencies, both are installed fresh on every CI run, and an
-# unpinned breaking upstream release would silently take down the scheduled job
-# search. ~= allows patch/bugfix updates but not a new minor. Bump deliberately,
-# then re-run the daily workflow manually to confirm the sources still parse.
+# Third-party dependencies are installed fresh on every scheduled CI run, and
+# an unpinned breaking release could silently take down delivery or a source.
+# ~= allows patch/bugfix updates but not a new minor. Bump deliberately, then
+# re-run the daily workflow manually.
+
+# Required only when TELEGRAPH_ACCESS_TOKEN is set: writes the hosted CV bundle
+# with WinZip AES-256. Imported lazily so the stdlib scraper path stays usable
+# without optional packages.
+pyzipper~=0.4.0
 
 # Optional: enables jobspy, linkedin-global, and linkedin-israel sources.
 # NOTE (Pi): the vendored ARMv6 tls-client .so under vendor/ was cross-built

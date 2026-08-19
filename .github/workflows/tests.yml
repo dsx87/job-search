@@ -2,9 +2,9 @@ name: Tests
 
 # Runs the offline characterization suite — the safety net that proves the
 # job_search package's behavior is unchanged. Fast, deterministic, and needs no
-# secrets, network, or LaTeX. Optional deps (jobspy/playwright) are intentionally
-# NOT installed: the suite verifies the package imports and the registry builds
-# without them.
+# secrets, network, or LaTeX. The small AES archive dependency is installed;
+# source-only deps (jobspy/playwright) intentionally are not, proving the source
+# registry still builds without them.
 on:
   push:
     paths:
@@ -14,6 +14,7 @@ on:
       # scripts) and was missing from this filter, so changes there ran no tests.
       - scripts/**
       - pyproject.toml
+      - requirements.txt
       - .github/workflows/tests.yml
   pull_request:
   workflow_dispatch:
@@ -39,8 +40,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install test dependencies
+        run: pip install pytest 'pyzipper~=0.4.0'
 
       - name: Run offline characterization suite
         run: pytest

@@ -183,12 +183,22 @@ else
   warn "pdflatex not on PATH after install — CV PDF generation will fail."
 fi
 
-# ---- 7. Optional: attempt JobSpy (pandas) ----------------------------------
+# ---- 7. Python environment -------------------------------------------------
 PY_BIN="/usr/bin/python3"
+step "Installing AES ZIP support"
+if sudo -u "$REAL_USER" python3 -m venv "$REPO/.venv" \
+   && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q --upgrade pip \
+   && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q 'pyzipper~=0.4.0'; then
+  PY_BIN="$REPO/.venv/bin/python"
+  ok "AES ZIP support installed — hosted CV archives are enabled."
+else
+  warn "pyzipper failed to install; Telegraph runs will safely fall back to Telegram ZIP delivery."
+fi
+
+# ---- 7a. Optional: attempt JobSpy (pandas) ---------------------------------
 if [ "$TRY_JOBSPY" = "1" ]; then
   step "Attempting python-jobspy in a venv (adds 3 sources; usually fails on ARMv6)"
   if sudo -u "$REAL_USER" python3 -m venv "$REPO/.venv" \
-     && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q --upgrade pip \
      && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q python-jobspy; then
     PY_BIN="$REPO/.venv/bin/python"
     ok "python-jobspy installed — the service will use the venv interpreter."

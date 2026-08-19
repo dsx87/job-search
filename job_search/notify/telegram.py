@@ -29,6 +29,7 @@ from ..config import (
     TELEGRAM_RETRY_AFTER_CAP,
     TELEGRAM_RETRY_BACKOFF,
 )
+from . import multipart
 
 _TRUNCATION_SUFFIX = "\n… (truncated)"
 
@@ -200,32 +201,15 @@ def _tg_send_message(bot_token: str, chat_id: str, text: str) -> None:
 
 
 def _tg_send_document(bot_token: str, chat_id: str, filename: str, content: bytes, caption: str) -> None:
-    boundary = "PipelineBoundary8a3f1d6e"
-    crlf = b"\r\n"
-
-    def part_field(name: str, value: str) -> bytes:
-        return (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="{name}"\r\n'
-            f"\r\n"
-            f"{value}\r\n"
-        ).encode()
-
-    body = (
-        part_field("chat_id", chat_id)
-        # Captions cap at 1024, not 4096, and are sent as plain text here — so
-        # no tag balancing, which would otherwise trim oddly around a literal
-        # "&" or "<" in the caption.
-        + part_field("caption", bound_message(caption, 1024, html=False))
-        + (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'
-            f"Content-Type: application/octet-stream\r\n"
-            f"\r\n"
-        ).encode()
-        + content
-        + crlf
-        + f"--{boundary}--\r\n".encode()
+    body, content_type = multipart.encode(
+        {
+            "chat_id": chat_id,
+            # Captions cap at 1024, not 4096, and are sent as plain text here —
+            # so no tag balancing, which would otherwise trim oddly around a
+            # literal "&" or "<" in the caption.
+            "caption": bound_message(caption, 1024, html=False),
+        },
+        {"document": (filename, content)},
     )
 
     url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
@@ -234,7 +218,7 @@ def _tg_send_document(bot_token: str, chat_id: str, filename: str, content: byte
         req = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            headers={"Content-Type": content_type},
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
             resp.read()

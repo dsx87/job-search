@@ -8,6 +8,13 @@ test can show you.
 
     export TELEGRAPH_PREVIEW_TOKEN=...     # printed on first run
     python scripts/telegraph_preview.py --days 3
+    python scripts/telegraph_preview.py --days 1 --upload
+
+``--upload`` additionally puts one AES-256 protected archive of mock CVs on the
+real file host. That is the only way to check end to end — before trusting a
+scheduled run — that the archive refuses the wrong password and extracts
+ordinary PDFs with the right one. Without the flag the page carries the
+fixture's real-shaped but fake archive link and nothing leaves the machine.
 
 The preview account is deliberately separate from the production one: mock
 digests must never land in the real index.
@@ -21,9 +28,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from job_search.digest.fixtures import sample_context  # noqa: E402
+from job_search.digest import build_encrypted_cv_zip  # noqa: E402
 from job_search.digest.publish import publish_digest  # noqa: E402
 from job_search.digest.telegraph import render_digest_nodes, render_index_nodes  # noqa: E402
+from job_search.latex.encrypt import new_password  # noqa: E402
 from job_search.notify.telegraph import TelegraphClient  # noqa: E402
+from job_search.notify.x0 import X0Client  # noqa: E402
 
 PREVIEW_SHORT_NAME = "job-search-preview"
 
@@ -36,7 +46,31 @@ def _parse_args(argv):
                         help="write the node JSON to this path instead of publishing")
     parser.add_argument("--force", action="store_true",
                         help="suppress the refusal below and proceed with a preview account")
+    parser.add_argument("--upload", action="store_true",
+                        help="encrypt one mock CV archive and put it on the real file host, "
+                             "so the page's download link is live (expires in ~100 days)")
     return parser.parse_args(argv)
+
+
+def _upload_cvs(ctx):
+    """Host one protected fixture archive and rewrite its context URL.
+
+    Deliberately mirrors pipeline/run.py::_publish_cvs rather than importing it:
+    that one is wired into the run's state machine and its failure handling, and
+    what a preview needs to exercise is the archive → upload → link chain.
+    """
+    password = new_password()
+    host = X0Client()
+    entries = list(ctx.fits) + list(ctx.review)
+    archive = build_encrypted_cv_zip(entries, password)
+    iso = ctx.date.isoformat() if hasattr(ctx.date, "isoformat") else str(ctx.date)
+    ctx.cv_zip_url = host.upload("job-cvs-{}.zip".format(iso), archive)
+    ctx.cv_encrypted = True
+    print("  all CVs           {}".format(ctx.cv_zip_url))
+    # Printed, not published: in a real run this reaches the user over Telegram
+    # and never touches the page.
+    print("  CV password: {}".format(password))
+    return password
 
 
 def _resolve_token(args, client):
@@ -91,7 +125,10 @@ def main(argv=None, client=None) -> int:
     today = datetime.date.today()
     for offset in range(args.days):
         date = today - datetime.timedelta(days=offset)
-        url = publish_digest(client, token, sample_context(date), date)
+        ctx = sample_context(date)
+        if args.upload:
+            _upload_cvs(ctx)
+        url = publish_digest(client, token, ctx, date)
         print("{}  {}".format(date.isoformat(), url))
     return 0
 

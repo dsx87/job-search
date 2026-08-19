@@ -242,10 +242,13 @@ class PipelineConfig:
     # tailored CVs) instead of a stream of per-job Telegram messages. Set
     # DIGEST_DELIVERY=0 to fall back to the legacy per-job delivery path.
     digest_delivery: bool = True
-    # TELEGRAPH_ACCESS_TOKEN → publish each digest as a telegra.ph page (one
-    # Telegram message with the link, CVs as separate documents) and keep a
-    # rolling index page. Empty (the default) means the run sends the ZIP, so a
-    # runner without the secret behaves exactly as it did before. Layers under
+    # TELEGRAPH_ACCESS_TOKEN → publish each digest as a telegra.ph page and keep
+    # a rolling index page, so the whole run is ONE Telegram message: the page
+    # link plus the CV archive password. Telegraph cannot host files, so one
+    # AES-256 protected ZIP of ordinary tailored PDFs is uploaded to x0.at and
+    # linked from the page. Empty (the default) means the run sends the ZIP,
+    # so a runner without the secret behaves exactly as it did before — and so
+    # does one where encryption or an upload fails. Layers under
     # DIGEST_DELIVERY: the legacy per-job path never consults it.
     telegraph_access_token: str = ""
 
