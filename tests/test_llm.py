@@ -28,7 +28,7 @@ from job_search.profile import EXPECTED_JOB_ORDER, validate_tailored_cv
 
 
 def _http_error(code):
-    return urllib.error.HTTPError("http://x", code, "err", {}, None)
+    return urllib.error.HTTPError("http://x", code, "err", {}, io.BytesIO())
 
 
 class _FakeProvider:
