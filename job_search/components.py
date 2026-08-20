@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from string import Template
 from typing import Any, Mapping, Protocol, Sequence, Tuple, runtime_checkable
 
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
@@ -185,12 +186,18 @@ class DefaultJobEvaluator:
 
     def evaluate(self, llm: LLMService, criteria: str, job: object) -> dict:
         from .llm.eval import evaluate_job
-        return evaluate_job(llm, criteria, job)
+        return evaluate_job(llm, criteria, job, prompts=self.prompts)
 
     def fingerprint(self, criteria: str) -> str:
         from .state.seen_jobs import criteria_version
-        prompt_revision = getattr(self.prompts, "revision", "default-prompts-v1")
-        return criteria_version("{}\n{}\n{}".format(criteria, self.revision, prompt_revision))
+        prompt_revision = getattr(self.prompts, "revision", DefaultPromptSet.revision)
+        if self.revision == "default-policy-v1" and prompt_revision == DefaultPromptSet.revision:
+            return criteria_version(criteria)
+        return criteria_version(
+            "{}\n[evaluator:{}]\n[prompts:{}]".format(
+                criteria, self.revision, prompt_revision
+            )
+        )
 
 
 class DefaultPromptSet:
@@ -213,6 +220,99 @@ class DefaultPromptSet:
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
         from .latex.compile import build_compiler_repair_prompt
         return build_compiler_repair_prompt(tex_source, error_excerpt)
+
+
+class FilePromptSet:
+    """File-backed prompt overrides using explicit ``$placeholder`` fields.
+
+    Omitted files fall back to :class:`DefaultPromptSet`. A nonempty revision is
+    mandatory because prompt behavior participates in evaluation reopening.
+    """
+
+    def __init__(
+        self,
+        *,
+        revision: str,
+        fact_extraction_file: str = "",
+        job_summary_file: str = "",
+        cv_bullet_selection_file: str = "",
+        compiler_repair_file: str = "",
+        fallback: PromptSet = None,
+    ):
+        revision = str(revision or "").strip()
+        if not revision:
+            raise ValueError("FilePromptSet revision must be a nonempty string")
+        self.revision = revision
+        self.fallback = fallback or DefaultPromptSet()
+        self._templates = {}
+        for name, path in (
+            ("fact_extraction", fact_extraction_file),
+            ("job_summary", job_summary_file),
+            ("cv_bullet_selection", cv_bullet_selection_file),
+            ("compiler_repair", compiler_repair_file),
+        ):
+            if path:
+                with open(path, encoding="utf-8") as handle:
+                    self._templates[name] = Template(handle.read())
+
+    def _render(self, name: str, values: Mapping[str, object], fallback) -> str:
+        template = self._templates.get(name)
+        if template is None:
+            return fallback()
+        try:
+            return template.substitute({key: str(value) for key, value in values.items()})
+        except (KeyError, ValueError) as exc:
+            raise ValueError("{} prompt template is invalid: {}".format(name, exc)) from exc
+
+    @staticmethod
+    def _job_values(job: object, limit: int) -> dict:
+        from .models import coerce_job
+        from .text import section_aware_excerpt
+
+        value = coerce_job(job)
+        return {
+            "title": value.get("title", ""),
+            "company": value.get("company", ""),
+            "location": value.get("location", ""),
+            "is_remote": value.get("is_remote", ""),
+            "description": section_aware_excerpt(value.get("description", ""), limit),
+        }
+
+    def fact_extraction(self, job: object) -> str:
+        return self._render(
+            "fact_extraction", self._job_values(job, 5000),
+            lambda: self.fallback.fact_extraction(job),
+        )
+
+    def job_summary(self, job: object) -> str:
+        return self._render(
+            "job_summary", self._job_values(job, 4000),
+            lambda: self.fallback.job_summary(job),
+        )
+
+    def cv_bullet_selection(self, base_tex: str, job: object) -> str:
+        from .latex.tailor_render import extract_job_bullets
+
+        lines = []
+        for entry in extract_job_bullets(base_tex):
+            lines.append("{}:".format(entry["company"]))
+            lines.extend(
+                "  [{}] {}".format(index, " ".join(str(bullet).split()))
+                for index, bullet in enumerate(entry["bullets"])
+            )
+        values = self._job_values(job, 7000)
+        values["resume_bullets"] = "\n".join(lines)
+        return self._render(
+            "cv_bullet_selection", values,
+            lambda: self.fallback.cv_bullet_selection(base_tex, job),
+        )
+
+    def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
+        return self._render(
+            "compiler_repair",
+            {"tex_source": tex_source, "compiler_errors": error_excerpt},
+            lambda: self.fallback.compiler_repair(tex_source, error_excerpt),
+        )
 
 
 class DefaultSectionProvider:
@@ -299,12 +399,23 @@ class DefaultOutputBackend:
         return DigestOutcome(True, notification_sent=True, cv_sent=len(artifacts))
 
 
-def default_components(settings: object) -> Components:
+def default_components(
+    settings: object,
+    *,
+    prompts: PromptSet = None,
+    llm: LLMService = None,
+    evaluator: JobEvaluator = None,
+    telegram: object = None,
+) -> Components:
     """Construct the side-effect-free built-in object graph for ``settings``."""
     from .llm.clients import LLMClient
     from .notify.telegram import TelegramClient
 
-    prompts = DefaultPromptSet()
+    prompts = prompts or DefaultPromptSet()
+    llm = llm or LLMClient.from_config(settings)
+    telegram = telegram or TelegramClient(
+        settings.telegram_bot_token, settings.telegram_chat_id
+    )
     profile = CandidateProfile(
         base_tex_path=getattr(settings, "base_tex_file", "igor_pivnyk_cv_base_updated.tex"),
         rendered_base_path=getattr(
@@ -313,22 +424,20 @@ def default_components(settings: object) -> Components:
     )
     return Components(
         prompts=prompts,
-        llm=LLMClient.from_config(settings),
+        llm=llm,
         candidate_filter=AllowAllCandidates(),
-        evaluator=DefaultJobEvaluator(prompts),
+        evaluator=evaluator or DefaultJobEvaluator(prompts),
         profile=profile,
         cv_renderer=DefaultCVRenderer(settings, profile),
         section_provider=DefaultSectionProvider(getattr(settings, "sections_file", "sections.py")),
         output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(
-            TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
-        ),
+        output_backend=DefaultOutputBackend(telegram),
     )
 
 
 __all__ = [
     "CVArtifact", "CVCompiler", "CVRenderer", "CandidateFilter",
-    "CandidateProfile", "Components", "DefaultPromptSet", "DigestOutcome",
+    "CandidateProfile", "Components", "DefaultPromptSet", "FilePromptSet", "DigestOutcome",
     "JobEvaluator", "LLMProvider", "LLMService", "OutputBackend",
     "OutputRenderer", "PromptSet", "SectionProvider", "default_components",
 ]

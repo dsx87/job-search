@@ -156,9 +156,9 @@ def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
         return CompileResult(False, None, "pdflatex timed out — cannot verify PDF", None, False)
 
 
-def _fix_latex(client, tex_source: str, error_excerpt: str) -> str:
-    """Ask the model to fix a broken LaTeX source given the compiler error."""
-    prompt = f"""The LaTeX source below failed to compile with pdflatex. Fix the compilation errors.
+def build_compiler_repair_prompt(tex_source: str, error_excerpt: str) -> str:
+    """Build the legacy compiler-repair prompt byte-for-byte."""
+    return f"""The LaTeX source below failed to compile with pdflatex. Fix the compilation errors.
 
 ## Compiler errors
 
@@ -171,6 +171,14 @@ def _fix_latex(client, tex_source: str, error_excerpt: str) -> str:
 Fix only what is broken. Do not change the content or layout. \
 Output the complete fixed .tex file — raw LaTeX only, no markdown fences, no explanation.
 """
+
+
+def _fix_latex(client, tex_source: str, error_excerpt: str, prompts=None) -> str:
+    """Ask the model to fix a broken LaTeX source given the compiler error."""
+    prompt = (
+        prompts.compiler_repair(tex_source, error_excerpt) if prompts is not None
+        else build_compiler_repair_prompt(tex_source, error_excerpt)
+    )
     raw = client.generate(prompt, temperature=0.0)
     return _strip_latex_fences(raw)
 

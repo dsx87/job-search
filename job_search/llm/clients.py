@@ -311,11 +311,16 @@ class OpenAIProvider:
         model: str = LLM_FALLBACK_MODEL,
         api_base: str = "",
         send_temperature: bool = False,
+        auth_mode: str = "bearer",
     ):
+        if auth_mode not in ("bearer", "none"):
+            raise ValueError("OpenAI auth_mode must be 'bearer' or 'none'")
         self.api_key = api_key
         self.model = model
         self.api_base = (api_base or SCHEME_DEFAULT_BASE["openai"]).rstrip("/")
         self.send_temperature = send_temperature
+        self.auth_mode = auth_mode
+        self.requires_api_key = auth_mode == "bearer"
         self.last_usage = dict(_ZERO_USAGE)
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
@@ -344,7 +349,9 @@ class OpenAIProvider:
             messages.insert(0, {"role": "system", "content": _JSON_SYSTEM_MESSAGE})
 
         url = f"{self.api_base}/chat/completions"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+        headers = {"Content-Type": "application/json"}
+        if self.auth_mode == "bearer":
+            headers["Authorization"] = f"Bearer {self.api_key}"
         result = _post_json_with_retry(url, payload, headers, label=f"openai ({self.model})")
 
         self.last_usage = _openai_usage(result)
@@ -471,21 +478,36 @@ class LLMClient:
     @classmethod
     def from_config(cls, cfg) -> "LLMClient":
         """Build both providers from a PipelineConfig-shaped object via the factory."""
+        primary_scheme = str(cfg.llm_primary_scheme or "").strip().lower()
+        primary_options = {}
+        if _SCHEME_ALIASES.get(primary_scheme, primary_scheme) == "openai":
+            primary_options["auth_mode"] = getattr(cfg, "llm_primary_auth_mode", "bearer")
         primary = build_provider(
             cfg.llm_primary_scheme,
             api_key=cfg.llm_primary_api_key,
             model=cfg.llm_primary_model,
             api_base=cfg.llm_primary_api_base,
+            **primary_options,
         )
         fallback = None
-        if cfg.llm_fallback_api_key:
+        fallback_auth_mode = getattr(cfg, "llm_fallback_auth_mode", "bearer")
+        if cfg.llm_fallback_api_key or fallback_auth_mode == "none":
+            fallback_scheme = str(cfg.llm_fallback_scheme or "").strip().lower()
+            fallback_options = {}
+            if _SCHEME_ALIASES.get(fallback_scheme, fallback_scheme) == "openai":
+                fallback_options["auth_mode"] = fallback_auth_mode
             fallback = build_provider(
                 cfg.llm_fallback_scheme,
                 api_key=cfg.llm_fallback_api_key,
                 model=cfg.llm_fallback_model,
                 api_base=cfg.llm_fallback_api_base,
+                **fallback_options,
             )
         return cls(primary, fallback)
+
+    @property
+    def requires_api_key(self) -> bool:
+        return bool(getattr(self.primary, "requires_api_key", True))
 
     @staticmethod
     def _label(provider) -> str:

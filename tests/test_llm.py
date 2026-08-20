@@ -170,6 +170,27 @@ def test_openai_request_omits_temperature_and_uses_json_object(monkeypatch):
     assert payload["response_format"] == {"type": "json_object"}
 
 
+def test_openai_no_auth_mode_omits_authorization_and_keeps_structured_output(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        return _Response({"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    client = OpenAIProvider(
+        "", model="local-model", api_base="http://127.0.0.1:1234/v1", auth_mode="none"
+    )
+
+    assert client.generate("prompt", response_schema=FACT_SCHEMA) == "{}"
+
+    request = captured["request"]
+    payload = json.loads(request.data)
+    assert request.get_header("Authorization") is None
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"]["strict"] is True
+
+
 def test_http_error_carries_the_provider_explanation(monkeypatch):
     # A bare "HTTP Error 400: Bad Request" in the run log says nothing; the API
     # explains itself in the body, so the raised error must carry it.
@@ -455,6 +476,23 @@ def test_llm_client_from_config_omits_fallback_without_key():
         llm_fallback_scheme="openai", llm_fallback_model="m", llm_fallback_api_key="", llm_fallback_api_base="",
     )
     assert LLMClient.from_config(cfg).fallback is None
+
+
+def test_llm_client_from_config_builds_no_auth_local_primary_without_a_key():
+    cfg = SimpleNamespace(
+        llm_primary_scheme="openai", llm_primary_model="local-model",
+        llm_primary_api_key="", llm_primary_api_base="http://127.0.0.1:1234/v1",
+        llm_primary_auth_mode="none",
+        llm_fallback_scheme="openai", llm_fallback_model="fallback",
+        llm_fallback_api_key="", llm_fallback_api_base="",
+        llm_fallback_auth_mode="bearer",
+    )
+
+    client = LLMClient.from_config(cfg)
+
+    assert isinstance(client.primary, OpenAIProvider)
+    assert client.primary.auth_mode == "none"
+    assert client.fallback is None
 
 
 # =====================================================================

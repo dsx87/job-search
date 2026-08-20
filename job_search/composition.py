@@ -11,6 +11,7 @@ from .components import (
     CVRenderer,
     CandidateFilter,
     Components,
+    DefaultJobEvaluator,
     JobEvaluator,
     LLMService,
     OutputBackend,
@@ -59,16 +60,19 @@ def _require_protocol(name: str, value: object, protocol: object, problems: list
         problems.append("{} does not implement {}".format(name, protocol.__name__))
 
 
-def validate_components(components: Components, settings: object, command: str = "daily") -> None:
+def validate_components(
+    components: Components, settings: object, command: str = "daily", structural: bool = True
+) -> None:
     problems = []
-    _require_protocol("prompts", components.prompts, PromptSet, problems)
-    _require_protocol("llm", components.llm, LLMService, problems)
-    _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
-    _require_protocol("evaluator", components.evaluator, JobEvaluator, problems)
-    _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
-    _require_protocol("section_provider", components.section_provider, SectionProvider, problems)
-    _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
-    _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
+    if structural:
+        _require_protocol("prompts", components.prompts, PromptSet, problems)
+        _require_protocol("llm", components.llm, LLMService, problems)
+        _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
+        _require_protocol("evaluator", components.evaluator, JobEvaluator, problems)
+        _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
+        _require_protocol("section_provider", components.section_provider, SectionProvider, problems)
+        _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
+        _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
 
     auth_modes = {
         "llm_primary_auth_mode": getattr(settings, "llm_primary_auth_mode", "bearer"),
@@ -103,11 +107,28 @@ def validate_components(components: Components, settings: object, command: str =
                 )
             )
 
+    if command in ("daily", "tailor"):
+        if getattr(components.llm, "requires_api_key", False) and not getattr(
+            settings, "llm_primary_api_key", ""
+        ):
+            problems.append("the configured primary LLM requires an API key")
+        if getattr(components.output_backend, "requires_telegram_credentials", False):
+            if not getattr(settings, "telegram_bot_token", "") or not getattr(
+                settings, "telegram_chat_id", ""
+            ):
+                problems.append(
+                    "the configured Telegram backend requires TELEGRAM_BOT_TOKEN "
+                    "and TELEGRAM_CHAT_ID"
+                )
+
     if problems:
         raise ConfigurationError("Invalid job-search configuration: " + "; ".join(problems))
 
 
-def load_components(settings: object, command: str = "daily") -> Components:
+def load_components(
+    settings: object, command: str = "daily", defaults: Components = None,
+    validate_defaults: bool = True,
+) -> Components:
     """Return validated defaults overlaid by ``configure`` when present.
 
     The default filename is optional. Setting ``JOB_SEARCH_CONFIG_FILE`` makes
@@ -116,11 +137,12 @@ def load_components(settings: object, command: str = "daily") -> Components:
     path; it may import separately installed packages in the normal way.
     """
     path, explicit = _config_path()
-    defaults = default_components(settings)
+    defaults = defaults or default_components(settings)
     if not os.path.exists(path):
         if explicit:
             raise ConfigurationError("Configured composition file does not exist: {}".format(path))
-        validate_components(defaults, settings, command)
+        validate_components(defaults, settings, command, structural=validate_defaults)
+        defaults._customized = False
         return defaults
     if not os.path.isfile(path):
         raise ConfigurationError("Configured composition path is not a file: {}".format(path))
@@ -137,7 +159,14 @@ def load_components(settings: object, command: str = "daily") -> Components:
         ) from exc
     if not isinstance(configured, Components):
         raise ConfigurationError("{} configure() must return Components".format(path))
+    if (
+        configured.evaluator is defaults.evaluator
+        and configured.prompts is not defaults.prompts
+        and isinstance(defaults.evaluator, DefaultJobEvaluator)
+    ):
+        configured.evaluator = type(defaults.evaluator)(configured.prompts)
     validate_components(configured, settings, command)
+    configured._customized = True
     return configured
 
 
