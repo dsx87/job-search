@@ -157,6 +157,7 @@ def test_seed_uses_configured_seen_state_path(monkeypatch, tmp_path):
 
 
 def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
+    from job_search.components import DefaultOutputBackend, DefaultOutputRenderer
     job = Job(
         title="iOS Engineer", company="Acme", url="https://example.com/custom-filter",
         description="Swift UIKit native iOS remote engineering role. " * 10,
@@ -186,7 +187,8 @@ def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
         prompts=object(),
         candidate_filter=RejectAll(),
         evaluator=NeverEvaluate(),
-        output_backend=SimpleNamespace(telegram=telegram),
+        output_renderer=DefaultOutputRenderer(),
+        output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
 
@@ -195,6 +197,7 @@ def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
 
 
 def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
+    from job_search.components import DefaultOutputBackend, DefaultOutputRenderer
     job = Job(
         title="iOS Engineer", company="Acme", url="https://example.com/custom-evaluator",
         description="Swift UIKit native iOS remote engineering role. " * 10,
@@ -227,7 +230,8 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
         prompts=object(),
         candidate_filter=IncludeAll(),
         evaluator=Evaluator(),
-        output_backend=SimpleNamespace(telegram=telegram),
+        output_renderer=DefaultOutputRenderer(),
+        output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
 
@@ -236,7 +240,9 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
 
 
 def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
-    from job_search.components import CVArtifact
+    from job_search.components import (
+        CVArtifact, DefaultOutputBackend, DefaultOutputRenderer,
+    )
 
     job = Job(
         title="iOS Engineer", company="Acme", url="https://example.com/custom-cv",
@@ -275,7 +281,8 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
         candidate_filter=SimpleNamespace(include=lambda _job: True),
         evaluator=Evaluator(),
         cv_renderer=Renderer(),
-        output_backend=SimpleNamespace(telegram=telegram),
+        output_renderer=DefaultOutputRenderer(),
+        output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
     monkeypatch.setattr(
@@ -287,6 +294,84 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
     assert calls == [(llm, "iOS Engineer", "custom fit")]
     assert telegram.documents[0][0] == "ada_cv_acme.pdf"
     assert telegram.documents[0][1] == b"CUSTOM-PDF"
+
+
+def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
+    from job_search.components import DefaultPromptSet, DigestOutcome
+
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/text-only",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    _telegram, saved = install_daily_fakes(monkeypatch, [job])
+    deliveries = []
+
+    class Evaluator:
+        revision = "fit-v1"
+
+        def evaluate(self, llm, criteria, candidate):
+            return {
+                "fit": True, "verdict": "fit", "reason": "custom fit",
+                "timezone_note": None, "facts": {},
+            }
+
+        def fingerprint(self, criteria):
+            return "fit-v1"
+
+    class Renderer:
+        kind = "plain"
+
+        def render_notice(self, notice, **context):
+            return str(notice)
+
+        def render_fit(self, candidate, evaluation):
+            return candidate.title
+
+        def render_digest(self, context):
+            return "digest:{}".format(len(context.fits))
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+        requires_telegram_credentials = False
+
+        def deliver_notice(self, rendered):
+            deliveries.append(("notice", rendered))
+
+        def deliver_fit(self, rendered, artifact=None, notification_already_sent=False):
+            raise AssertionError("digest mode is atomic")
+
+        def deliver_digest(self, rendered, artifacts=(), **context):
+            deliveries.append((rendered, tuple(artifacts)))
+            return DigestOutcome(True, notification_sent=True)
+
+    components = SimpleNamespace(
+        _customized=True,
+        llm=SimpleNamespace(
+            usage_summary=lambda: "usage",
+            generate=lambda *_a, **_k: "summary",
+        ),
+        prompts=DefaultPromptSet(),
+        candidate_filter=SimpleNamespace(include=lambda _job: True),
+        evaluator=Evaluator(),
+        cv_renderer=SimpleNamespace(
+            render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("CV rendering must be skipped")
+            )
+        ),
+        section_provider=SimpleNamespace(load=lambda: ((), "")),
+        output_renderer=Renderer(),
+        output_backend=Backend(),
+    )
+    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    cfg = make_config(digest_delivery=True)
+    cfg.telegram_bot_token = ""
+    cfg.telegram_chat_id = ""
+
+    assert run.run_daily(cfg) == 0
+    assert deliveries == [("digest:1", ())]
+    assert any("https://example.com/text-only" in snapshot for snapshot in saved)
 
 
 def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):

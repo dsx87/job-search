@@ -124,3 +124,61 @@ def test_check_config_prints_redacted_configuration_without_dispatch(monkeypatch
 
     assert cli.main() == 0
     assert capsys.readouterr().out.strip() == '{"safe": true}'
+
+
+def test_manual_tailor_uses_custom_non_telegram_output_pair(monkeypatch):
+    from job_search.components import CVArtifact
+    from job_search.pipeline.stages import DeliveryOutcome
+
+    cfg = make_config()
+    cfg.telegram_bot_token = ""
+    cfg.telegram_chat_id = ""
+    artifact = CVArtifact("candidate.pdf", "application/pdf", b"PDF")
+    calls = []
+
+    class Renderer:
+        def render_tailored(self, llm, job, evaluation=None):
+            calls.append(("cv", llm, job.title))
+            return artifact
+
+    class OutputRenderer:
+        def render_fit(self, job, evaluation):
+            calls.append(("render", job.title, evaluation["reason"]))
+            return "rendered fit"
+
+    class Backend:
+        cv_mode = "required"
+
+        def deliver_fit(self, rendered, delivered_artifact, notification_already_sent=False):
+            calls.append(("deliver", rendered, delivered_artifact))
+            return DeliveryOutcome(
+                notification_sent=True,
+                notification_satisfied=True,
+                cv_sent=True,
+            )
+
+    llm = object()
+    components = SimpleNamespace(
+        _customized=True,
+        llm=llm,
+        cv_renderer=Renderer(),
+        output_renderer=OutputRenderer(),
+        output_backend=Backend(),
+    )
+    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        cli, "TelegramClient",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("no Telegram client")),
+    )
+    monkeypatch.setattr(
+        cli, "tailor_single_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no legacy delivery")),
+    )
+
+    cli.run_tailor(make_args("x" * 200), cfg)
+
+    assert calls == [
+        ("cv", llm, "iOS Engineer"),
+        ("render", "iOS Engineer", "Manual tailoring"),
+        ("deliver", "rendered fit", artifact),
+    ]

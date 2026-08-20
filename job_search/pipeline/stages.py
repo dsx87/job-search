@@ -34,10 +34,15 @@ class DeliveryOutcome:
     cv_sent: bool = False
     error: Optional[Exception] = None
     notification_satisfied: bool = False
+    cv_required: bool = True
 
     @property
     def complete(self) -> bool:
-        return self.notification_satisfied and self.cv_sent and self.error is None
+        return (
+            self.notification_satisfied
+            and (self.cv_sent or not self.cv_required)
+            and self.error is None
+        )
 
 
 class CVDeliveryError(RuntimeError):

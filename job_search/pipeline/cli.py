@@ -5,11 +5,17 @@ import urllib.parse
 
 from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
 from ..composition import ConfigurationError, load_components, redacted_configuration
+from ..components import DefaultOutputBackend
 from ..llm.clients import LLMClient
 from ..models import Job
 from ..notify.telegram import TelegramClient
 from .run import run_daily, run_list, run_seed
-from .stages import _send_error_notification, ensure_job_description, tailor_single_job
+from .stages import (
+    CVDeliveryError,
+    _send_error_notification,
+    ensure_job_description,
+    tailor_single_job,
+)
 
 
 def run_tailor(args, cfg) -> None:
@@ -39,11 +45,36 @@ def run_tailor(args, cfg) -> None:
         )
         sys.exit(1)
 
+    custom_output = (
+        getattr(components, "_customized", False)
+        and not isinstance(components.output_backend, DefaultOutputBackend)
+    )
+    if custom_output:
+        client = components.llm
+        try:
+            artifact = components.cv_renderer.render_tailored(client, job)
+            rendered = components.output_renderer.render_fit(
+                job, {"reason": "Manual tailoring"}
+            )
+            outcome = components.output_backend.deliver_fit(rendered, artifact)
+            if not outcome.complete:
+                raise CVDeliveryError(outcome)
+            print("Done.", flush=True)
+            return
+        except Exception as exc:
+            print(f"Fatal error: {exc}", file=sys.stderr)
+            try:
+                components.output_backend.deliver_notice(
+                    components.output_renderer.render_notice(
+                        "Pipeline error: {}: {}".format(type(exc).__name__, exc)
+                    )
+                )
+            except Exception:
+                pass
+            raise
     if getattr(components, "_customized", False):
         client = components.llm
-        telegram = getattr(components.output_backend, "telegram", None)
-        if telegram is None:
-            telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+        telegram = components.output_backend.telegram
     else:
         # Compatibility seam for callers/tests that patch the historical
         # factories directly; custom composition uses the configured objects.
