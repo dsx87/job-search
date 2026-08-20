@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass, field
 
 from ..composition import ConfigurationError, load_components
+from ..components import DefaultJobEvaluator, DefaultPromptSet, default_components
 from ..config import (
     BASE_TEX_FILE,
     CRITERIA_FILE,
@@ -232,11 +233,45 @@ def _record_fit_failure(seen, stats, job, stage, today, telegram, cfg=None):
     return state
 
 
-def _evaluate_candidate(llm, criteria, job):
+class _PipelineDefaultEvaluator(DefaultJobEvaluator):
+    """Default evaluator seam that preserves monkeypatch-compatible wrappers."""
+
+    def evaluate(self, llm, criteria, job):
+        if getattr(self.prompts, "revision", "") == DefaultPromptSet.revision:
+            return evaluate_job(llm, criteria, job)
+        return evaluate_job(llm, criteria, job, prompts=self.prompts)
+
+
+def _runtime_components(cfg, command):
+    prompts = DefaultPromptSet()
+    evaluator = _PipelineDefaultEvaluator(prompts)
+    defaults = default_components(
+        cfg,
+        prompts=prompts,
+        llm=LLMClient.from_config(cfg),
+        evaluator=evaluator,
+        telegram=TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id),
+    )
+    configured = load_components(
+        cfg, command=command, defaults=defaults, validate_defaults=False
+    )
+    # Replacing only prompts is the common override. Keep the default evaluator
+    # but bind it to the configured prompts so the revision and prompt body both
+    # take effect; an explicitly replaced evaluator is left untouched.
+    if configured.evaluator is evaluator and configured.prompts is not prompts:
+        configured.evaluator = _PipelineDefaultEvaluator(configured.prompts)
+    return configured
+
+
+def _evaluate_candidate(llm, criteria, job, evaluator=None):
     """Evaluate a candidate only when its cleaned description is sufficient."""
     if not ensure_job_description(job):
         return None
-    return evaluate_job(llm, criteria, job)
+    return (
+        evaluator.evaluate(llm, criteria, job)
+        if evaluator is not None
+        else evaluate_job(llm, criteria, job)
+    )
 
 
 # Reserved for pipeline metadata; these entries must never act as seen identities.
@@ -268,7 +303,7 @@ def _fetch_for_pipeline(cfg):
 
 def run_seed(cfg) -> int:
     """Mark all currently fetched jobs as seen without evaluating."""
-    load_components(cfg, command="seed")
+    _runtime_components(cfg, command="seed")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
         print("No usable job source completed; seed aborted.", file=sys.stderr)
@@ -290,7 +325,7 @@ def run_seed(cfg) -> int:
 
 def run_list(cfg) -> int:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
-    load_components(cfg, command="list")
+    _runtime_components(cfg, command="list")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
         print("No usable job source completed; list aborted.", file=sys.stderr)
@@ -309,12 +344,14 @@ def run_list(cfg) -> int:
     return 0
 
 
-def _summaries(llm, jobs, workers):
+def _summaries(llm, jobs, workers, prompts=None):
     """One short LLM summary per job, computed concurrently (aligned with jobs)."""
     if not jobs:
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        return list(pool.map(lambda job: summarize_job(llm, job), jobs))
+        if prompts is None or getattr(prompts, "revision", "") == DefaultPromptSet.revision:
+            return list(pool.map(lambda job: summarize_job(llm, job), jobs))
+        return list(pool.map(lambda job: summarize_job(llm, job, prompts=prompts), jobs))
 
 
 def _digest_caption(n_fits, n_review, n_deferred, date, page_url="", password="") -> str:
@@ -397,7 +434,7 @@ def _commit_deferrals(seen, deferrals, today, cfg=None) -> None:
 
 def _deliver_digest(
     llm, cfg, seen, stats, today, prepared, prepared_reviews, uncertain, newly_deferred,
-    source_warning, telegram, signature_for, deferrals=(),
+    source_warning, telegram, signature_for, deferrals=(), prompts=None,
 ):
     """Deliver a whole run in ONE Telegram message, by one of two routes.
 
@@ -423,7 +460,7 @@ def _deliver_digest(
     """
     fit_jobs = [job for job, _payload, _rs, _ev in prepared]
     review_jobs = [job for job, _ev in uncertain]
-    summaries = _summaries(llm, fit_jobs + review_jobs, cfg.eval_workers)
+    summaries = _summaries(llm, fit_jobs + review_jobs, cfg.eval_workers, prompts)
     fit_summaries = summaries[: len(fit_jobs)]
     review_summaries = summaries[len(fit_jobs):]
 
@@ -621,29 +658,27 @@ def _deliver_digest(
 
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
-    load_components(cfg, command="daily")
+    components = _runtime_components(cfg, command="daily")
     if cfg.state_sync:
         # Pull the shared dedup baseline FIRST: linkedin-guest peeks at
         # seen_jobs.json during fetch to skip description requests for jobs the
         # other runner already delivered. Best-effort; never raises.
         path = _seen_file(cfg)
         pull_state() if path == SEEN_JOBS_FILE else pull_state(seen_file=path)
-    if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
-        print(
-            "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
-            "TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    llm = components.llm
+    telegram = getattr(components.output_backend, "telegram", None)
+    if telegram is None:
+        # Output backends become the sole delivery owner in the output layer;
+        # until then this preserves the legacy formatter/orchestrator path.
+        telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     state_mutation_allowed = False
     try:
-        llm = LLMClient.from_config(cfg)
         shutdown_note = model_shutdown_warning(cfg.llm_primary_model)
         if shutdown_note:
             print(shutdown_note, flush=True)
-        if not cfg.llm_fallback_api_key:
+        if not cfg.llm_fallback_api_key and getattr(
+            cfg, "llm_fallback_auth_mode", "bearer"
+        ) != "none":
             print(
                 "Note: no LLM fallback configured (LLM_FALLBACK_API_KEY / OPENAI_API_KEY unset).",
                 flush=True,
@@ -657,7 +692,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     flush=True,
                 )
         criteria = _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
-        crit_ver = criteria_version(criteria)
+        crit_ver = components.evaluator.fingerprint(criteria)
         tailoring_instructions = _load_file_for(
             cfg,
             "cv_tailoring_prompt_file",
@@ -765,6 +800,8 @@ def run_daily(cfg, test: bool = False) -> int:
 
         for value in raw_jobs:
             job = coerce_job(value)
+            if not components.candidate_filter.include(job):
+                continue
             keys = job_identity_keys(job)
             signature = evaluation_signature(clean_job_description(job.description), crit_ver)
             if keys:
@@ -815,7 +852,9 @@ def run_daily(cfg, test: bool = False) -> int:
             print(f"Evaluating {len(evaluation_jobs)} job(s) with {cfg.eval_workers} workers...", flush=True)
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
-                    pool.submit(_evaluate_candidate, llm, criteria, job): (job, retry_state)
+                    pool.submit(
+                        _evaluate_candidate, llm, criteria, job, components.evaluator
+                    ): (job, retry_state)
                     for job, retry_state in evaluation_jobs
                 }
                 for future in concurrent.futures.as_completed(future_to_job):
@@ -996,7 +1035,7 @@ def run_daily(cfg, test: bool = False) -> int:
             _deliver_digest(
                 llm, cfg, seen, stats, today, prepared, prepared_reviews,
                 uncertain, newly_deferred, source_warning, telegram,
-                _signature_for, pending_deferrals,
+                _signature_for, pending_deferrals, components.prompts,
             )
         else:
             # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per

@@ -68,8 +68,8 @@ def _parse_selection(raw) -> dict:
     return selection
 
 
-def select_cv_bullets(client, base_tex, job) -> dict:
-    """Ask the model which base bullets to keep per job; return {company: [idx]}."""
+def build_cv_bullet_selection_prompt(base_tex, job) -> str:
+    """Build the legacy deterministic-bullet selection prompt byte-for-byte."""
     job = coerce_job(job)
     jobs = extract_job_bullets(base_tex)
     lines = [
@@ -97,5 +97,14 @@ def select_cv_bullets(client, base_tex, job) -> dict:
         'Return JSON {"jobs": [{"company": <name>, "keep_bullets": [<indices in priority '
         "order>]}]} covering every company above.",
     ])
-    raw = client.generate("\n".join(lines), temperature=0.0, response_schema=CV_EDIT_SCHEMA)
+    return "\n".join(lines)
+
+
+def select_cv_bullets(client, base_tex, job, prompts=None) -> dict:
+    """Ask the model which base bullets to keep per job; return {company: [idx]}."""
+    prompt = (
+        prompts.cv_bullet_selection(base_tex, job) if prompts is not None
+        else build_cv_bullet_selection_prompt(base_tex, job)
+    )
+    raw = client.generate(prompt, temperature=0.0, response_schema=CV_EDIT_SCHEMA)
     return _parse_selection(raw)

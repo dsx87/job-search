@@ -156,6 +156,85 @@ def test_seed_uses_configured_seen_state_path(monkeypatch, tmp_path):
     assert run.load_seen_jobs(str(path)) is not None
 
 
+def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/custom-filter",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    calls = []
+
+    class RejectAll:
+        revision = "reject-all-v1"
+
+        def include(self, candidate):
+            calls.append(("filter", candidate.title))
+            return False
+
+    class NeverEvaluate:
+        revision = "custom-evaluator-v1"
+
+        def evaluate(self, llm, criteria, candidate):
+            raise AssertionError("filtered jobs must not reach the evaluator")
+
+        def fingerprint(self, criteria):
+            return "custom-fingerprint"
+
+    llm = SimpleNamespace(usage_summary=lambda: "usage")
+    components = SimpleNamespace(
+        llm=llm,
+        prompts=object(),
+        candidate_filter=RejectAll(),
+        evaluator=NeverEvaluate(),
+        output_backend=SimpleNamespace(telegram=telegram),
+    )
+    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+
+    assert run.run_daily(make_config()) == 0
+    assert calls == [("filter", "iOS Engineer")]
+
+
+def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/custom-evaluator",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    configured_llm = SimpleNamespace(usage_summary=lambda: "usage")
+    observed = []
+
+    class IncludeAll:
+        revision = "include-all-v1"
+
+        def include(self, candidate):
+            return True
+
+    class Evaluator:
+        revision = "policy-v7"
+
+        def evaluate(self, llm, criteria, candidate):
+            observed.append((llm, criteria, candidate.title))
+            return {
+                "fit": False, "verdict": "nonfit", "reason": "custom policy",
+                "timezone_note": None, "facts": {},
+            }
+
+        def fingerprint(self, criteria):
+            return "policy-v7-fingerprint"
+
+    components = SimpleNamespace(
+        llm=configured_llm,
+        prompts=object(),
+        candidate_filter=IncludeAll(),
+        evaluator=Evaluator(),
+        output_backend=SimpleNamespace(telegram=telegram),
+    )
+    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+
+    assert run.run_daily(make_config()) == 0
+    assert observed == [(configured_llm, "criteria", "iOS Engineer")]
+
+
 def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):
     telegram, _saved = install_daily_fakes(monkeypatch, [])
     monkeypatch.setattr(

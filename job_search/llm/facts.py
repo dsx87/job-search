@@ -86,10 +86,10 @@ def default_facts() -> dict:
     return _normalize_facts({})
 
 
-def extract_facts(client, job) -> dict:
-    """Ask the model for schema-constrained posting facts; return normalized."""
+def build_fact_extraction_prompt(job) -> str:
+    """Build the legacy fact-extraction prompt byte-for-byte."""
     job = coerce_job(job)
-    prompt = f"""You extract structured facts from a job posting for a downstream deterministic policy. Do NOT judge fit; only report what the posting states. Use "unknown" for any field the posting does not clearly state. For every non-unknown field that could decide fit, add a short VERBATIM snippet from the posting to `evidence` (field name + snippet).
+    return f"""You extract structured facts from a job posting for a downstream deterministic policy. Do NOT judge fit; only report what the posting states. Use "unknown" for any field the posting does not clearly state. For every non-unknown field that could decide fit, add a short VERBATIM snippet from the posting to `evidence` (field name + snippet).
 
 ## Job Posting
 
@@ -112,6 +112,14 @@ Description:
 - industry_crypto_web3: the company is a crypto/Web3 business.
 - requires_us_hours: strict US-only working hours required.
 """
+
+
+def extract_facts(client, job, prompts=None) -> dict:
+    """Ask the model for schema-constrained posting facts; return normalized."""
+    prompt = (
+        prompts.fact_extraction(job) if prompts is not None
+        else build_fact_extraction_prompt(job)
+    )
     raw = client.generate(prompt, temperature=0.0, response_schema=FACT_SCHEMA)
     try:
         data = json.loads(raw)

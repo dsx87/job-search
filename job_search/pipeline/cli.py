@@ -14,14 +14,7 @@ from .stages import _send_error_notification, ensure_job_description, tailor_sin
 
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
-    load_components(cfg, command="tailor")
-    if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
-        print(
-            "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
-            "TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    components = load_components(cfg, command="tailor")
 
     company = (args.company or "").strip()
     if not company and args.url:
@@ -46,9 +39,17 @@ def run_tailor(args, cfg) -> None:
         )
         sys.exit(1)
 
-    telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
-    try:
+    if getattr(components, "_customized", False):
+        client = components.llm
+        telegram = getattr(components.output_backend, "telegram", None)
+        if telegram is None:
+            telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    else:
+        # Compatibility seam for callers/tests that patch the historical
+        # factories directly; custom composition uses the configured objects.
         client = LLMClient.from_config(cfg)
+        telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    try:
         tailor_single_job(client, job, telegram)
         print("Done.", flush=True)
     except Exception as exc:
