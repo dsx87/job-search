@@ -21,7 +21,10 @@ class CVValidationError(ValueError):
         super().__init__("; ".join(self.violations))
 
 
-def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict) -> str:
+def tailor_resume(
+    client, tailoring_instructions: str, base_tex: str, job: dict,
+    prompts=None, profile=None,
+) -> str:
     """Select relevant base bullets via the model, then render deterministically.
 
     `tailoring_instructions` is retained for call-site compatibility; the
@@ -30,13 +33,14 @@ def tailor_resume(client, tailoring_instructions: str, base_tex: str, job: dict)
     fallback is defensive.
     """
     job = coerce_job(job)
-    selection = select_cv_bullets(client, base_tex, job)
+    selection = select_cv_bullets(client, base_tex, job, prompts=prompts)
     tex = render_tailored(base_tex, selection)
-    if not validate_tailored_cv(tex):
+    validate = profile.validate_tex if profile is not None else validate_tailored_cv
+    if not validate(tex):
         return tex
 
     tex = render_tailored(base_tex, {})
-    remaining = validate_tailored_cv(tex)
+    remaining = validate(tex)
     if remaining:
         raise CVValidationError(remaining)
     return tex

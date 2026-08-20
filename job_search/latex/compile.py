@@ -28,6 +28,7 @@ class CompileResult:
     error_excerpt: str
     page_count: "int | None"
     repairable: bool
+    tex_source: str = ""
 
 
 def _strip_latex_fences(text: str) -> str:
@@ -98,7 +99,9 @@ def _compiler_error_excerpt(log_path: str, completed) -> str:
     return "\n".join(part for part in captured if part).strip()
 
 
-def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
+def _compile_latex(
+    tex_source: str, cv_phone=None, executable: str = "pdflatex", profile=None
+) -> CompileResult:
     """
     Compile tex_source with pdflatex.
     Returns a CompileResult. A result is successful only when both compiler
@@ -118,14 +121,17 @@ def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
             # Inject the real phone number (kept out of the repo and out of the
             # LLM prompt) only at compile time. When CV_PHONE is unset the token
             # collapses to nothing, leaving no dangling separator.
-            phone = (os.environ.get("CV_PHONE", "") if cv_phone is None else cv_phone).strip()
-            phone_tex = f"\\enspace\\textbar\\enspace {phone}" if phone else ""
-            tex_source = tex_source.replace("((PHONE))", phone_tex)
+            if profile is not None:
+                tex_source = profile.resolve_private_placeholders(tex_source)
+            else:
+                phone = (os.environ.get("CV_PHONE", "") if cv_phone is None else cv_phone).strip()
+                phone_tex = f"\\enspace\\textbar\\enspace {phone}" if phone else ""
+                tex_source = tex_source.replace("((PHONE))", phone_tex)
 
             with open(tex_path, "w", encoding="utf-8") as f:
                 f.write(tex_source)
 
-            cmd = ["pdflatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
+            cmd = [executable, "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
             # Run twice so cross-references resolve. Hold the shared pdflatex
             # semaphore across both passes to cap concurrent compilations.
             completed = []
@@ -136,7 +142,7 @@ def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
             pages = pdf_pages_from_log(log_path)
             error_excerpt = _compiler_error_excerpt(log_path, completed)
             if any(process.returncode != 0 for process in completed):
-                return CompileResult(False, None, error_excerpt, pages, True)
+                return CompileResult(False, None, error_excerpt, pages, True, tex_source)
 
             pdf_bytes = None
             if os.path.exists(pdf_path):
@@ -144,16 +150,22 @@ def _compile_latex(tex_source: str, cv_phone=None) -> CompileResult:
                     pdf_bytes = f.read()
             if not pdf_bytes:
                 detail = error_excerpt or "pdflatex did not produce a nonempty PDF"
-                return CompileResult(False, None, detail, pages, False)
+                return CompileResult(False, None, detail, pages, False, tex_source)
             if pages is None or pages <= 0:
                 detail = error_excerpt or "pdflatex PDF page count could not be verified"
-                return CompileResult(False, None, detail, pages, False)
-            return CompileResult(True, pdf_bytes, "", pages, False)
+                return CompileResult(False, None, detail, pages, False, tex_source)
+            return CompileResult(True, pdf_bytes, "", pages, False, tex_source)
 
     except FileNotFoundError:
-        return CompileResult(False, None, "pdflatex not found — cannot compile PDF", None, False)
+        return CompileResult(
+            False, None, "{} not found — cannot compile PDF".format(executable),
+            None, False, tex_source,
+        )
     except subprocess.TimeoutExpired:
-        return CompileResult(False, None, "pdflatex timed out — cannot verify PDF", None, False)
+        return CompileResult(
+            False, None, "{} timed out — cannot verify PDF".format(executable),
+            None, False, tex_source,
+        )
 
 
 def build_compiler_repair_prompt(tex_source: str, error_excerpt: str) -> str:
@@ -183,7 +195,10 @@ def _fix_latex(client, tex_source: str, error_excerpt: str, prompts=None) -> str
     return _strip_latex_fences(raw)
 
 
-def compile_with_fixes(client, tex_source: str, max_attempts: int = 3) -> tuple:
+def compile_with_fixes(
+    client, tex_source: str, max_attempts: int = 3, *, executable: str = "pdflatex",
+    prompts=None, profile=None,
+) -> tuple:
     """
     Try to compile tex_source, asking the model to fix errors between attempts.
     On a successful compile that overflows past one page, deterministically
@@ -193,14 +208,29 @@ def compile_with_fixes(client, tex_source: str, max_attempts: int = 3) -> tuple:
     from .onepage import _shrink_to_one_page
 
     for attempt in range(1, max_attempts + 1):
-        result = _compile_latex(tex_source)
+        if executable == "pdflatex" and profile is None:
+            result = _compile_latex(tex_source)
+        else:
+            result = _compile_latex(
+                tex_source, executable=executable, profile=profile
+            )
         if result.ok:
             if result.page_count == 1 and result.pdf_bytes:
                 return True, result.pdf_bytes, tex_source
             if result.page_count and result.page_count > 1:
-                pdf_bytes, tex_source, pages = _shrink_to_one_page(
-                    tex_source, result.pdf_bytes, result.page_count
-                )
+                if executable == "pdflatex" and profile is None:
+                    pdf_bytes, tex_source, pages = _shrink_to_one_page(
+                        tex_source, result.pdf_bytes, result.page_count
+                    )
+                else:
+                    pdf_bytes, tex_source, pages = _shrink_to_one_page(
+                        tex_source,
+                        result.pdf_bytes,
+                        result.page_count,
+                        compile_fn=lambda source: _compile_latex(
+                            source, executable=executable, profile=profile
+                        ),
+                    )
                 if pages == 1 and pdf_bytes:
                     return True, pdf_bytes, tex_source
             return False, None, tex_source
@@ -212,10 +242,46 @@ def compile_with_fixes(client, tex_source: str, max_attempts: int = 3) -> tuple:
         if result.repairable and attempt < max_attempts:
             print(f"    Asking the model to fix LaTeX errors...", flush=True)
             try:
-                tex_source = _fix_latex(client, tex_source, result.error_excerpt)
+                if client is None:
+                    break
+                tex_source = _fix_latex(
+                    client, tex_source, result.error_excerpt, prompts=prompts
+                )
             except Exception as exc:
                 print(f"    Fix request failed: {exc}", file=sys.stderr)
                 break
         else:
             break
     return False, None, tex_source
+
+
+class LatexCompiler:
+    """Two-pass LaTeX compiler with repair, shrink, and one-page enforcement."""
+
+    def __init__(self, executable="pdflatex", *, prompts=None, profile=None):
+        executable = str(executable or "").strip()
+        if not executable:
+            raise ValueError("LaTeX executable must be a nonempty command name")
+        self.executable = executable
+        self.prompts = prompts
+        self.profile = profile
+
+    def compile(self, llm, tex_source: str, max_attempts: int = 3) -> CompileResult:
+        ok, pdf_bytes, final_tex = compile_with_fixes(
+            llm,
+            tex_source,
+            max_attempts=max_attempts,
+            executable=self.executable,
+            prompts=self.prompts,
+            profile=self.profile,
+        )
+        if ok:
+            return CompileResult(True, pdf_bytes, "", 1, False, final_tex)
+        return CompileResult(
+            False,
+            None,
+            "{} did not produce a verified one-page PDF".format(self.executable),
+            None,
+            False,
+            final_tex,
+        )
