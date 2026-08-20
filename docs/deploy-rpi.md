@@ -102,11 +102,11 @@ secrets and enabling the timer — finish those two steps below.
    | `TELEGRAM_CHAT_ID` | ✅ | delivery |
    | `LLM_FALLBACK_API_KEY` | optional | fallback provider key (e.g. a prepaid OpenAI key) |
    | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `gemini`) + model (default `gemini-2.5-flash`) |
-   | `LLM_PRIMARY_API_BASE` | optional | primary API base override |
+   | `LLM_PRIMARY_API_BASE` | optional | primary API base override; an absolute non-default HTTP(S) URL is required with `LLM_PRIMARY_AUTH_MODE=none` |
    | `LLM_PRIMARY_AUTH_MODE` | optional | `bearer` (default) or explicit `none` for a trusted local OpenAI-compatible server |
    | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-5.4-mini`) |
-   | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`) |
-   | `LLM_FALLBACK_AUTH_MODE` | optional | fallback `bearer` / `none` mode |
+   | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`); an absolute non-default HTTP(S) URL is required with fallback `none` auth |
+   | `LLM_FALLBACK_AUTH_MODE` | optional | fallback `bearer` / explicit `none` mode |
    | `JOB_SEARCH_CONFIG_FILE` | optional | absolute path to a trusted Python composition module; an optional repo-root `job_search_config.py` is used when unset |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |

@@ -114,6 +114,31 @@ def test_noop_config_preserves_validate_defaults_false(tmp_path, monkeypatch):
     assert components._customized is False
 
 
+def test_in_place_config_mutation_rebuilds_dependent_defaults(tmp_path, monkeypatch):
+    config_file = tmp_path / "in_place.py"
+    config_file.write_text(
+        "from job_search.components import CandidateProfile, DefaultPromptSet\n"
+        "class Prompts(DefaultPromptSet):\n"
+        "    revision = 'in-place-prompts-v1'\n"
+        "def configure(defaults, settings):\n"
+        "    defaults.prompts = Prompts()\n"
+        "    defaults.profile = CandidateProfile(\n"
+        "        display_name='Ada Example', revision='ada-profile-v1')\n"
+        "    return defaults\n",
+        encoding="utf-8",
+    )
+    _configured_env(monkeypatch, config_file)
+
+    components = load_components(PipelineConfig(), command="list")
+
+    assert components._customized is True
+    assert components.evaluator.prompts is components.prompts
+    assert components.cv_renderer.prompts is components.prompts
+    assert components.cv_renderer.profile is components.profile
+    assert components.cv_renderer.compiler.prompts is components.prompts
+    assert components.cv_renderer.compiler.profile is components.profile
+
+
 @pytest.mark.parametrize(
     "source, message",
     [
@@ -272,6 +297,22 @@ def test_no_auth_mode_is_rejected_for_non_openai_fallback(tmp_path, monkeypatch)
 
     with pytest.raises(ConfigurationError, match="fallback.*openai"):
         load_components(settings, command="check")
+
+
+def test_no_auth_fallback_requires_an_explicit_non_default_api_base(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
+    settings = PipelineConfig(
+        llm_fallback_scheme="openai",
+        llm_fallback_auth_mode="none",
+        llm_fallback_api_key="",
+        llm_fallback_api_base="",
+    )
+
+    with pytest.raises(ConfigurationError, match="explicit non-default api_base"):
+        load_components(settings, command="list")
 
 
 def test_check_config_rejects_missing_required_files(tmp_path, monkeypatch):

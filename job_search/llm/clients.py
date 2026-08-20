@@ -25,6 +25,7 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from ..config import (
@@ -60,6 +61,18 @@ def _int(value):
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _canonical_http_hostname(url: str) -> str:
+    """Return a DNS-comparable host for an absolute HTTP(S) URL, or ``""``."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return ""
+        parsed.port  # validates numeric range before configuration is accepted
+        return parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except (UnicodeError, ValueError):
+        return ""
 
 
 def model_shutdown_warning(model: str, today=None) -> str:
@@ -315,9 +328,21 @@ class OpenAIProvider:
     ):
         if auth_mode not in ("bearer", "none"):
             raise ValueError("OpenAI auth_mode must be 'bearer' or 'none'")
+        explicit_api_base = str(api_base or "").strip().rstrip("/")
+        default_api_base = SCHEME_DEFAULT_BASE["openai"].rstrip("/")
+        if auth_mode == "none":
+            hostname = _canonical_http_hostname(explicit_api_base)
+            if not hostname or hostname == "api.openai.com":
+                raise ValueError(
+                    "OpenAI auth_mode='none' requires an explicit non-default api_base"
+                )
         self.api_key = api_key
         self.model = model
-        self.api_base = (api_base or SCHEME_DEFAULT_BASE["openai"]).rstrip("/")
+        self.api_base = (
+            explicit_api_base
+            if auth_mode == "none"
+            else (api_base or default_api_base).rstrip("/")
+        )
         self.send_temperature = send_temperature
         self.auth_mode = auth_mode
         self.requires_api_key = auth_mode == "bearer"

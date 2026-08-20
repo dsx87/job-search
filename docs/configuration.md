@@ -187,9 +187,11 @@ LLM_PRIMARY_API_KEY=
 ```
 
 No-auth mode omits the `Authorization` header while retaining the OpenAI
-chat-completions JSON-schema request. It is explicit and is never inferred from
-a loopback URL. The URL is relative to the machine running the pipeline: a
-GitHub-hosted runner cannot reach LM Studio on your laptop. See the
+chat-completions JSON-schema request. It requires an explicit, non-default
+HTTP(S) `LLM_PRIMARY_API_BASE`; a blank, malformed, or public OpenAI endpoint is
+rejected. The mode is never inferred from a loopback URL. The URL is relative to
+the machine running the pipeline: a GitHub-hosted runner cannot reach LM Studio
+on your laptop. See the
 [LM Studio server guide](https://lmstudio.ai/docs/developer/core/server) and
 [structured-output guide](https://lmstudio.ai/docs/developer/openai-compat/structured-output).
 
@@ -295,8 +297,8 @@ def configure(defaults, settings):
 Private placeholder values are read from the named environment variables only
 when the document is compiled. Do not embed them in the profile or source file.
 When changing profile semantics, replace or rebuild the CV renderer as shown in
-the next section; the loader rebuilds the built-in renderer automatically when
-only the profile changes.
+the next section; the loader rebuilds the built-in evaluator when prompts change
+and the built-in CV renderer when prompts or the profile change.
 
 ## XeLaTeX and custom CV artifacts
 

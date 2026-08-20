@@ -306,21 +306,21 @@ def load_components(
     if not isinstance(configured, Components):
         raise ConfigurationError("{} configure() must return Components".format(path))
     if (
-        configured.evaluator is defaults.evaluator
-        and configured.prompts is not defaults.prompts
-        and isinstance(defaults.evaluator, DefaultJobEvaluator)
+        configured.evaluator is baseline["evaluator"]
+        and configured.prompts is not baseline["prompts"]
+        and isinstance(baseline["evaluator"], DefaultJobEvaluator)
     ):
-        configured.evaluator = type(defaults.evaluator)(configured.prompts)
+        configured.evaluator = type(baseline["evaluator"])(configured.prompts)
     if (
-        configured.cv_renderer is defaults.cv_renderer
-        and type(defaults.cv_renderer) is DefaultCVRenderer
+        configured.cv_renderer is baseline["cv_renderer"]
+        and type(baseline["cv_renderer"]) is DefaultCVRenderer
         and (
-            configured.profile is not defaults.profile
-            or configured.prompts is not defaults.prompts
+            configured.profile is not baseline["profile"]
+            or configured.prompts is not baseline["prompts"]
         )
     ):
-        configured.cv_renderer = type(defaults.cv_renderer)(
-            defaults.cv_renderer.settings,
+        configured.cv_renderer = type(baseline["cv_renderer"])(
+            baseline["cv_renderer"].settings,
             configured.profile,
             prompts=configured.prompts,
         )
