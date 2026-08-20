@@ -10,7 +10,7 @@ from ..config import (
     PipelineConfig,
 )
 from ..composition import ConfigurationError, load_components, redacted_configuration
-from ..components import DefaultOutputBackend
+from ..components import DefaultOutputBackend, DefaultOutputRenderer
 from ..llm.clients import LLMClient
 from ..models import Job
 from ..notify.telegram import TelegramClient
@@ -108,7 +108,15 @@ def run_tailor(args, cfg) -> None:
                 job,
                 telegram,
                 renderer=components.cv_renderer,
-                fit_renderer=components.output_renderer,
+                fit_renderer=(
+                    components.output_renderer
+                    if (
+                        getattr(components, "_customized", False)
+                        and type(components.output_renderer)
+                        is not DefaultOutputRenderer
+                    )
+                    else None
+                ),
             )
         else:
             tailor_single_job(client, job, telegram)

@@ -159,6 +159,15 @@ def test_fit_cv_is_a_prominent_download_button():
     assert 'class="btn cv" href="cvs/{}"'.format(entry.cv_filename) in html
 
 
+def test_text_only_fit_omits_dead_cv_download_button():
+    entry = _fit(pdf=b"", cv="")
+
+    html = render_digest_html(_context(fits=[entry]))
+
+    assert "Download CV" not in html
+    assert 'href="cvs/"' not in html
+
+
 def test_review_renders_as_a_card():
     review = [ReviewEntry(
         job=Job(title="Maybe iOS", company="Beta", url="https://x/2", description="d"),

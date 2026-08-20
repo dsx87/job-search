@@ -107,6 +107,12 @@ method signatures and do not need to inherit project classes.
 | `output_renderer` | `kind` and pure `render_notice`, `render_fit`, `render_digest` methods |
 | `output_backend` | accepted renderer/media kinds, `cv_mode`, and atomic notice/fit/digest delivery methods |
 
+`OutputRenderer.render_notice` must accept
+`render_notice(notice, **context)`. Notice paths may pass presentation metadata
+such as `level`, `title`, `icon`, and `code`; renderers should accept unknown
+context keys so future notice types remain compatible. The built-in plain,
+HTML, and Telegram renderers show how to interpret this metadata.
+
 An output backend declares `cv_mode = "required"` or `"disabled"`. Required
 mode keeps the verified-artifact retry lifecycle. Disabled mode skips tailoring
 and compilation; a successful configured delivery completes the fit. Manual

@@ -107,10 +107,15 @@ class RunStats:
 
 
 def _format_run_summary(
-    stats: RunStats, source_warning="", cv_required=True
+    stats: RunStats, source_warning="", cv_required=True,
+    telegram_markup=True,
 ) -> str:
     lines = [
-        "✅ <b>Job search complete</b>",
+        (
+            "✅ <b>Job search complete</b>"
+            if telegram_markup
+            else "✅ Job search complete"
+        ),
         f"New candidates: {stats.new_jobs}",
         f"Evaluated: {stats.evaluated} (non-fit: {stats.non_fit}, fit: {stats.fits})",
         f"Needs review (uncertain): {stats.uncertain}",
@@ -141,10 +146,28 @@ def _format_run_summary(
             )
         )
     if stats.failure_details:
-        lines.extend(("", "<b>Fit delivery failures</b>"))
-        lines.extend(stats.failure_details[:10])
+        lines.extend((
+            "",
+            (
+                "<b>Fit delivery failures</b>"
+                if telegram_markup
+                else "Fit delivery failures"
+            ),
+        ))
+        lines.extend(
+            detail if telegram_markup else html.unescape(detail)
+            for detail in stats.failure_details[:10]
+        )
     if source_warning:
-        lines.extend(("", "⚠️ <b>Source health</b>", html.escape(source_warning)))
+        lines.extend((
+            "",
+            (
+                "⚠️ <b>Source health</b>"
+                if telegram_markup
+                else "⚠️ Source health"
+            ),
+            html.escape(source_warning) if telegram_markup else str(source_warning),
+        ))
     return "\n".join(lines)
 
 
@@ -568,6 +591,25 @@ def _deliver_configured_digest(
         components, cfg, seen, stats, today, prepared, prepared_reviews,
         uncertain, newly_deferred, source_warning,
     )
+    notifier = _OutputNoticeAdapter(
+        components.output_renderer, components.output_backend
+    )
+    if not (ctx.fits or ctx.review or ctx.deferred):
+        _commit_deferrals(seen, deferrals, today, cfg)
+        try:
+            notifier.send_message(
+                _format_run_summary(
+                    stats,
+                    source_warning,
+                    cv_required=components.output_backend.cv_mode == "required",
+                    telegram_markup=False,
+                )
+            )
+        except Exception as exc:
+            print("Output summary error: {}".format(exc), file=sys.stderr)
+            return False
+        return True
+
     artifacts = tuple(
         entry.artifact
         for entry in list(ctx.fits) + list(ctx.review)
@@ -584,9 +626,6 @@ def _deliver_configured_digest(
         )
     except Exception as exc:
         outcome = DigestOutcome(False, error=exc)
-    notifier = _OutputNoticeAdapter(
-        components.output_renderer, components.output_backend
-    )
     cv_required = components.output_backend.cv_mode == "required"
     cv_complete = not cv_required or outcome.cv_sent >= len(artifacts)
     complete = outcome.delivered and outcome.notification_sent and cv_complete
@@ -624,7 +663,10 @@ def _deliver_configured_digest(
         try:
             notifier.send_message(
                 _format_run_summary(
-                    stats, source_warning, cv_required=cv_required
+                    stats,
+                    source_warning,
+                    cv_required=cv_required,
+                    telegram_markup=False,
                 )
             )
         except Exception as exc:
@@ -748,7 +790,16 @@ def _deliver_digest(
         _commit_deferrals(seen, deferrals, today, cfg)
         # Keep the lightweight text completion notice.
         try:
-            notifier.send_message(_format_run_summary(stats, source_warning))
+            notifier.send_message(
+                _format_run_summary(
+                    stats,
+                    source_warning,
+                    telegram_markup=(
+                        output_renderer is None
+                        or type(output_renderer) is DefaultOutputRenderer
+                    ),
+                )
+            )
         except Exception as exc:
             print(f"Telegram notification error: {exc}", file=sys.stderr)
         return
@@ -873,7 +924,16 @@ def _deliver_digest(
         # fall back to the text run summary (which reports the delivery failures
         # and the pending retries).
         try:
-            notifier.send_message(_format_run_summary(stats, source_warning))
+            notifier.send_message(
+                _format_run_summary(
+                    stats,
+                    source_warning,
+                    telegram_markup=(
+                        output_renderer is None
+                        or type(output_renderer) is DefaultOutputRenderer
+                    ),
+                )
+            )
         except Exception as summary_exc:
             print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
         return
@@ -1470,6 +1530,10 @@ def run_daily(cfg, test: bool = False) -> int:
                         stats,
                         source_warning,
                         cv_required=components.output_backend.cv_mode == "required",
+                        telegram_markup=(
+                            type(components.output_renderer)
+                            is DefaultOutputRenderer
+                        ),
                     )
                 )
             except Exception as exc:
@@ -1512,6 +1576,7 @@ def run_daily(cfg, test: bool = False) -> int:
                         stats,
                         source_warning,
                         cv_required=components.output_backend.cv_mode == "required",
+                        telegram_markup=False,
                     )
                 )
             except Exception as exc:

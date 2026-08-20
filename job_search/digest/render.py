@@ -276,18 +276,25 @@ def _fit_card(entry) -> str:
     job = coerce_job(entry.job)
     meta = _meta_block("Why it fits", _why_cell(entry.evaluation)) + \
         _meta_block("Key facts", _fact_chips(entry.evaluation, job))
-    cv = '<a class="btn cv" href="cvs/{}">↓ Download CV</a>'.format(_attr(entry.cv_filename))
+    cv_filename = getattr(entry, "cv_filename", "")
+    cv = (
+        '<a class="btn cv" href="cvs/{}">↓ Download CV</a>'.format(
+            _attr(cv_filename)
+        )
+        if cv_filename else ""
+    )
+    posting = _posting_button(job)
+    actions = '<div class="actions">{}{}</div>'.format(cv, posting) if cv or posting else ""
     return (
         '<article class="job fit">{head}{summary}'
         '<div class="meta">{meta}</div>{desc}'
-        '<div class="actions">{cv}{posting}</div></article>'
+        '{actions}</article>'
     ).format(
         head=_card_head(job),
         summary=_summary_line(entry.summary),
         meta=meta,
         desc=_desc_details(job),
-        cv=cv,
-        posting=_posting_button(job),
+        actions=actions,
     )
 
 

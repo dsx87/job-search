@@ -221,13 +221,16 @@ def _format_notification(job: dict, evaluation: dict) -> str:
     reason = html.escape(evaluation.get("reason", ""))
     timezone_note = evaluation.get("timezone_note")
 
+    posting = f'<a href="{url}">View posting</a>' if url else ""
+    source_label = f"Source: {source}" if source else ""
+    link_line = "  |  ".join(part for part in (posting, source_label) if part)
     lines = [
         f"<b>{title}</b>",
         f"<b>{company}</b>" + (f" — {location}" if location else ""),
-        f'<a href="{url}">View posting</a>  |  Source: {source}',
-        "",
-        f"<i>{reason}</i>",
     ]
+    if link_line:
+        lines.append(link_line)
+    lines.extend(("", f"<i>{reason}</i>"))
     if timezone_note:
         lines.append(f"\n⚠️ <b>Timezone:</b> {html.escape(timezone_note)}")
 

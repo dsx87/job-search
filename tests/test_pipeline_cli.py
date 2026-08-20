@@ -250,7 +250,52 @@ def test_manual_tailor_honors_env_only_cv_file_overrides(monkeypatch):
 
     cli.run_tailor(make_args("x" * 200), cfg)
 
-    assert observed == [(llm, telegram, cv_renderer, output_renderer)]
+    assert observed == [(llm, telegram, cv_renderer, None)]
+
+
+def test_env_only_cv_override_preserves_manual_message_without_url(monkeypatch):
+    from job_search.components import (
+        CVArtifact,
+        DefaultOutputBackend,
+        DefaultOutputRenderer,
+    )
+
+    cfg = make_config()
+    cfg.base_tex_file = "custom-base.tex"
+    cfg.cv_tailoring_prompt_file = "custom-tailoring.md"
+
+    class Telegram:
+        def __init__(self):
+            self.messages = []
+            self.documents = []
+
+        def send_message(self, message):
+            self.messages.append(message)
+
+        def send_document(self, filename, content, caption):
+            self.documents.append((filename, content, caption))
+
+    class Renderer:
+        def render_tailored(self, _llm, _job, evaluation=None):
+            return CVArtifact("candidate.pdf", "application/pdf", b"PDF")
+
+    telegram = Telegram()
+    components = SimpleNamespace(
+        _customized=False,
+        llm=object(),
+        cv_renderer=Renderer(),
+        output_renderer=DefaultOutputRenderer(),
+        output_backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+
+    cli.run_tailor(make_args("x" * 200, url=""), cfg)
+
+    assert telegram.messages == [
+        "<b>iOS Engineer</b>\n<b>Acme</b> — Berlin\n\n"
+        "📄 Tailored CV attached."
+    ]
+    assert len(telegram.documents) == 1
 
 
 def test_check_config_reports_unknown_provider_without_traceback(monkeypatch, capsys):

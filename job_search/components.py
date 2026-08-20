@@ -519,7 +519,11 @@ class DefaultOutputBackend:
             self.telegram.send_message(str(rendered))
         except Exception as exc:
             return DigestOutcome(False, error=exc)
-        return DigestOutcome(True, notification_sent=True, cv_sent=len(artifacts))
+        # This compatibility backend sends only the rendered notice. Exact
+        # DefaultOutputBackend instances use the legacy ZIP/Telegraph path;
+        # subclasses routed through composition must never claim that artifact
+        # bytes were delivered when this inherited method did not send them.
+        return DigestOutcome(True, notification_sent=True, cv_sent=0)
 
 
 def default_components(

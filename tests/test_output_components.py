@@ -2,7 +2,7 @@ import datetime
 from types import SimpleNamespace
 
 import job_search.output as output_module
-from job_search.components import CVArtifact
+from job_search.components import CVArtifact, DefaultOutputBackend
 from job_search.digest.fixtures import sample_context
 from job_search.output import (
     FilesystemOutputBackend,
@@ -81,3 +81,24 @@ def test_plain_message_backend_delivers_digest_as_one_message():
     assert outcome.delivered is True
     assert outcome.notification_sent is True
     assert messages == [rendered]
+
+
+def test_inherited_default_digest_backend_never_claims_unsent_cv_artifacts():
+    messages = []
+
+    class Telegram:
+        def send_message(self, message):
+            messages.append(message)
+
+    class NoticeOnlyBackend(DefaultOutputBackend):
+        pass
+
+    artifact = CVArtifact("candidate.pdf", "application/pdf", b"PDF")
+    outcome = NoticeOnlyBackend(Telegram()).deliver_digest(
+        "rendered digest", [artifact]
+    )
+
+    assert outcome.delivered is True
+    assert outcome.notification_sent is True
+    assert outcome.cv_sent == 0
+    assert messages == ["rendered digest"]

@@ -318,6 +318,18 @@ def test_format_notification_escapes_html_in_fields():
     assert 'href="https://x/1"' in msg
 
 
+def test_format_notification_omits_posting_link_without_url():
+    from job_search.pipeline.stages import _format_notification
+
+    msg = _format_notification(
+        Job(title="iOS Engineer", company="Acme", description="d"),
+        {"reason": "Manual tailoring"},
+    )
+
+    assert "View posting" not in msg
+    assert 'href=""' not in msg
+
+
 def test_format_uncertain_notification_escapes_and_includes_reason():
     from job_search.pipeline.stages import _format_uncertain_notification
 

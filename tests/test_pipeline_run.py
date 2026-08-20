@@ -211,6 +211,22 @@ def test_invalid_composition_fails_before_state_sync_or_fetch(tmp_path, monkeypa
         run.run_daily(cfg)
 
 
+def test_daily_no_config_path_keeps_builtin_behavior(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
+    for name in (
+        "criteria.md",
+        "cv_tailoring_prompt.md",
+        "igor_pivnyk_cv_base_updated.tex",
+    ):
+        (tmp_path / name).write_text("fixture", encoding="utf-8")
+
+    telegram, _saved = install_daily_fakes(monkeypatch, [])
+
+    assert run.run_daily(make_config(digest_delivery=False)) == 0
+    assert telegram.messages and "Job search complete" in telegram.messages[-1]
+
+
 def test_missing_required_file_fails_before_state_sync_or_fetch(monkeypatch):
     cfg = make_config()
     cfg.state_sync = True
@@ -575,31 +591,40 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("outcome", "expected_notified", "diagnostic"),
+    ("outcome", "expected_notified", "diagnostic", "cv_mode"),
     (
         (
             {"delivered": False, "notification_sent": False,
              "error": RuntimeError("token expired")},
             False,
             "token expired",
+            "disabled",
         ),
         (
             {"delivered": True, "notification_sent": False},
             False,
             "notification was not sent",
+            "disabled",
         ),
         (
             {"delivered": False, "notification_sent": True,
              "error": RuntimeError("artifact store failed")},
             True,
             "artifact store failed",
+            "disabled",
+        ),
+        (
+            {"delivered": True, "notification_sent": True, "cv_sent": 0},
+            True,
+            "only 0 of 1 required CV artifacts were delivered",
+            "required",
         ),
     ),
 )
 def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
-    monkeypatch, capsys, outcome, expected_notified, diagnostic
+    monkeypatch, capsys, outcome, expected_notified, diagnostic, cv_mode
 ):
-    from job_search.components import DigestOutcome
+    from job_search.components import CVArtifact, DigestOutcome
 
     job = Job(
         title="iOS Engineer",
@@ -626,8 +651,7 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
 
     class Backend:
         accepted_renderer_kinds = ("plain",)
-        accepted_media_types = ()
-        cv_mode = "disabled"
+        accepted_media_types = ("application/pdf",)
 
         def deliver_notice(self, rendered):
             notices.append(rendered)
@@ -642,6 +666,12 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
         output_renderer=Renderer(),
         output_backend=Backend(),
     )
+    components.output_backend.cv_mode = cv_mode
+    payload = {}
+    if cv_mode == "required":
+        payload["artifact"] = CVArtifact(
+            "candidate.pdf", "application/pdf", b"PDF"
+        )
     stats = run.RunStats(fits=1)
     completed = run._deliver_configured_digest(
         components,
@@ -649,7 +679,7 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
         seen,
         stats,
         datetime.date(2026, 8, 20),
-        [(job, {}, SimpleNamespace(notified=False), {"fit": True})],
+        [(job, payload, SimpleNamespace(notified=False), {"fit": True})],
         [],
         [],
         [],
@@ -668,14 +698,21 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
     assert any(marker.startswith("delivery:attempt:") for marker in seen)
     assert stats.delivery_failed == 1
     assert notices and "Job search complete" in notices[-1]
+    assert "<" not in notices[-1]
     assert diagnostic in capsys.readouterr().err
     assert saved
 
 
 def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
-    from job_search.components import DigestOutcome
+    from job_search.components import DefaultPromptSet, DigestOutcome
 
-    install_daily_fakes(monkeypatch, [])
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/configured-failure",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    install_daily_fakes(monkeypatch, [job])
 
     class Backend:
         accepted_renderer_kinds = ("plain",)
@@ -690,12 +727,21 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
 
     components = SimpleNamespace(
         _customized=True,
-        llm=FakeLLM(),
-        prompts=SimpleNamespace(revision="test"),
+        llm=SimpleNamespace(
+            usage_summary=lambda: "usage",
+            generate=lambda *_a, **_k: "summary",
+        ),
+        prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
         evaluator=SimpleNamespace(
             fingerprint=lambda _criteria: "signature",
-            evaluate=lambda *_args: {"fit": False},
+            evaluate=lambda *_args: {
+                "fit": True,
+                "verdict": "fit",
+                "reason": "custom fit",
+                "timezone_note": None,
+                "facts": {},
+            },
         ),
         cv_renderer=SimpleNamespace(),
         section_provider=SimpleNamespace(load=lambda: ((), "")),
@@ -770,6 +816,72 @@ def test_configured_digest_cv_stats_count_fit_artifacts_not_review_artifacts(
 
     assert completed is True
     assert stats.cv_sent == 1
+
+
+def test_configured_empty_digest_commits_prior_deferral_without_batch_delivery(
+    monkeypatch
+):
+    job = Job(
+        title="Deferred",
+        company="Acme",
+        url="https://example.com/deferred",
+        description="description",
+    )
+    seen = set()
+    notices = []
+    saved = []
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        run, "_save_seen_for", lambda _cfg, values: saved.append(set(values))
+    )
+
+    class Renderer:
+        def render_notice(self, notice, **_context):
+            return str(notice)
+
+        def render_digest(self, _context):
+            raise AssertionError("an empty batch must not render a digest")
+
+    class Backend:
+        cv_mode = "disabled"
+
+        def deliver_notice(self, rendered):
+            notices.append(rendered)
+
+        def deliver_digest(self, *_args, **_kwargs):
+            raise AssertionError("an empty batch must not call digest delivery")
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=SimpleNamespace(revision="test"),
+        section_provider=SimpleNamespace(load=lambda: ((), "")),
+        output_renderer=Renderer(),
+        output_backend=Backend(),
+    )
+
+    completed = run._deliver_configured_digest(
+        components,
+        make_config(digest_delivery=True),
+        seen,
+        run.RunStats(),
+        datetime.date(2026, 8, 20),
+        [],
+        [],
+        [],
+        [],
+        "",
+        lambda _job: "unused",
+        [({"deferred:job:existing"}, job, "deferred-signature")],
+    )
+
+    assert completed is True
+    assert "deferred:job:existing" in seen
+    assert any(
+        marker.endswith(":deferred-signature:deferred") for marker in seen
+    )
+    assert notices and "Job search complete" in notices[-1]
+    assert "<" not in notices[-1]
+    assert saved
 
 
 def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
