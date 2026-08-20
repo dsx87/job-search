@@ -10,7 +10,16 @@ import html
 import sys
 from dataclasses import dataclass, field
 
-from ..config import load_base_tex, load_criteria, load_tailoring_instructions
+from ..composition import ConfigurationError, load_components
+from ..config import (
+    BASE_TEX_FILE,
+    CRITERIA_FILE,
+    CV_TAILORING_PROMPT_FILE,
+    SEEN_JOBS_FILE,
+    load_base_tex,
+    load_criteria,
+    load_tailoring_instructions,
+)
 from ..digest import (
     DeferredEntry,
     DigestContext,
@@ -179,7 +188,28 @@ def _block_alert_message(payload):
     return "\n".join(lines)
 
 
-def _drain_block_alerts(seen, telegram):
+def _seen_file(cfg):
+    return getattr(cfg, "seen_jobs_file", SEEN_JOBS_FILE)
+
+
+def _load_seen_for(cfg):
+    path = _seen_file(cfg)
+    return load_seen_jobs() if path == SEEN_JOBS_FILE else load_seen_jobs(path)
+
+
+def _save_seen_for(cfg, seen):
+    path = _seen_file(cfg)
+    if path == SEEN_JOBS_FILE:
+        return save_seen_jobs(seen)
+    return save_seen_jobs(seen, path)
+
+
+def _load_file_for(cfg, attribute, default, loader):
+    path = getattr(cfg, attribute, default)
+    return loader() if path == default else loader(path)
+
+
+def _drain_block_alerts(seen, telegram, cfg=None):
     for token, payload in pending_block_alerts(seen):
         try:
             telegram.send_message(_block_alert_message(payload))
@@ -187,18 +217,18 @@ def _drain_block_alerts(seen, telegram):
             print(f"Telegram blocked-fit alert error: {exc}", file=sys.stderr)
             continue
         acknowledge_block_alert(seen, token)
-        save_seen_jobs(seen)
+        save_seen_jobs(seen) if cfg is None else _save_seen_for(cfg, seen)
 
 
-def _record_fit_failure(seen, stats, job, stage, today, telegram):
+def _record_fit_failure(seen, stats, job, stage, today, telegram, cfg=None):
     previous = delivery_retry_state(seen, **job)
     state = record_delivery_failure(seen, job, today, stage)
-    save_seen_jobs(seen)
+    save_seen_jobs(seen) if cfg is None else _save_seen_for(cfg, seen)
     if len(stats.failure_details) < 10:
         stats.failure_details.append(_failure_detail(job, stage, state))
     if state.blocked and not previous.blocked:
         stats.newly_blocked += 1
-        _drain_block_alerts(seen, telegram)
+        _drain_block_alerts(seen, telegram, cfg)
     return state
 
 
@@ -223,9 +253,13 @@ def _deferred_markers(job) -> set[str]:
 
 
 def _fetch_for_pipeline(cfg):
-    report = fetch_jobs_with_health(
-        source_names=select_sources(cfg.sources_enable, cfg.sources_disable), verbose=True,
-    )
+    kwargs = {
+        "source_names": select_sources(cfg.sources_enable, cfg.sources_disable),
+        "verbose": True,
+    }
+    if _seen_file(cfg) != SEEN_JOBS_FILE:
+        kwargs["seen_jobs_file"] = _seen_file(cfg)
+    report = fetch_jobs_with_health(**kwargs)
     summary = format_source_health(report)
     if summary:
         print(summary, file=sys.stderr)
@@ -234,12 +268,13 @@ def _fetch_for_pipeline(cfg):
 
 def run_seed(cfg) -> int:
     """Mark all currently fetched jobs as seen without evaluating."""
+    load_components(cfg, command="seed")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
         print("No usable job source completed; seed aborted.", file=sys.stderr)
         return 1
     raw_jobs = report.jobs
-    seen_raw = load_seen_jobs()
+    seen_raw = _load_seen_for(cfg)
     seen = seen_raw if seen_raw is not None else SeenSet()
     added = 0
     for j in raw_jobs:
@@ -248,19 +283,20 @@ def run_seed(cfg) -> int:
         if url_key and url_key not in seen:
             added += 1
         seen.update(keys)
-    save_seen_jobs(seen)
+    _save_seen_for(cfg, seen)
     print(f"Seed complete — {len(raw_jobs)} job(s) marked seen ({added} new URL entries added).")
     return 0
 
 
 def run_list(cfg) -> int:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
+    load_components(cfg, command="list")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
         print("No usable job source completed; list aborted.", file=sys.stderr)
         return 1
     raw_jobs = report.jobs
-    seen_raw = load_seen_jobs()
+    seen_raw = _load_seen_for(cfg)
     seen = seen_raw if seen_raw is not None else SeenSet()
     new_jobs = [j for j in raw_jobs if seen.isdisjoint(job_identity_keys(j))]
     print(f"{len(new_jobs)} new job(s):\n")
@@ -348,7 +384,7 @@ def _publish_cvs(entries, date):
     return True, password, zip_url
 
 
-def _commit_deferrals(seen, deferrals, today) -> None:
+def _commit_deferrals(seen, deferrals, today, cfg=None) -> None:
     """Record queued deferrals: markers to suppress repeat notices, plus the
     signature that stops a reopened job from re-deferring every run."""
     for markers, job, signature in deferrals:
@@ -356,7 +392,7 @@ def _commit_deferrals(seen, deferrals, today) -> None:
         if signature is not None:
             record_evaluation(seen, job, signature, "deferred", today)
     if deferrals:
-        save_seen_jobs(seen)
+        save_seen_jobs(seen) if cfg is None else _save_seen_for(cfg, seen)
 
 
 def _deliver_digest(
@@ -432,7 +468,7 @@ def _deliver_digest(
         # which is what happened before this early return committed them — loses
         # the "deferred" signature that stops the reopen→defer cycle, and the job
         # re-pays the description fetch every run forever.
-        _commit_deferrals(seen, deferrals, today)
+        _commit_deferrals(seen, deferrals, today, cfg)
         # Keep the lightweight text completion notice.
         try:
             telegram.send_message(_format_run_summary(stats, source_warning))
@@ -469,7 +505,7 @@ def _deliver_digest(
         source_warning=source_warning,
         # The state-size line rides along here so the growth trend is visible in
         # the archive itself, not only in a CI log nobody reads.
-        usage_summary=" ".join((llm.usage_summary(), state_size_summary(seen))),
+        usage_summary=" ".join((llm.usage_summary(), state_size_summary(seen, _seen_file(cfg)))),
         fits=fit_entries,
         review=review_entries,
         deferred=deferred_entries,
@@ -524,14 +560,14 @@ def _deliver_digest(
             retract_digest(TelegraphClient(), cfg.telegraph_access_token, page_url)
         for job, _payload, _rs, _ev in prepared:
             stats.delivery_failed += 1
-            _record_fit_failure(seen, stats, job, "delivery", today, telegram)
+            _record_fit_failure(seen, stats, job, "delivery", today, telegram, cfg)
             # Mark notified so the retry takes the known-fit route: the fallback
             # run summary below names each pending fit, and without this the next
             # run re-pays fact extraction, bullet selection AND pdflatex from
             # scratch for a job it already knows is a fit (finding N9).
             mark_delivery_notified(seen, **job)
         if prepared:
-            save_seen_jobs(seen)
+            _save_seen_for(cfg, seen)
         # Never leave the user in silence — the digest was the only delivery, so
         # fall back to the text run summary (which reports the delivery failures
         # and the pending retries).
@@ -561,7 +597,7 @@ def _deliver_digest(
     # re-sorts and rewrites the entire file, and every key here is union-safe, so
     # a crash mid-loop is already covered by the retry ladder.
     if prepared:
-        save_seen_jobs(seen)
+        _save_seen_for(cfg, seen)
 
     # The review and deferral sections rode on this same (now-delivered) ZIP, so
     # it is finally safe to record them — a failed send above returns early and
@@ -574,8 +610,8 @@ def _deliver_digest(
         if sig is not None:
             record_evaluation(seen, job, sig, "uncertain", today)
     if any(entry.pdf_bytes for entry in review_entries):
-        save_seen_jobs(seen)
-    _commit_deferrals(seen, deferrals, today)
+        _save_seen_for(cfg, seen)
+    _commit_deferrals(seen, deferrals, today, cfg)
     # Finding 4 ("every delivery-failure branch ends in a Telegram notice") is
     # satisfied by construction now rather than by a notice: a CV that cannot be
     # hosted fails the *whole* digest into the ZIP branch above, which already
@@ -585,11 +621,13 @@ def _deliver_digest(
 
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
+    load_components(cfg, command="daily")
     if cfg.state_sync:
         # Pull the shared dedup baseline FIRST: linkedin-guest peeks at
         # seen_jobs.json during fetch to skip description requests for jobs the
         # other runner already delivered. Best-effort; never raises.
-        pull_state()
+        path = _seen_file(cfg)
+        pull_state() if path == SEEN_JOBS_FILE else pull_state(seen_file=path)
     if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
         print(
             "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
@@ -618,10 +656,15 @@ def run_daily(cfg, test: bool = False) -> int:
                     "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
                     flush=True,
                 )
-        criteria = load_criteria()
+        criteria = _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
         crit_ver = criteria_version(criteria)
-        tailoring_instructions = load_tailoring_instructions()
-        base_tex = load_base_tex()
+        tailoring_instructions = _load_file_for(
+            cfg,
+            "cv_tailoring_prompt_file",
+            CV_TAILORING_PROMPT_FILE,
+            load_tailoring_instructions,
+        )
+        base_tex = _load_file_for(cfg, "base_tex_file", BASE_TEX_FILE, load_base_tex)
 
         print("Fetching jobs...", flush=True)
         report = _fetch_for_pipeline(cfg)
@@ -662,14 +705,14 @@ def run_daily(cfg, test: bool = False) -> int:
             print("Done.", flush=True)
             return 0
 
-        seen_raw = load_seen_jobs()
+        seen_raw = _load_seen_for(cfg)
         first_run = seen_raw is None
         seen = seen_raw if seen_raw is not None else SeenSet()
         # Reported, never pruned: the eval:* markers are order 4d's reopen
         # history. Logging the growth every run means a future pruning decision
         # rests on real numbers.
-        print(state_size_summary(seen), flush=True)
-        _drain_block_alerts(seen, telegram)
+        print(state_size_summary(seen, _seen_file(cfg)), flush=True)
+        _drain_block_alerts(seen, telegram, cfg)
 
         today = _today()
         cutoff = today - datetime.timedelta(days=7)
@@ -761,7 +804,7 @@ def run_daily(cfg, test: bool = False) -> int:
             evaluation_jobs.append((job, retry_state))
 
         # Persist seen set now — captures first-run silenced jobs; new jobs are NOT yet included.
-        save_seen_jobs(seen)
+        _save_seen_for(cfg, seen)
         print(f"Found {candidate_count} new or retryable job(s).", flush=True)
 
         # ── Stage 2: Evaluate all new jobs concurrently ──────────────────────
@@ -844,7 +887,7 @@ def run_daily(cfg, test: bool = False) -> int:
                         file=sys.stderr,
                     )
         # Persist the non-fits and uncertain jobs captured above in one write.
-        save_seen_jobs(seen)
+        _save_seen_for(cfg, seen)
         review_to_tailor = uncertain if cfg.digest_delivery else []
         print(
             "{} fit(s) and {} review job(s) to tailor.".format(
@@ -918,6 +961,7 @@ def run_daily(cfg, test: bool = False) -> int:
                             "preparation",
                             today,
                             telegram,
+                            cfg,
                         )
                         print(
                             f"  Error preparing '{job.get('title')}' — {failure_state}: {exc}",
@@ -936,7 +980,7 @@ def run_daily(cfg, test: bool = False) -> int:
                             else:
                                 stats.notification_sent += 1
                                 mark_delivery_notified(seen, **job)
-                                save_seen_jobs(seen)
+                                _save_seen_for(cfg, seen)
                         continue
                     if kind == "review":
                         prepared_reviews.append((job, payload, evaluation))
@@ -966,7 +1010,9 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
                 except Exception as exc:
                     stats.delivery_failed += 1
-                    _record_fit_failure(seen, stats, job, "notification", today, telegram)
+                    _record_fit_failure(
+                        seen, stats, job, "notification", today, telegram, cfg
+                    )
                     print(
                         f"  Error sending '{payload.get('title')}': {exc}",
                         file=sys.stderr,
@@ -977,17 +1023,17 @@ def run_daily(cfg, test: bool = False) -> int:
                 stats.cv_sent += int(outcome.cv_sent)
                 if outcome.notification_sent:
                     mark_delivery_notified(seen, **job)
-                    save_seen_jobs(seen)
+                    _save_seen_for(cfg, seen)
                 if outcome.complete:
                     seen.update(job_identity_keys(job))
                     signature = _signature_for(job)
                     if signature is not None:
                         record_evaluation(seen, job, signature, "fit", today)
-                    save_seen_jobs(seen)
+                    _save_seen_for(cfg, seen)
                 else:
                     stats.delivery_failed += 1
                     stage = "document" if outcome.notification_satisfied else "notification"
-                    _record_fit_failure(seen, stats, job, stage, today, telegram)
+                    _record_fit_failure(seen, stats, job, stage, today, telegram, cfg)
                     detail = outcome.error or "incomplete delivery"
                     print(
                         f"  Error sending '{payload.get('title')}': {detail}",
@@ -1013,4 +1059,5 @@ def run_daily(cfg, test: bool = False) -> int:
             # while namespaced deferral markers only suppress duplicate notices.
             # Both are set-union-safe to share after a partial run.
             # Dev/test runs never push, mirroring run.sh's --list/--test rule.
-            push_state()
+            path = _seen_file(cfg)
+            push_state() if path == SEEN_JOBS_FILE else push_state(seen_file=path)

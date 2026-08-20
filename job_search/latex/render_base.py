@@ -13,12 +13,17 @@ import subprocess
 import sys
 import tempfile
 
-from ..config import BASE_TEX_FILE, OUT_PDF_FILE
+from ..composition import load_components
+from ..config import BASE_TEX_FILE, OUT_PDF_FILE, PipelineConfig
 from .compile import pdf_pages_from_log
 
 
-def main() -> int:
-    with open(BASE_TEX_FILE, encoding="utf-8") as f:
+def main(cfg=None) -> int:
+    cfg = PipelineConfig.from_env() if cfg is None else cfg
+    load_components(cfg, command="base")
+    base_tex_file = getattr(cfg, "base_tex_file", BASE_TEX_FILE)
+    out_pdf_file = getattr(cfg, "rendered_base_file", OUT_PDF_FILE)
+    with open(base_tex_file, encoding="utf-8") as f:
         tex_source = f.read()
 
     phone = os.environ.get("CV_PHONE", "").strip()
@@ -53,10 +58,10 @@ def main() -> int:
             )
             return 1
 
-        shutil.copyfile(pdf_path, OUT_PDF_FILE)
+        shutil.copyfile(pdf_path, out_pdf_file)
 
     pagedesc = "1 page" if pages == 1 else f"{pages} pages" if pages else "unknown page count"
-    print(f"Wrote {OUT_PDF_FILE} ({pagedesc}, phone {'included' if phone else 'masked'}).")
+    print(f"Wrote {out_pdf_file} ({pagedesc}, phone {'included' if phone else 'masked'}).")
     return 0
 
 

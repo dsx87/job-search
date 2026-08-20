@@ -107,3 +107,20 @@ def test_unresolved_manual_job_exits_before_constructing_clients(monkeypatch):
         cli.run_tailor(make_args("x" * 20), make_config())
 
     assert exc_info.value.code == 1
+
+
+def test_check_config_prints_redacted_configuration_without_dispatch(monkeypatch, capsys):
+    cfg = make_config()
+    components = object()
+    monkeypatch.setattr(cli.PipelineConfig, "from_env", lambda: cfg)
+    monkeypatch.setattr(cli, "load_components", lambda settings, command: components)
+    monkeypatch.setattr(
+        cli, "redacted_configuration", lambda settings, loaded: '{"safe": true}'
+    )
+    monkeypatch.setattr(
+        cli, "run_daily", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no daily"))
+    )
+    monkeypatch.setattr(cli.sys, "argv", ["job-search", "--check-config"])
+
+    assert cli.main() == 0
+    assert capsys.readouterr().out.strip() == '{"safe": true}'

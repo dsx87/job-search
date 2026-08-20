@@ -4,6 +4,7 @@ import sys
 import urllib.parse
 
 from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
+from ..composition import ConfigurationError, load_components, redacted_configuration
 from ..llm.clients import LLMClient
 from ..models import Job
 from ..notify.telegram import TelegramClient
@@ -13,6 +14,7 @@ from .stages import _send_error_notification, ensure_job_description, tailor_sin
 
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
+    load_components(cfg, command="tailor")
     if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
         print(
             "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
@@ -60,6 +62,11 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--check-config",
+        action="store_true",
+        help="Load and validate configuration, print redacted effective settings, and exit.",
+    )
+    parser.add_argument(
         "--test",
         action="store_true",
         help="Force-process one job through the full pipeline to verify everything works. Does not modify seen_jobs.json.",
@@ -89,17 +96,30 @@ def main():
     parser.add_argument("--location", default="", help="Job location (used with --tailor).")
     args = parser.parse_args()
 
-    if args.tailor:
-        run_tailor(args, cfg)
-        return
+    if args.check_config:
+        try:
+            components = load_components(cfg, command="check")
+        except ConfigurationError as exc:
+            print("Error: {}".format(exc), file=sys.stderr)
+            return 2
+        print(redacted_configuration(cfg, components))
+        return 0
 
-    if args.seed:
-        return run_seed(cfg)
+    try:
+        if args.tailor:
+            run_tailor(args, cfg)
+            return
 
-    if args.list:
-        return run_list(cfg)
+        if args.seed:
+            return run_seed(cfg)
 
-    return run_daily(cfg, test=args.test)
+        if args.list:
+            return run_list(cfg)
+
+        return run_daily(cfg, test=args.test)
+    except ConfigurationError as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
