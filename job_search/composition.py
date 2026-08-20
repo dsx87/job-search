@@ -11,6 +11,7 @@ from .components import (
     CVRenderer,
     CandidateFilter,
     Components,
+    DefaultCVRenderer,
     DefaultJobEvaluator,
     JobEvaluator,
     LLMService,
@@ -165,6 +166,19 @@ def load_components(
         and isinstance(defaults.evaluator, DefaultJobEvaluator)
     ):
         configured.evaluator = type(defaults.evaluator)(configured.prompts)
+    if (
+        configured.cv_renderer is defaults.cv_renderer
+        and isinstance(defaults.cv_renderer, DefaultCVRenderer)
+        and (
+            configured.profile is not defaults.profile
+            or configured.prompts is not defaults.prompts
+        )
+    ):
+        configured.cv_renderer = type(defaults.cv_renderer)(
+            defaults.cv_renderer.settings,
+            configured.profile,
+            prompts=configured.prompts,
+        )
     validate_components(configured, settings, command)
     configured._customized = True
     return configured

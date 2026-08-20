@@ -235,6 +235,60 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
     assert observed == [(configured_llm, "criteria", "iOS Engineer")]
 
 
+def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
+    from job_search.components import CVArtifact
+
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/custom-cv",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    calls = []
+
+    class Evaluator:
+        revision = "fit-v1"
+
+        def evaluate(self, llm, criteria, candidate):
+            return {
+                "fit": True, "verdict": "fit", "reason": "custom fit",
+                "timezone_note": None, "facts": {},
+            }
+
+        def fingerprint(self, criteria):
+            return "fit-v1"
+
+    class Renderer:
+        media_types = ("application/pdf",)
+
+        def render_tailored(self, llm, candidate, evaluation=None):
+            calls.append((llm, candidate.title, evaluation["reason"]))
+            return CVArtifact("ada_cv_acme.pdf", "application/pdf", b"CUSTOM-PDF")
+
+        def render_base(self, llm=None):
+            raise AssertionError("not base rendering")
+
+    llm = SimpleNamespace(usage_summary=lambda: "usage")
+    components = SimpleNamespace(
+        _customized=True,
+        llm=llm,
+        prompts=object(),
+        candidate_filter=SimpleNamespace(include=lambda _job: True),
+        evaluator=Evaluator(),
+        cv_renderer=Renderer(),
+        output_backend=SimpleNamespace(telegram=telegram),
+    )
+    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        run, "prepare_fit",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("legacy renderer")),
+    )
+
+    assert run.run_daily(make_config()) == 0
+    assert calls == [(llm, "iOS Engineer", "custom fit")]
+    assert telegram.documents[0][0] == "ada_cv_acme.pdf"
+    assert telegram.documents[0][1] == b"CUSTOM-PDF"
+
+
 def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):
     telegram, _saved = install_daily_fakes(monkeypatch, [])
     monkeypatch.setattr(

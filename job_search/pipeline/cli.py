@@ -50,7 +50,10 @@ def run_tailor(args, cfg) -> None:
         client = LLMClient.from_config(cfg)
         telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     try:
-        tailor_single_job(client, job, telegram)
+        if getattr(components, "_customized", False):
+            tailor_single_job(client, job, telegram, renderer=components.cv_renderer)
+        else:
+            tailor_single_job(client, job, telegram)
         print("Done.", flush=True)
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)

@@ -8,10 +8,12 @@ import concurrent.futures
 import datetime
 import html
 import sys
+import os
 from dataclasses import dataclass, field
 
 from ..composition import ConfigurationError, load_components
 from ..components import DefaultJobEvaluator, DefaultPromptSet, default_components
+from ..components import CVArtifact
 from ..config import (
     BASE_TEX_FILE,
     CRITERIA_FILE,
@@ -63,6 +65,7 @@ from ..state.seen_jobs import (
 )
 from .stages import (
     _format_deferred_notification,
+    _format_notification,
     _format_uncertain_notification,
     _send_error_notification,
     clean_job_description,
@@ -274,6 +277,24 @@ def _evaluate_candidate(llm, criteria, job, evaluator=None):
     )
 
 
+def _prepare_with_renderer(renderer, llm, job, evaluation=None):
+    artifact = renderer.render_tailored(llm, job, evaluation)
+    job = coerce_job(job)
+    payload = {
+        "title": job.get("title", "?"),
+        "company": job.get("company", "?"),
+        "artifact": artifact,
+        # Compatibility fields keep legacy digest/backends working while the
+        # generic artifact is threaded end-to-end.
+        "pdf_bytes": artifact.content,
+        "cv_filename": artifact.filename,
+        "media_type": artifact.media_type,
+    }
+    if evaluation is not None:
+        payload["message"] = _format_notification(job, evaluation)
+    return payload
+
+
 # Reserved for pipeline metadata; these entries must never act as seen identities.
 _DEFERRED_MARKER_PREFIX = "deferred:"
 
@@ -390,6 +411,18 @@ def _cv_archive_filename(date) -> str:
     return "job-cvs-{}.zip".format(iso)
 
 
+def _unique_artifact(artifact, taken):
+    if artifact.filename not in taken:
+        return artifact
+    stem, extension = os.path.splitext(artifact.filename)
+    counter = 2
+    name = "{}_{}{}".format(stem, counter, extension)
+    while name in taken:
+        counter += 1
+        name = "{}_{}{}".format(stem, counter, extension)
+    return CVArtifact(name, artifact.media_type, artifact.content)
+
+
 def _publish_cvs(entries, date):
     """Encrypt and host one archive containing the tailored CVs.
 
@@ -467,7 +500,12 @@ def _deliver_digest(
     taken = set()
     fit_entries = []
     for (job, payload, _rs, evaluation), summary in zip(prepared, fit_summaries):
-        name = cv_filename_for(job, taken)
+        artifact = payload.get("artifact")
+        if artifact is not None:
+            artifact = _unique_artifact(artifact, taken)
+            name = artifact.filename
+        else:
+            name = cv_filename_for(job, taken)
         taken.add(name)
         fit_entries.append(
             FitEntry(
@@ -476,13 +514,19 @@ def _deliver_digest(
                 summary=summary,
                 pdf_bytes=payload.get("pdf_bytes"),
                 cv_filename=name,
+                artifact=artifact,
             )
         )
     review_payloads = {id(job): payload for job, payload, _evaluation in prepared_reviews}
     review_entries = []
     for (job, evaluation), summary in zip(uncertain, review_summaries):
         payload = review_payloads.get(id(job))
-        name = cv_filename_for(job, taken) if payload else ""
+        artifact = payload.get("artifact") if payload else None
+        if artifact is not None:
+            artifact = _unique_artifact(artifact, taken)
+            name = artifact.filename
+        else:
+            name = cv_filename_for(job, taken) if payload else ""
         if name:
             taken.add(name)
         review_entries.append(
@@ -492,6 +536,7 @@ def _deliver_digest(
                 summary=summary,
                 pdf_bytes=payload.get("pdf_bytes") if payload else b"",
                 cv_filename=name,
+                artifact=artifact,
             )
         )
     deferred_entries = [DeferredEntry(job=job) for job in newly_deferred]
@@ -951,7 +996,15 @@ def run_daily(cfg, test: bool = False) -> int:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.tailor_workers) as pool:
                 future_to_candidate = {}
                 for job, evaluation, retry_state in fits:
-                    if retry_state.notified:
+                    if getattr(components, "_customized", False):
+                        future = pool.submit(
+                            _prepare_with_renderer,
+                            components.cv_renderer,
+                            llm,
+                            job,
+                            None if retry_state.notified else evaluation,
+                        )
+                    elif retry_state.notified:
                         future = pool.submit(
                             prepare_retry_fit,
                             llm,
@@ -970,14 +1023,23 @@ def run_daily(cfg, test: bool = False) -> int:
                         )
                     future_to_candidate[future] = ("fit", job, evaluation, retry_state)
                 for job, evaluation in review_to_tailor:
-                    future = pool.submit(
-                        prepare_fit,
-                        llm,
-                        tailoring_instructions,
-                        base_tex,
-                        job,
-                        evaluation,
-                    )
+                    if getattr(components, "_customized", False):
+                        future = pool.submit(
+                            _prepare_with_renderer,
+                            components.cv_renderer,
+                            llm,
+                            job,
+                            evaluation,
+                        )
+                    else:
+                        future = pool.submit(
+                            prepare_fit,
+                            llm,
+                            tailoring_instructions,
+                            base_tex,
+                            job,
+                            evaluation,
+                        )
                     future_to_candidate[future] = ("review", job, evaluation, None)
                 for future in concurrent.futures.as_completed(future_to_candidate):
                     kind, job, evaluation, retry_state = future_to_candidate[future]

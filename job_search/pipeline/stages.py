@@ -297,7 +297,8 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
     """
     title = payload["title"]
     company = payload["company"]
-    pdf_bytes = payload.get("pdf_bytes")
+    artifact = payload.get("artifact")
+    pdf_bytes = artifact.content if artifact is not None else payload.get("pdf_bytes")
     if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
         return DeliveryOutcome(
             error=ValueError("verified PDF bytes are required for delivery"),
@@ -315,7 +316,7 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
     slug = _company_slug(company)
     try:
         telegram.send_document(
-            f"igor_pivnyk_cv_{slug}.pdf",
+            artifact.filename if artifact is not None else f"igor_pivnyk_cv_{slug}.pdf",
             pdf_bytes,
             caption=f"Tailored CV — {title} at {company}",
         )
@@ -360,7 +361,7 @@ def process_job(llm, criteria: str, tailoring_instructions: str, base_tex: str, 
     return True
 
 
-def tailor_single_job(client, job: dict, telegram) -> None:
+def tailor_single_job(client, job: dict, telegram, renderer=None) -> None:
     """Tailor + compile + Telegram-deliver a CV for one manually supplied job.
 
     Reuses the same tailoring/compilation/delivery path as the scheduled
@@ -372,12 +373,17 @@ def tailor_single_job(client, job: dict, telegram) -> None:
     company = job.get("company", "the role")
 
     print(f"  Tailoring and verifying CV for: {title} at {company}", flush=True)
-    pdf_bytes = _prepare_verified_pdf(
-        client,
-        load_tailoring_instructions(),
-        load_base_tex(),
-        job,
-    )
+    artifact = None
+    if renderer is None:
+        pdf_bytes = _prepare_verified_pdf(
+            client,
+            load_tailoring_instructions(),
+            load_base_tex(),
+            job,
+        )
+    else:
+        artifact = renderer.render_tailored(client, job)
+        pdf_bytes = artifact.content
 
     safe_title = html.escape(title)
     safe_company = html.escape(company)
@@ -395,6 +401,7 @@ def tailor_single_job(client, job: dict, telegram) -> None:
             "company": company,
             "message": header,
             "pdf_bytes": pdf_bytes,
+            "artifact": artifact,
         },
         telegram,
     )

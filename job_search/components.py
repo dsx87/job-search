@@ -13,6 +13,7 @@ from string import Template
 from typing import Any, Mapping, Protocol, Sequence, Tuple, runtime_checkable
 
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
+from .latex.compile import LatexCompiler
 
 
 @runtime_checkable
@@ -87,6 +88,15 @@ class CandidateProfile:
                 value = "\\enspace\\textbar\\enspace {}".format(value) if value else ""
             rendered = rendered.replace(placeholder, value)
         return rendered
+
+    def validate_tex(self, tex: str) -> list:
+        from .profile import validate_tailored_cv
+
+        return validate_tailored_cv(
+            tex,
+            expected_job_order=self.employer_order,
+            forbidden_term_patterns=self.forbidden_claim_patterns,
+        )
 
 
 @dataclass(frozen=True)
@@ -342,29 +352,67 @@ class DefaultOutputRenderer:
 class DefaultCVRenderer:
     media_types = ("application/pdf",)
 
-    def __init__(self, settings: object, profile: CandidateProfile):
+    def __init__(
+        self, settings: object, profile: CandidateProfile,
+        *, prompts: PromptSet = None, compiler: CVCompiler = None,
+    ):
         self.settings = settings
         self.profile = profile
+        self.prompts = prompts or DefaultPromptSet()
+        self.compiler = compiler or LatexCompiler(
+            prompts=self.prompts, profile=self.profile
+        )
 
     def render_tailored(self, llm: LLMService, job: object, evaluation: object = None) -> CVArtifact:
         from .config import load_base_tex, load_tailoring_instructions
-        from .pipeline.stages import _company_slug, _prepare_verified_pdf
+        from .llm.tailor import tailor_resume
+        from .pipeline.stages import CVPreparationError, _company_slug
         base = load_base_tex(self.profile.base_tex_path)
-        instructions = load_tailoring_instructions(self.settings.cv_tailoring_prompt_file)
-        content = _prepare_verified_pdf(llm, instructions, base, job)
+        instructions = load_tailoring_instructions(
+            getattr(self.settings, "cv_tailoring_prompt_file", "cv_tailoring_prompt.md")
+        )
+        try:
+            tex_source = tailor_resume(
+                llm, instructions, base, job,
+                prompts=self.prompts, profile=self.profile,
+            )
+            result = self.compiler.compile(llm, tex_source)
+        except Exception as exc:
+            raise CVPreparationError("CV rendering failed: {}".format(exc)) from exc
+        if not result.ok or not result.pdf_bytes or result.page_count != 1:
+            raise CVPreparationError(
+                result.error_excerpt or "CV compilation did not produce a verified one-page PDF"
+            )
+        final_tex = getattr(result, "tex_source", "") or tex_source
+        violations = self.profile.validate_tex(final_tex)
+        if violations:
+            raise CVPreparationError(
+                "Final CV validation failed after compilation repair: " + "; ".join(violations)
+            )
         company = getattr(job, "company", "") or (
             job.get("company", "") if hasattr(job, "get") else ""
         )
         return CVArtifact(
             "{}_{}.pdf".format(self.profile.cv_filename_prefix, _company_slug(company)),
             "application/pdf",
-            content,
+            result.pdf_bytes,
         )
 
-    def render_base(self) -> CVArtifact:
-        path = self.profile.rendered_base_path
-        with open(path, "rb") as handle:
-            return CVArtifact(os.path.basename(path), "application/pdf", handle.read())
+    def render_base(self, llm=None) -> CVArtifact:
+        from .config import load_base_tex
+        from .pipeline.stages import CVPreparationError
+
+        source = load_base_tex(self.profile.base_tex_path)
+        result = self.compiler.compile(llm, source)
+        if not result.ok or not result.pdf_bytes or result.page_count != 1:
+            raise CVPreparationError(
+                result.error_excerpt or "base CV did not compile to exactly one page"
+            )
+        return CVArtifact(
+            os.path.basename(self.profile.rendered_base_path),
+            "application/pdf",
+            result.pdf_bytes,
+        )
 
 
 class DefaultOutputBackend:
@@ -428,7 +476,7 @@ def default_components(
         candidate_filter=AllowAllCandidates(),
         evaluator=evaluator or DefaultJobEvaluator(prompts),
         profile=profile,
-        cv_renderer=DefaultCVRenderer(settings, profile),
+        cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
         section_provider=DefaultSectionProvider(getattr(settings, "sections_file", "sections.py")),
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(telegram),
@@ -437,7 +485,8 @@ def default_components(
 
 __all__ = [
     "CVArtifact", "CVCompiler", "CVRenderer", "CandidateFilter",
-    "CandidateProfile", "Components", "DefaultPromptSet", "FilePromptSet", "DigestOutcome",
+    "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
+    "FilePromptSet", "DigestOutcome", "LatexCompiler",
     "JobEvaluator", "LLMProvider", "LLMService", "OutputBackend",
     "OutputRenderer", "PromptSet", "SectionProvider", "default_components",
 ]
