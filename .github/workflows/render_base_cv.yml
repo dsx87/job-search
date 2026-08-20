@@ -16,6 +16,17 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Materialize optional composition config
+        env:
+          JOB_SEARCH_CONFIG_PY: ${{ secrets.JOB_SEARCH_CONFIG_PY }}
+        run: |
+          if [ -n "$JOB_SEARCH_CONFIG_PY" ]; then
+            printf '%s' "$JOB_SEARCH_CONFIG_PY" > job_search_config.py
+            echo "Wrote job_search_config.py from the Actions secret."
+          else
+            echo "Using a tracked job_search_config.py when present; otherwise built-in defaults."
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

@@ -126,14 +126,25 @@ CV_PHONE=
 # LLM_PRIMARY_SCHEME=gemini
 # LLM_PRIMARY_MODEL=gemini-2.5-flash
 # LLM_PRIMARY_API_BASE=
+# LLM_PRIMARY_AUTH_MODE=bearer
 # Fallback defaults: scheme=openai  model=gpt-5.4-mini
 # LLM_FALLBACK_SCHEME=openai
 # LLM_FALLBACK_MODEL=gpt-5.4-mini
 # LLM_FALLBACK_API_BASE=
+# LLM_FALLBACK_AUTH_MODE=bearer
 # Worked examples (openai scheme covers any OpenAI-compatible endpoint via api_base):
 #   Groq:      LLM_FALLBACK_SCHEME=openai     LLM_FALLBACK_API_BASE=https://api.groq.com/openai/v1
 #   xAI Grok:  LLM_FALLBACK_SCHEME=openai     LLM_FALLBACK_API_BASE=https://api.x.ai/v1     (e.g. grok-4.3)
 #   Anthropic: LLM_FALLBACK_SCHEME=anthropic  LLM_FALLBACK_MODEL=claude-haiku-4-5
+# Local OpenAI-compatible server (for example LM Studio on this Pi/host):
+# LLM_PRIMARY_SCHEME=openai
+# LLM_PRIMARY_MODEL=your-loaded-model-id
+# LLM_PRIMARY_API_BASE=http://127.0.0.1:1234/v1
+# LLM_PRIMARY_AUTH_MODE=none
+# --- Optional trusted Python composition ---
+# Missing/unset uses an optional job_search_config.py in this repo, then built-ins.
+# Keep secrets here in .env, never inside the Python composition module.
+# JOB_SEARCH_CONFIG_FILE=/absolute/path/to/job_search_config.py
 # --- Pi tuning (single core / 512 MB) ---
 EVAL_WORKERS=${EVAL_WORKERS}
 TAILOR_WORKERS=${TAILOR_WORKERS}
