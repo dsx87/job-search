@@ -216,10 +216,14 @@ class PipelineConfig:
     llm_primary_model: str = LLM_PRIMARY_MODEL
     llm_primary_api_key: str = ""
     llm_primary_api_base: str = ""
+    # ``none`` is an explicit opt-in for trusted local OpenAI-compatible
+    # servers (for example LM Studio). The default keeps today's Bearer auth.
+    llm_primary_auth_mode: str = "bearer"
     llm_fallback_scheme: str = LLM_FALLBACK_SCHEME
     llm_fallback_model: str = LLM_FALLBACK_MODEL
     llm_fallback_api_key: str = ""
     llm_fallback_api_base: str = ""
+    llm_fallback_auth_mode: str = "bearer"
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     eval_workers: int = EVAL_WORKERS
@@ -228,6 +232,7 @@ class PipelineConfig:
     criteria_file: str = CRITERIA_FILE
     cv_tailoring_prompt_file: str = CV_TAILORING_PROMPT_FILE
     base_tex_file: str = BASE_TEX_FILE
+    rendered_base_file: str = OUT_PDF_FILE
     sections_file: str = SECTIONS_FILE
     # Source selection: names forced ON (adds default-off sources like
     # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
@@ -268,14 +273,23 @@ class PipelineConfig:
             llm_primary_api_base=_non_empty_env(
                 "LLM_PRIMARY_API_BASE", _non_empty_env("GEMINI_API_BASE", "")
             ),
+            llm_primary_auth_mode=_non_empty_env("LLM_PRIMARY_AUTH_MODE", "bearer").lower(),
             llm_fallback_scheme=_non_empty_env("LLM_FALLBACK_SCHEME", LLM_FALLBACK_SCHEME),
             llm_fallback_model=_non_empty_env("LLM_FALLBACK_MODEL", LLM_FALLBACK_MODEL),
             llm_fallback_api_key=_non_empty_env(
                 "LLM_FALLBACK_API_KEY", os.environ.get("OPENAI_API_KEY", "")
             ),
             llm_fallback_api_base=_non_empty_env("LLM_FALLBACK_API_BASE", ""),
+            llm_fallback_auth_mode=_non_empty_env("LLM_FALLBACK_AUTH_MODE", "bearer").lower(),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+            seen_jobs_file=_non_empty_env("SEEN_JOBS_FILE", SEEN_JOBS_FILE),
+            criteria_file=_non_empty_env("CRITERIA_FILE", CRITERIA_FILE),
+            cv_tailoring_prompt_file=_non_empty_env(
+                "CV_TAILORING_PROMPT_FILE", CV_TAILORING_PROMPT_FILE
+            ),
+            base_tex_file=_non_empty_env("BASE_TEX_FILE", BASE_TEX_FILE),
+            rendered_base_file=_non_empty_env("OUT_PDF_FILE", OUT_PDF_FILE),
             sections_file=_non_empty_env("SECTIONS_FILE", SECTIONS_FILE),
             eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
             tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
@@ -288,20 +302,20 @@ class PipelineConfig:
 
 
 # ── Prompt / file loaders ──────────────────────────────────────────────────────
-def load_criteria() -> str:
-    with open(CRITERIA_FILE) as f:
+def load_criteria(path: str = CRITERIA_FILE) -> str:
+    with open(path) as f:
         return f.read()
 
 
-def load_tailoring_instructions() -> str:
+def load_tailoring_instructions(path: str = CV_TAILORING_PROMPT_FILE) -> str:
     """Extract STEP 3 through (not including) BASE LaTeX TEMPLATE."""
-    with open(CV_TAILORING_PROMPT_FILE) as f:
+    with open(path) as f:
         content = f.read()
     start = content.index("## STEP 3")
     end = content.index("## BASE LaTeX TEMPLATE")
     return content[start:end].strip()
 
 
-def load_base_tex() -> str:
-    with open(BASE_TEX_FILE) as f:
+def load_base_tex(path: str = BASE_TEX_FILE) -> str:
+    with open(path) as f:
         return f.read()

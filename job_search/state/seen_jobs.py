@@ -488,19 +488,20 @@ def should_reevaluate(seen: set, job, signature: str) -> bool:
     return True
 
 
-def load_seen_jobs():
+def load_seen_jobs(path: str = None):
     """Returns the seen keys as a :class:`SeenSet`, or None on first run.
 
     None (not an empty set) is the documented first-run sentinel main uses to
     silence jobs older than 7 days.
     """
-    if not os.path.exists(SEEN_JOBS_FILE):
+    path = SEEN_JOBS_FILE if path is None else path
+    if not os.path.exists(path):
         return None
-    with open(SEEN_JOBS_FILE) as f:
+    with open(path) as f:
         return SeenSet(json.load(f))
 
 
-def state_size_summary(seen) -> str:
+def state_size_summary(seen, path: str = None) -> str:
     """One line describing how big the dedup state has grown.
 
     Deliberately reported rather than pruned: the eval:* markers ARE the reopen
@@ -509,7 +510,7 @@ def state_size_summary(seen) -> str:
     can rest on measurements instead of a guess.
     """
     try:
-        size = os.path.getsize(SEEN_JOBS_FILE)
+        size = os.path.getsize(SEEN_JOBS_FILE if path is None else path)
         size_note = f", {size / 1024:.0f} KB on disk"
     except OSError:
         size_note = ""
@@ -546,7 +547,7 @@ def dump_keys(path: str, keys) -> None:
         raise
 
 
-def save_seen_jobs(seen: set) -> None:
+def save_seen_jobs(seen: set, path: str = None) -> None:
     """Persist the seen set atomically (temp file + rename).
 
     This file is the system's only dedup memory, and it is rewritten many times
@@ -562,4 +563,4 @@ def save_seen_jobs(seen: set) -> None:
     within one filesystem; the on-disk format (sorted, ``indent=2``) is unchanged
     because the state-branch union merge parses it.
     """
-    dump_keys(SEEN_JOBS_FILE, seen)
+    dump_keys(SEEN_JOBS_FILE if path is None else path, seen)

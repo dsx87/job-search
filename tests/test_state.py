@@ -52,6 +52,16 @@ def test_load_seen_jobs_none_sentinel_on_missing(tmp_path, monkeypatch):
     assert load_seen_jobs() is None  # first-run sentinel
 
 
+def test_load_and_save_accept_an_explicit_state_path(tmp_path):
+    path = tmp_path / "nested" / "custom-state.json"
+    path.parent.mkdir()
+
+    save_seen_jobs({"b", "a"}, str(path))
+
+    assert load_seen_jobs(str(path)) == {"a", "b"}
+    assert path.read_text(encoding="utf-8") == '[\n  "a",\n  "b"\n]'
+
+
 def test_seen_jobs_roundtrip_and_format(tmp_path, monkeypatch):
     path = tmp_path / "seen.json"
     monkeypatch.setattr(seen_mod, "SEEN_JOBS_FILE", str(path))

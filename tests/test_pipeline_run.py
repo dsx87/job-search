@@ -122,6 +122,40 @@ def test_total_source_outage_aborts_without_evaluation_or_state_save(monkeypatch
     assert any("source outage" in message.lower() for message in telegram.messages)
 
 
+def test_invalid_composition_fails_before_state_sync_or_fetch(tmp_path, monkeypatch):
+    config_file = tmp_path / "invalid.py"
+    config_file.write_text("raise RuntimeError('invalid composition')\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
+    monkeypatch.setattr(
+        run, "pull_state", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no state pull"))
+    )
+    monkeypatch.setattr(
+        run, "fetch_jobs_with_health", lambda **_k: (_ for _ in ()).throw(AssertionError("no fetch"))
+    )
+
+    cfg = make_config()
+    cfg.state_sync = True
+    with pytest.raises(run.ConfigurationError, match="invalid composition"):
+        run.run_daily(cfg)
+
+
+def test_seed_uses_configured_seen_state_path(monkeypatch, tmp_path):
+    path = tmp_path / "custom-seen.json"
+    cfg = make_config()
+    cfg.seen_jobs_file = str(path)
+    job = Job(title="iOS Engineer", company="Acme", url="https://example.com/1")
+    monkeypatch.setattr(
+        run,
+        "_fetch_for_pipeline",
+        lambda _cfg: FetchReport(
+            (job,), (SourceHealth("fake", SourceStatus.SUCCESS, 1, 1),)
+        ),
+    )
+
+    assert run.run_seed(cfg) == 0
+    assert run.load_seen_jobs(str(path)) is not None
+
+
 def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):
     telegram, _saved = install_daily_fakes(monkeypatch, [])
     monkeypatch.setattr(
