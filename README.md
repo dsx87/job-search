@@ -123,6 +123,32 @@ So the core has **none of them**:
   injected from a `CV_PHONE` secret only at compile time (see [Privacy](#privacy)).
 - **Pluggable sources** — every board is a small `BaseSource` subclass behind a
   `@register` decorator, so adding a provider is one class.
+- **Optional runtime composition** — a trusted Python module can replace
+  prompts, LLM service, pre-LLM filtering, evaluation policy, candidate profile,
+  CV rendering, sections, or output without changing the pipeline lifecycle.
+  Structural protocols and explicit dependency injection keep the zero-config
+  default unchanged; there is no automatic plugin discovery.
+
+## Customize the runtime
+
+Most deployments only need environment variables. For deeper changes, copy the
+tested composition example and validate it before running:
+
+```bash
+cp job_search_config.example.py job_search_config.py
+python -m job_search.pipeline --check-config
+```
+
+The default file is optional, so existing users need no migration. Set
+`JOB_SEARCH_CONFIG_FILE` for another path. The module is trusted executable code
+and must not contain secrets; continue to provide credentials and private CV
+placeholders through the environment.
+
+[`docs/configuration.md`](docs/configuration.md) documents every component
+contract and includes examples for prompt files and revisions, LM Studio local
+inference, custom providers and evaluation policy, a non-default candidate,
+XeLaTeX and whole custom CV renderers, filesystem/HTML output, plain messaging,
+Telegram, and the expected shape of an unmaintained WhatsApp adapter.
 
 ## ☁️ Deploy on GitHub Actions
 
@@ -138,12 +164,20 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 | `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it uploads one AES-256 protected CV archive to [x0.at](https://x0.at); its password is sent in the Telegram message. Without ZIP-encryption support, the run safely sends the Telegram ZIP instead |
+| `JOB_SEARCH_CONFIG_PY` | optional | multiline trusted composition source materialized as `job_search_config.py`; keep credentials in the other secrets, not in this code |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
 scheme at `gemini-2.5-flash`; the default fallback is the `openai` scheme at
 `gpt-5.4-mini` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
 include API access).
+
+A tracked `job_search_config.py` is loaded automatically. If the
+`JOB_SEARCH_CONFIG_PY` secret is present it is materialized after checkout and
+takes precedence over the tracked file. The daily, manual-tailor, and
+base-render workflows all use the same convention. Install imports needed by a
+custom module in the workflow yourself. A GitHub-hosted runner cannot connect
+to an LLM server bound only to your laptop's loopback interface.
 
 > ⚠️ **`gemini-2.5-flash` is scheduled for shutdown on 2026-10-16.** It is kept
 > as the default deliberately (2.5 proved steadier than the 3.x lineage on this
@@ -158,9 +192,10 @@ A provider is a **scheme** + model + key (+ optional base), so switching
 providers is config only — no code change. Override any of these optional
 **Actions repository variables** (Settings → Secrets and variables → Actions →
 Variables): `LLM_PRIMARY_SCHEME`, `LLM_PRIMARY_MODEL`, `LLM_PRIMARY_API_BASE`,
-`LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_BASE`. Unset or
-blank variables use the application defaults. `SECTIONS_PY` is a variable too —
-see [digest sections](#group-the-digest-into-your-own-sections). Worked examples
+`LLM_PRIMARY_AUTH_MODE`, `LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`,
+`LLM_FALLBACK_API_BASE`, `LLM_FALLBACK_AUTH_MODE`. Unset or blank variables use
+the application defaults. `SECTIONS_PY` is a variable too — see
+[digest sections](#group-the-digest-into-your-own-sections). Worked examples
 (the `openai` scheme covers any OpenAI-compatible endpoint via `api_base`):
 
 | Provider | Scheme | `…_API_BASE` | Example model |
@@ -223,6 +258,7 @@ Run the full pipeline or tailor a single CV directly (needs the env vars above +
 a TeX install for the PDF):
 
 ```bash
+python3 -m job_search.pipeline --check-config                 # validate + redact
 python3 -m job_search.pipeline                           # the daily pipeline
 python3 -m job_search.pipeline --tailor --url "https://…"          # auto-fetch a posting
 python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
@@ -373,11 +409,14 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `job_search/bot/` | The Telegram control bot (`/run`, `/status`, `/tailor`) |
 | `job_search/latex/` | Base-CV render, `pdflatex` compile, one-page guard |
 | `job_search/llm/` | scheme-based LLM providers, criteria evaluation, résumé tailoring |
+| `job_search/components.py` | public structural extension contracts and built-in components |
+| `job_search/composition.py` | trusted optional module loader and capability validation |
 | `scripts/setup-rpi.sh` | One-shot Raspberry Pi provisioning |
 | `scripts/run_pipeline.sh` | The single `flock`'d entry point every run goes through |
 | `tests/` | Offline characterization suite (`pytest`) |
-| `criteria.md` | Human-readable job-fit rules the LLM filters against |
-| `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
+| `criteria.md` | Human-readable rules and built-in evaluation fingerprint input; executable defaults live in `job_search/policy.py` |
+| `cv_tailoring_prompt.md` | Compatibility artifact; deterministic bullet selection no longer consumes its instruction block |
+| `job_search_config.example.py` | executable, test-imported composition example |
 | `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |

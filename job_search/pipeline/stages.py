@@ -221,13 +221,16 @@ def _format_notification(job: dict, evaluation: dict) -> str:
     reason = html.escape(evaluation.get("reason", ""))
     timezone_note = evaluation.get("timezone_note")
 
+    posting = f'<a href="{url}">View posting</a>' if url else ""
+    source_label = f"Source: {source}" if source else ""
+    link_line = "  |  ".join(part for part in (posting, source_label) if part)
     lines = [
         f"<b>{title}</b>",
         f"<b>{company}</b>" + (f" — {location}" if location else ""),
-        f'<a href="{url}">View posting</a>  |  Source: {source}',
-        "",
-        f"<i>{reason}</i>",
     ]
+    if link_line:
+        lines.append(link_line)
+    lines.extend(("", f"<i>{reason}</i>"))
     if timezone_note:
         lines.append(f"\n⚠️ <b>Timezone:</b> {html.escape(timezone_note)}")
 
@@ -366,7 +369,9 @@ def process_job(llm, criteria: str, tailoring_instructions: str, base_tex: str, 
     return True
 
 
-def tailor_single_job(client, job: dict, telegram, renderer=None) -> None:
+def tailor_single_job(
+    client, job: dict, telegram, renderer=None, fit_renderer=None
+) -> None:
     """Tailor + compile + Telegram-deliver a CV for one manually supplied job.
 
     Reuses the same tailoring/compilation/delivery path as the scheduled
@@ -400,6 +405,8 @@ def tailor_single_job(client, job: dict, telegram, renderer=None) -> None:
         + (f'<a href="{safe_url}">View posting</a>\n' if job.get("url") else "")
         + "\n📄 Tailored CV attached."
     )
+    if fit_renderer is not None:
+        header = fit_renderer.render_fit(job, {"reason": "Manual tailoring"})
     outcome = send_fit(
         {
             "title": title,

@@ -7,8 +7,16 @@ those import lines are the only thing that changes per migration step.
 """
 import io
 import json as _json
+from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_job_search_composition(monkeypatch):
+    """Keep unit tests independent of a developer's trusted local config."""
+    config_file = Path(__file__).parent / "support" / "noop_job_search_config.py"
+    monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
 
 
 class FakeLLM:

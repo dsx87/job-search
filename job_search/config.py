@@ -217,7 +217,8 @@ class PipelineConfig:
     llm_primary_api_key: str = ""
     llm_primary_api_base: str = ""
     # ``none`` is an explicit opt-in for trusted local OpenAI-compatible
-    # servers (for example LM Studio). The default keeps today's Bearer auth.
+    # servers (for example LM Studio) and requires a non-default API base. The
+    # default keeps today's Bearer auth.
     llm_primary_auth_mode: str = "bearer"
     llm_fallback_scheme: str = LLM_FALLBACK_SCHEME
     llm_fallback_model: str = LLM_FALLBACK_MODEL

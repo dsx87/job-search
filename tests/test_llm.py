@@ -191,6 +191,32 @@ def test_openai_no_auth_mode_omits_authorization_and_keeps_structured_output(mon
     assert payload["response_format"]["json_schema"]["strict"] is True
 
 
+@pytest.mark.parametrize(
+    "api_base",
+    (
+        "",
+        SCHEME_DEFAULT_BASE["openai"],
+        SCHEME_DEFAULT_BASE["openai"] + "/",
+        "https://api.openai.com",
+        "http://api.openai.com/v1",
+        "https://API.openai.com/v1/custom",
+        "https://api.openai.com./v1",
+        "https://API.OPENAI.COM./v1",
+        "https://api。openai。com/v1",
+        "not-a-url",
+        "localhost:1234/v1",
+        "//localhost:1234/v1",
+        "ftp://localhost/v1",
+        "http://localhost:not-a-port/v1",
+        "http://localhost:70000/v1",
+        "http://[::1/v1",
+    ),
+)
+def test_openai_no_auth_mode_rejects_the_default_public_endpoint(api_base):
+    with pytest.raises(ValueError, match="explicit non-default api_base"):
+        OpenAIProvider("", model="local-model", api_base=api_base, auth_mode="none")
+
+
 def test_http_error_carries_the_provider_explanation(monkeypatch):
     # A bare "HTTP Error 400: Bad Request" in the run log says nothing; the API
     # explains itself in the body, so the raised error must carry it.

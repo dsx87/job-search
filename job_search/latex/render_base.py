@@ -10,24 +10,36 @@ Run with: python -m job_search.latex.render_base
 import os
 import sys
 
+from ..components import DefaultCVRenderer
 from ..composition import load_components
-from ..config import BASE_TEX_FILE, OUT_PDF_FILE, PipelineConfig
+from ..config import PipelineConfig
 
 
 def main(cfg=None) -> int:
     cfg = PipelineConfig.from_env() if cfg is None else cfg
     components = load_components(cfg, command="base")
-    out_pdf_file = getattr(cfg, "rendered_base_file", OUT_PDF_FILE)
     try:
         artifact = components.cv_renderer.render_base(components.llm)
     except Exception as exc:
         print("ERROR: base CV rendering failed: {}".format(exc), file=sys.stderr)
         return 1
-    with open(out_pdf_file, "wb") as handle:
+    if type(components.cv_renderer) is DefaultCVRenderer:
+        output_path = components.cv_renderer.profile.rendered_base_path
+    else:
+        output_path = os.path.basename(artifact.filename)
+    with open(output_path, "wb") as handle:
         handle.write(artifact.content)
+    manifest = os.environ.get("JOB_SEARCH_RENDER_BASE_MANIFEST", "").strip()
+    if manifest:
+        with open(manifest, "w", encoding="utf-8") as handle:
+            handle.write(os.path.abspath(output_path) + "\n")
 
     phone = os.environ.get("CV_PHONE", "").strip()
-    print(f"Wrote {out_pdf_file} (1 page, phone {'included' if phone else 'masked'}).")
+    if artifact.media_type == "application/pdf":
+        detail = "1 page, phone {}".format("included" if phone else "masked")
+    else:
+        detail = artifact.media_type
+    print("Wrote {} ({}).".format(output_path, detail))
     return 0
 
 

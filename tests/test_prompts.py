@@ -2,7 +2,12 @@ import hashlib
 
 import pytest
 
-from job_search.components import DefaultJobEvaluator, DefaultPromptSet, FilePromptSet
+from job_search.components import (
+    CandidateProfile,
+    DefaultJobEvaluator,
+    DefaultPromptSet,
+    FilePromptSet,
+)
 from job_search.config import load_base_tex
 from job_search.models import Job
 from job_search.state.seen_jobs import criteria_version
@@ -64,6 +69,35 @@ def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
 def test_file_prompt_set_requires_a_nonempty_revision(tmp_path):
     with pytest.raises(ValueError, match="revision"):
         FilePromptSet(revision="")
+
+
+@pytest.mark.parametrize(
+    "template, message",
+    [
+        ("Broken $! placeholder", "invalid"),
+        ("Unknown $verdict placeholder", "unknown placeholder"),
+    ],
+)
+def test_file_prompt_set_rejects_invalid_placeholders_at_load(
+    tmp_path, template, message
+):
+    path = tmp_path / "facts.txt"
+    path.write_text(template, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        FilePromptSet(revision="bad-v1", fact_extraction_file=str(path))
+
+
+def test_file_prompt_set_accepts_legacy_two_argument_cv_fallback():
+    class LegacyFallback(DefaultPromptSet):
+        def cv_bullet_selection(self, base_tex, job):
+            return "legacy:{}:{}".format(base_tex, job.title)
+
+    prompts = FilePromptSet(revision="wrapper-v1", fallback=LegacyFallback())
+
+    assert prompts.cv_bullet_selection("BASE", _job(), CandidateProfile()) == (
+        "legacy:BASE:Senior iOS Engineer"
+    )
 
 
 def test_default_evaluator_fingerprint_is_legacy_compatible_until_prompts_change():

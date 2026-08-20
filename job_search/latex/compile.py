@@ -285,3 +285,11 @@ class LatexCompiler:
             False,
             final_tex,
         )
+
+    def compile_base(self, tex_source: str) -> CompileResult:
+        """Compile a base document twice without repair or automatic shrinking."""
+        return _compile_latex(
+            tex_source,
+            executable=self.executable,
+            profile=self.profile,
+        )
