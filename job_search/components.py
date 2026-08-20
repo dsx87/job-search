@@ -192,6 +192,7 @@ class AllowAllCandidates:
 
 class DefaultJobEvaluator:
     revision = "default-policy-v1"
+    requires_criteria = True
 
     def __init__(self, prompts: PromptSet = None):
         self.prompts = prompts
@@ -388,6 +389,19 @@ class DefaultOutputRenderer:
     kind = "telegram"
 
     def render_notice(self, notice: object, **context: object) -> str:
+        if context.get("level") == "error":
+            import html
+            title = html.escape(str(context.get("title", "Pipeline error")))
+            icon = html.escape(str(context.get("icon", "⚠️")))
+            detail = html.escape(str(notice))
+            if context.get("code", False):
+                detail = "<code>{}</code>".format(detail)
+                separator = "\n\n"
+            else:
+                separator = "\n"
+            return "{} <b>{}</b>{}{}".format(
+                icon, title, separator, detail
+            )
         return str(notice)
 
     def render_fit(self, job: object, evaluation: object) -> str:

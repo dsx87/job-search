@@ -29,6 +29,10 @@ def main(cfg=None) -> int:
         output_path = os.path.basename(artifact.filename)
     with open(output_path, "wb") as handle:
         handle.write(artifact.content)
+    manifest = os.environ.get("JOB_SEARCH_RENDER_BASE_MANIFEST", "").strip()
+    if manifest:
+        with open(manifest, "w", encoding="utf-8") as handle:
+            handle.write(os.path.abspath(output_path) + "\n")
 
     phone = os.environ.get("CV_PHONE", "").strip()
     if artifact.media_type == "application/pdf":

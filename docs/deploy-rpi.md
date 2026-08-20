@@ -145,9 +145,13 @@ JOB_SEARCH_CONFIG_FILE=/home/pi/job-search-config/production.py
 ```
 
 The module is trusted executable Python. Keep tokens and private CV values in
-the mode-600 `.env`, not in that module. If it imports third-party packages,
-install them into `~/job-search/.venv`; the core will not install custom plugin
-dependencies. The complete contracts and examples are in
+the mode-600 `.env`, not in that module. Use the `.venv` created by
+`scripts/setup-rpi.sh`; it already contains the core runtime dependency
+`pyzipper` used by Telegraph digest delivery. If you replace or create that
+environment manually, install `pyzipper~=0.4.0` as well as any packages imported
+by your custom module, or the hosted Telegraph route will fall back to the
+Telegram ZIP. The core will not install custom component dependencies. The
+complete contracts and examples are in
 [`configuration.md`](configuration.md).
 
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):

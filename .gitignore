@@ -11,6 +11,8 @@
 !igor_pivnyk_cv_base_updated.pdf
 !requirements.txt
 !sections.example.py
+# Deliberately trackable trusted CODE. Never put credentials or private CV
+# values here; keep those in environment variables or a mode-600 .env file.
 !job_search_config.py
 !job_search_config.example.py
 # seen_jobs.json is NOT tracked on main — it lives on the orphan `state` branch.

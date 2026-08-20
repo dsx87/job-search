@@ -71,6 +71,34 @@ def make_config(digest_delivery=False, telegraph_access_token=""):
     )
 
 
+def configured_plain_components(messages):
+    from job_search.components import DefaultPromptSet
+    from job_search.output import PlainMessageBackend, PlainTextOutputRenderer
+
+    return SimpleNamespace(
+        _customized=True,
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=DefaultPromptSet(),
+        candidate_filter=SimpleNamespace(include=lambda _job: True),
+        evaluator=SimpleNamespace(
+            revision="fit-v1",
+            requires_criteria=False,
+            evaluate=lambda _llm, _criteria, _job: {
+                "fit": True,
+                "verdict": "fit",
+                "reason": "custom fit",
+                "timezone_note": None,
+                "facts": {},
+            },
+            fingerprint=lambda _criteria: "fit-v1",
+        ),
+        cv_renderer=SimpleNamespace(),
+        section_provider=SimpleNamespace(load=lambda: ((), "")),
+        output_renderer=PlainTextOutputRenderer(),
+        output_backend=PlainMessageBackend(messages.append),
+    )
+
+
 def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm_calls=None):
     telegram = telegram or FakeTelegram()
     state = set(initial_seen or ())
@@ -119,7 +147,51 @@ def test_total_source_outage_aborts_without_evaluation_or_state_save(monkeypatch
 
     assert run.run_daily(make_config()) == 1
     assert saved == []
-    assert any("source outage" in message.lower() for message in telegram.messages)
+    assert telegram.messages == [
+        "🚨 <b>Job source outage</b>\n"
+        "No selected source completed successfully; evaluation and state updates were aborted."
+    ]
+
+
+def test_configured_plain_source_outage_notice_has_no_telegram_markup(monkeypatch):
+    install_daily_fakes(monkeypatch, [])
+    messages = []
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_kwargs: FetchReport((), (
+            SourceHealth("down", SourceStatus.FAILED, failure_detail="offline"),
+        )),
+    )
+    monkeypatch.setattr(
+        run, "load_components", lambda *_a, **_k: configured_plain_components(messages)
+    )
+
+    assert run.run_daily(make_config()) == 1
+    assert messages == [
+        "Job source outage: No selected source completed successfully; "
+        "evaluation and state updates were aborted."
+    ]
+    assert "<" not in messages[0]
+
+
+def test_configured_plain_fatal_notice_has_no_telegram_markup(monkeypatch):
+    install_daily_fakes(monkeypatch, [])
+    messages = []
+    monkeypatch.setattr(
+        run, "load_components", lambda *_a, **_k: configured_plain_components(messages)
+    )
+    monkeypatch.setattr(
+        run,
+        "load_seen_jobs",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run.run_daily(make_config())
+
+    assert messages == ["Pipeline error: RuntimeError: boom"]
+    assert "<" not in messages[0]
 
 
 def test_invalid_composition_fails_before_state_sync_or_fetch(tmp_path, monkeypatch):
@@ -414,6 +486,7 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
 
     class Evaluator:
         revision = "fit-v1"
+        requires_criteria = False
 
         def evaluate(self, llm, criteria, candidate):
             return {
@@ -473,6 +546,13 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
     monkeypatch.setattr(
         run,
+        "load_criteria",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("criteria-free evaluator must not load criteria")
+        ),
+    )
+    monkeypatch.setattr(
+        run,
         "load_tailoring_instructions",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("text-only output must not load CV instructions")
@@ -492,6 +572,204 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
     assert run.run_daily(cfg) == 0
     assert deliveries == [("digest:1", ())]
     assert any("https://example.com/text-only" in snapshot for snapshot in saved)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_notified", "diagnostic"),
+    (
+        (
+            {"delivered": False, "notification_sent": False,
+             "error": RuntimeError("token expired")},
+            False,
+            "token expired",
+        ),
+        (
+            {"delivered": True, "notification_sent": False},
+            False,
+            "notification was not sent",
+        ),
+        (
+            {"delivered": False, "notification_sent": True,
+             "error": RuntimeError("artifact store failed")},
+            True,
+            "artifact store failed",
+        ),
+    ),
+)
+def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
+    monkeypatch, capsys, outcome, expected_notified, diagnostic
+):
+    from job_search.components import DigestOutcome
+
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/configured-digest-failure",
+        description="Swift role",
+    )
+    seen = set()
+    saved = []
+    notices = []
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: ["summary"])
+    monkeypatch.setattr(
+        run, "_save_seen_for", lambda _cfg, values: saved.append(set(values))
+    )
+
+    class Renderer:
+        kind = "plain"
+
+        def render_notice(self, notice, **_context):
+            return str(notice)
+
+        def render_digest(self, _context):
+            return "digest"
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+
+        def deliver_notice(self, rendered):
+            notices.append(rendered)
+
+        def deliver_digest(self, _rendered, _artifacts=(), **_context):
+            return DigestOutcome(**outcome)
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=SimpleNamespace(revision="test"),
+        section_provider=SimpleNamespace(load=lambda: ((), "")),
+        output_renderer=Renderer(),
+        output_backend=Backend(),
+    )
+    stats = run.RunStats(fits=1)
+    completed = run._deliver_configured_digest(
+        components,
+        make_config(digest_delivery=True),
+        seen,
+        stats,
+        datetime.date(2026, 8, 20),
+        [(job, {}, SimpleNamespace(notified=False), {"fit": True})],
+        [],
+        [],
+        [],
+        "",
+        lambda _job: "signature",
+        (),
+    )
+
+    tokens = delivery_identity_tokens(job.url, job.title, job.company, job.location)
+    assert completed is False
+    assert "https://example.com/configured-digest-failure" not in seen
+    assert all(
+        (f"delivery:notified:{token}" in seen) is expected_notified
+        for token in tokens
+    )
+    assert any(marker.startswith("delivery:attempt:") for marker in seen)
+    assert stats.delivery_failed == 1
+    assert notices and "Job search complete" in notices[-1]
+    assert diagnostic in capsys.readouterr().err
+    assert saved
+
+
+def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
+    from job_search.components import DigestOutcome
+
+    install_daily_fakes(monkeypatch, [])
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+
+        def deliver_notice(self, _rendered):
+            pass
+
+        def deliver_digest(self, _rendered, _artifacts=(), **_context):
+            return DigestOutcome(False, error=RuntimeError("offline"))
+
+    components = SimpleNamespace(
+        _customized=True,
+        llm=FakeLLM(),
+        prompts=SimpleNamespace(revision="test"),
+        candidate_filter=SimpleNamespace(include=lambda _job: True),
+        evaluator=SimpleNamespace(
+            fingerprint=lambda _criteria: "signature",
+            evaluate=lambda *_args: {"fit": False},
+        ),
+        cv_renderer=SimpleNamespace(),
+        section_provider=SimpleNamespace(load=lambda: ((), "")),
+        output_renderer=SimpleNamespace(
+            kind="plain",
+            render_notice=lambda notice, **_context: str(notice),
+            render_digest=lambda _context: "digest",
+        ),
+        output_backend=Backend(),
+    )
+    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+
+    assert run.run_daily(make_config(digest_delivery=True)) == 1
+
+
+def test_configured_digest_cv_stats_count_fit_artifacts_not_review_artifacts(
+    monkeypatch
+):
+    from job_search.components import CVArtifact, DigestOutcome
+
+    fit = Job(
+        title="Fit", company="Acme", url="https://example.com/fit", description="fit"
+    )
+    review = Job(
+        title="Review",
+        company="Beta",
+        url="https://example.com/review",
+        description="review",
+    )
+    fit_artifact = CVArtifact("fit.pdf", "application/pdf", b"FIT")
+    review_artifact = CVArtifact("review.pdf", "application/pdf", b"REVIEW")
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: ["fit", "review"])
+    monkeypatch.setattr(run, "_save_seen_for", lambda *_a, **_k: None)
+
+    class Backend:
+        cv_mode = "required"
+
+        def deliver_digest(self, _rendered, artifacts=(), **_context):
+            return DigestOutcome(
+                True, notification_sent=True, cv_sent=len(tuple(artifacts))
+            )
+
+        def deliver_notice(self, _rendered):
+            pass
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=SimpleNamespace(revision="test"),
+        section_provider=SimpleNamespace(load=lambda: ((), "")),
+        output_renderer=SimpleNamespace(
+            render_notice=lambda notice, **_context: str(notice),
+            render_digest=lambda _context: "digest",
+        ),
+        output_backend=Backend(),
+    )
+    stats = run.RunStats(fits=1, uncertain=1)
+
+    completed = run._deliver_configured_digest(
+        components,
+        make_config(digest_delivery=True),
+        set(),
+        stats,
+        datetime.date(2026, 8, 20),
+        [(fit, {"artifact": fit_artifact}, SimpleNamespace(notified=False), {})],
+        [(review, {"artifact": review_artifact}, {})],
+        [(review, {})],
+        [],
+        "",
+        lambda _job: "signature",
+        (),
+    )
+
+    assert completed is True
+    assert stats.cv_sent == 1
 
 
 def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
@@ -629,9 +907,6 @@ def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch
 
 
 def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypatch):
-    from job_search.components import DefaultPromptSet
-    from job_search.output import PlainMessageBackend, PlainTextOutputRenderer
-
     job = Job(
         title="iOS Engineer",
         company="Acme",
@@ -640,27 +915,7 @@ def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypat
     )
     install_daily_fakes(monkeypatch, [job])
     messages = []
-    components = SimpleNamespace(
-        _customized=True,
-        llm=SimpleNamespace(usage_summary=lambda: "usage"),
-        prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=SimpleNamespace(
-            revision="fit-v1",
-            evaluate=lambda _llm, _criteria, _job: {
-                "fit": True,
-                "verdict": "fit",
-                "reason": "custom fit",
-                "timezone_note": None,
-                "facts": {},
-            },
-            fingerprint=lambda _criteria: "fit-v1",
-        ),
-        cv_renderer=SimpleNamespace(),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
-        output_renderer=PlainTextOutputRenderer(),
-        output_backend=PlainMessageBackend(messages.append),
-    )
+    components = configured_plain_components(messages)
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
 
     cfg = make_config(digest_delivery=False)

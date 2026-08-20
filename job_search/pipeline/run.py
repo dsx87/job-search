@@ -77,7 +77,6 @@ from .stages import (
     _format_deferred_notification,
     _format_notification,
     _format_uncertain_notification,
-    _send_error_notification,
     clean_job_description,
     ensure_job_description,
     prepare_fit,
@@ -264,13 +263,22 @@ class _PipelineDefaultEvaluator(DefaultJobEvaluator):
 def _runtime_components(cfg, command):
     prompts = DefaultPromptSet()
     evaluator = _PipelineDefaultEvaluator(prompts)
-    defaults = default_components(
-        cfg,
-        prompts=prompts,
-        llm=LLMClient.from_config(cfg),
-        evaluator=evaluator,
-        telegram=TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id),
-    )
+    try:
+        defaults = default_components(
+            cfg,
+            prompts=prompts,
+            llm=LLMClient.from_config(cfg),
+            evaluator=evaluator,
+            telegram=TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id),
+        )
+    except ConfigurationError:
+        raise
+    except (Exception, SystemExit) as exc:
+        raise ConfigurationError(
+            "Built-in components could not be constructed ({}: {})".format(
+                type(exc).__name__, exc
+            )
+        ) from exc
     configured = load_components(
         cfg, command=command, defaults=defaults, validate_defaults=False
     )
@@ -319,8 +327,20 @@ class _OutputNoticeAdapter:
         self.backend = backend
 
     def send_message(self, message):
-        rendered = self.renderer.render_notice(message)
+        return self.send_notice(message)
+
+    def send_notice(self, notice, **context):
+        rendered = self.renderer.render_notice(notice, **context)
         return self.backend.deliver_notice(rendered)
+
+    def send_error(self, exc):
+        return self.send_notice(
+            "{}: {}".format(type(exc).__name__, exc),
+            level="error",
+            title="Pipeline error",
+            icon="⚠️",
+            code=True,
+        )
 
 
 # Reserved for pipeline metadata; these entries must never act as seen identities.
@@ -553,6 +573,10 @@ def _deliver_configured_digest(
         for entry in list(ctx.fits) + list(ctx.review)
         if entry.artifact is not None
     )
+    fit_artifact_count = sum(
+        payload.get("artifact") is not None
+        for _job, payload, _retry, _evaluation in prepared
+    )
     try:
         rendered = components.output_renderer.render_digest(ctx)
         outcome = components.output_backend.deliver_digest(
@@ -563,18 +587,52 @@ def _deliver_configured_digest(
     notifier = _OutputNoticeAdapter(
         components.output_renderer, components.output_backend
     )
-    if not outcome.delivered:
+    cv_required = components.output_backend.cv_mode == "required"
+    cv_complete = not cv_required or outcome.cv_sent >= len(artifacts)
+    complete = outcome.delivered and outcome.notification_sent and cv_complete
+    if not complete:
+        stats.notification_sent += sum(
+            1
+            for _job, _payload, retry_state, _evaluation in prepared
+            if outcome.notification_sent
+            and not (retry_state and retry_state.notified)
+        )
+        stats.cv_sent += min(max(outcome.cv_sent, 0), fit_artifact_count)
+        if outcome.notification_sent:
+            for job, _payload, _retry, _evaluation in prepared:
+                mark_delivery_notified(seen, **job)
+            if prepared:
+                _save_seen_for(cfg, seen)
+
+        if outcome.error:
+            detail = str(outcome.error)
+        elif not outcome.notification_sent:
+            detail = "notification was not sent"
+        elif not outcome.delivered:
+            detail = "backend did not confirm atomic delivery"
+        else:
+            detail = "only {} of {} required CV artifacts were delivered".format(
+                outcome.cv_sent, len(artifacts)
+            )
+        print("Configured digest delivery failed: {}".format(detail), file=sys.stderr)
+
         for job, _payload, _retry, _evaluation in prepared:
             stats.delivery_failed += 1
             _record_fit_failure(
                 seen, stats, job, "delivery", today, notifier, cfg
             )
-        return
+        try:
+            notifier.send_message(
+                _format_run_summary(
+                    stats, source_warning, cv_required=cv_required
+                )
+            )
+        except Exception as exc:
+            print("Output summary error: {}".format(exc), file=sys.stderr)
+        return False
 
-    cv_required = components.output_backend.cv_mode == "required"
     for job, payload, retry_state, _evaluation in prepared:
         stats.notification_sent += int(not (retry_state and retry_state.notified))
-        stats.cv_sent += int(payload.get("artifact") is not None)
         mark_delivery_notified(seen, **job)
         seen.update(job_identity_keys(job))
         signature = signature_for(job)
@@ -595,7 +653,9 @@ def _deliver_configured_digest(
             record_evaluation(seen, job, signature, "uncertain", today)
     if uncertain:
         _save_seen_for(cfg, seen)
+    stats.cv_sent += min(max(outcome.cv_sent, 0), fit_artifact_count)
     _commit_deferrals(seen, deferrals, today, cfg)
+    return True
 
 
 def _deliver_digest(
@@ -874,6 +934,7 @@ def run_daily(cfg, test: bool = False) -> int:
         else notifier
     )
     state_mutation_allowed = False
+    exit_code = 0
     try:
         shutdown_note = model_shutdown_warning(cfg.llm_primary_model)
         if shutdown_note:
@@ -893,7 +954,11 @@ def run_daily(cfg, test: bool = False) -> int:
                     "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
                     flush=True,
                 )
-        criteria = _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
+        criteria = (
+            _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
+            if getattr(components.evaluator, "requires_criteria", True)
+            else ""
+        )
         crit_ver = components.evaluator.fingerprint(criteria)
         tailoring_instructions = ""
         base_tex = ""
@@ -927,12 +992,17 @@ def run_daily(cfg, test: bool = False) -> int:
         print("Fetching jobs...", flush=True)
         report = _fetch_for_pipeline(cfg)
         if not report.has_usable_source:
-            message = "🚨 <b>Job source outage</b>\nNo selected source completed successfully; evaluation and state updates were aborted."
+            message = "No selected source completed successfully; evaluation and state updates were aborted."
             print("No usable job source completed; daily run aborted.", file=sys.stderr)
             try:
-                notifier.send_message(message)
+                notifier.send_notice(
+                    message,
+                    level="error",
+                    title="Job source outage",
+                    icon="🚨",
+                )
             except Exception as exc:
-                print(f"Telegram source-outage notification error: {exc}", file=sys.stderr)
+                print(f"Output source-outage notification error: {exc}", file=sys.stderr)
             return 1
         state_mutation_allowed = True
         raw_jobs = report.jobs
@@ -1317,7 +1387,7 @@ def run_daily(cfg, test: bool = False) -> int:
 
         # ── Stage 4: Deliver ─────────────────────────────────────────────────
         if cfg.digest_delivery and not default_output:
-            _deliver_configured_digest(
+            if not _deliver_configured_digest(
                 components,
                 cfg,
                 seen,
@@ -1330,7 +1400,8 @@ def run_daily(cfg, test: bool = False) -> int:
                 source_warning,
                 _signature_for,
                 pending_deferrals,
-            )
+            ):
+                exit_code = 1
         elif cfg.digest_delivery:
             # One ZIP per run: HTML dashboard + every tailored CV, folding in the
             # uncertain and deferred jobs too. All state reconciliation (mark
@@ -1448,11 +1519,14 @@ def run_daily(cfg, test: bool = False) -> int:
 
         print(llm.usage_summary(), flush=True)
         print("Done.", flush=True)
-        return 0
+        return exit_code
 
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        _send_error_notification(exc, notifier)
+        try:
+            notifier.send_error(exc)
+        except Exception:
+            pass
         raise
     finally:
         if cfg.state_sync and not test and state_mutation_allowed:

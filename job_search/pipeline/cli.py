@@ -3,7 +3,12 @@ import argparse
 import sys
 import urllib.parse
 
-from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
+from ..config import (
+    BASE_TEX_FILE,
+    CV_TAILORING_PROMPT_FILE,
+    MIN_JOB_TEXT_LEN,
+    PipelineConfig,
+)
 from ..composition import ConfigurationError, load_components, redacted_configuration
 from ..components import DefaultOutputBackend
 from ..llm.clients import LLMClient
@@ -20,11 +25,15 @@ from .stages import (
 
 def _notify_composed_error(components, exc):
     try:
-        notice = "⚠️ <b>Pipeline error</b>\n\n<code>{}: {}</code>".format(
-            type(exc).__name__, exc
-        )
+        notice = "{}: {}".format(type(exc).__name__, exc)
         components.output_backend.deliver_notice(
-            components.output_renderer.render_notice(notice)
+            components.output_renderer.render_notice(
+                notice,
+                level="error",
+                title="Pipeline error",
+                icon="⚠️",
+                code=True,
+            )
         )
     except Exception:
         pass
@@ -61,6 +70,13 @@ def run_tailor(args, cfg) -> None:
         getattr(components, "_customized", False)
         and type(components.output_backend) is not DefaultOutputBackend
     )
+    use_configured_tailoring = (
+        getattr(components, "_customized", False)
+        or getattr(cfg, "base_tex_file", BASE_TEX_FILE) != BASE_TEX_FILE
+        or getattr(
+            cfg, "cv_tailoring_prompt_file", CV_TAILORING_PROMPT_FILE
+        ) != CV_TAILORING_PROMPT_FILE
+    )
     if custom_output:
         client = components.llm
         try:
@@ -77,7 +93,7 @@ def run_tailor(args, cfg) -> None:
             print(f"Fatal error: {exc}", file=sys.stderr)
             _notify_composed_error(components, exc)
             raise
-    if getattr(components, "_customized", False):
+    if use_configured_tailoring:
         client = components.llm
         telegram = components.output_backend.telegram
     else:
@@ -86,7 +102,7 @@ def run_tailor(args, cfg) -> None:
         client = LLMClient.from_config(cfg)
         telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     try:
-        if getattr(components, "_customized", False):
+        if use_configured_tailoring:
             tailor_single_job(
                 client,
                 job,
@@ -99,7 +115,7 @@ def run_tailor(args, cfg) -> None:
         print("Done.", flush=True)
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        if getattr(components, "_customized", False):
+        if use_configured_tailoring:
             _notify_composed_error(components, exc)
         else:
             _send_error_notification(exc, telegram)

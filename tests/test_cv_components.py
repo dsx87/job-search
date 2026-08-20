@@ -191,6 +191,8 @@ def test_render_base_command_uses_configured_renderer(monkeypatch, tmp_path):
 
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "renderer-base.txt"
+    manifest = tmp_path / "rendered-path.txt"
+    monkeypatch.setenv("JOB_SEARCH_RENDER_BASE_MANIFEST", str(manifest))
     settings = PipelineConfig(rendered_base_file=str(tmp_path / "ignored.pdf"))
     calls = []
 
@@ -205,6 +207,7 @@ def test_render_base_command_uses_configured_renderer(monkeypatch, tmp_path):
 
     assert render_base.main(settings) == 0
     assert out.read_bytes() == b"CONFIGURED"
+    assert manifest.read_text(encoding="utf-8") == str(out) + "\n"
     assert calls == [llm]
 
 

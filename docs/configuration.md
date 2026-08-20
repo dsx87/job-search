@@ -5,11 +5,15 @@ providers, filtering policy, candidate identity, CV rendering, section loading,
 and output delivery. Existing installations do not need a config file: when
 `job_search_config.py` is absent, the built-in behavior is unchanged.
 
-The composition file is trusted executable code. Treat it like application
-source, review changes to it, and never put credentials in it. Secrets stay in
-environment variables or GitHub Actions secrets. A composition module may
-explicitly import a separately installed package; the core does not discover
-plugins or install their dependencies.
+> **Security boundary:** the composition file is trusted executable code and
+> `job_search_config.py` is intentionally allowed by the repository's
+> deny-by-default `.gitignore`. Treat it like application source and review it
+> before every commit. Never put credentials, tokens, private CV values, or
+> secret-derived output in it. Those values belong only in environment
+> variables, a mode-600 `.env`, or dedicated GitHub Actions secrets.
+
+A composition module may explicitly import a separately installed package;
+the core does not discover plugins or install their dependencies.
 
 ## Loading and checking configuration
 
@@ -96,7 +100,7 @@ method signatures and do not need to inherit project classes.
 | `prompts` | `revision`; builders `fact_extraction`, `job_summary`, `cv_bullet_selection`, `compiler_repair` |
 | `llm` | `generate(...)` and `usage_summary()` |
 | `candidate_filter` | `revision` and `include(job) -> bool` |
-| `evaluator` | `revision`, `evaluate(llm, criteria, job) -> dict`, and `fingerprint(criteria) -> str` |
+| `evaluator` | `revision`, `evaluate(llm, criteria, job) -> dict`, and `fingerprint(criteria) -> str`; optionally `requires_criteria = False` |
 | `profile` | `CandidateProfile` data and validation behavior |
 | `cv_renderer` | `media_types`, `render_tailored(...)`, and `render_base(llm=None)` returning `CVArtifact` |
 | `section_provider` | `load() -> (sections, error)` |
@@ -109,6 +113,20 @@ and compilation; a successful configured delivery completes the fit. Manual
 `--tailor` is rejected during configuration validation for a disabled backend.
 Renderer kinds and CV media types must intersect the backend's accepted
 capabilities or validation fails.
+
+For digest delivery, `DigestOutcome` is an explicit completion receipt. Success
+requires `delivered=True` and `notification_sent=True`; a required-CV backend
+must also report `cv_sent >= len(artifacts)` for the artifacts passed to
+`deliver_digest`. Returning the shorthand `DigestOutcome(True)` therefore does
+not complete the batch: it schedules delivery retries and makes the run exit
+nonzero. On a partial result, set `notification_sent=True` only if the user was
+actually notified so retry reconciliation can avoid duplicating that notice.
+
+Evaluators require `CRITERIA_FILE` by default for compatibility. A replacement
+that completely owns its policy and fingerprint may declare
+`requires_criteria = False`; configuration preflight and runtime then neither
+require nor read that file, and both evaluator methods receive an empty string
+for their `criteria` argument.
 
 The default `LatexCompiler(executable="pdflatex")` retains two compiler passes,
 LLM repair for eligible failures, deterministic shrinking, and exact one-page
@@ -408,11 +426,13 @@ return `job_search.pipeline.stages.DeliveryOutcome` for each fit plus
 
 ## Deployment
 
-A tracked `job_search_config.py` is picked up automatically. GitHub Actions also
-supports a multiline `JOB_SEARCH_CONFIG_PY` Actions secret; each relevant
-workflow writes that value to `job_search_config.py` after checkout. Keep code
-in that value, never credentials. Separately install any imports your module
-needs in the deployment workflow.
+A tracked `job_search_config.py` is picked up automatically. This is an
+intentional exception to the repository's deny-by-default ignore rules: it must
+contain reviewed composition code only. GitHub Actions also supports a
+multiline `JOB_SEARCH_CONFIG_PY` Actions secret; each relevant workflow writes
+that value to `job_search_config.py` after checkout. That secret is a transport
+for source code, not a place for credentials or private values. Separately
+install any imports your module needs in the deployment workflow.
 
 On a persistent host such as a Raspberry Pi, either keep a reviewed
 `job_search_config.py` in the checkout or set an absolute path in `.env`:

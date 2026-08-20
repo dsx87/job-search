@@ -9,6 +9,7 @@ from job_search.composition import (
     load_components,
     redacted_configuration,
 )
+from job_search.components import default_components
 from job_search.config import PipelineConfig
 
 
@@ -88,6 +89,29 @@ def test_configure_receives_defaults_and_exact_settings(tmp_path, monkeypatch):
     components = load_components(settings, command="list")
 
     assert components._settings_seen is settings
+
+
+def test_noop_config_preserves_validate_defaults_false(tmp_path, monkeypatch):
+    config_file = tmp_path / "noop.py"
+    config_file.write_text(
+        "def configure(defaults, settings):\n"
+        "    return defaults\n",
+        encoding="utf-8",
+    )
+    _configured_env(monkeypatch, config_file)
+    settings = PipelineConfig()
+    defaults = default_components(settings)
+    defaults.llm = object()
+
+    components = load_components(
+        settings,
+        command="list",
+        defaults=defaults,
+        validate_defaults=False,
+    )
+
+    assert components is defaults
+    assert components._customized is False
 
 
 @pytest.mark.parametrize(
@@ -236,7 +260,8 @@ def test_custom_text_backend_needs_no_llm_key_or_telegram_credentials(tmp_path, 
     assert components.output_backend.cv_mode == "disabled"
 
 
-def test_no_auth_mode_is_rejected_for_non_openai_fallback(monkeypatch):
+def test_no_auth_mode_is_rejected_for_non_openai_fallback(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
     settings = PipelineConfig(
         llm_primary_api_key="primary-key",
@@ -250,11 +275,35 @@ def test_no_auth_mode_is_rejected_for_non_openai_fallback(monkeypatch):
 
 
 def test_check_config_rejects_missing_required_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
     settings = PipelineConfig(criteria_file=str(tmp_path / "missing.md"))
 
     with pytest.raises(ConfigurationError, match="criteria_file"):
         load_components(settings, command="check")
+
+
+def test_criteria_free_evaluator_does_not_preflight_criteria_file(
+    tmp_path, monkeypatch
+):
+    config_file = tmp_path / "criteria_free.py"
+    config_file.write_text(
+        "from dataclasses import replace\n"
+        "class Evaluator:\n"
+        "    revision = 'criteria-free-v1'\n"
+        "    requires_criteria = False\n"
+        "    def evaluate(self, llm, criteria, job): return {'fit': False}\n"
+        "    def fingerprint(self, criteria): return self.revision\n"
+        "def configure(defaults, settings):\n"
+        "    return replace(defaults, evaluator=Evaluator())\n",
+        encoding="utf-8",
+    )
+    _configured_env(monkeypatch, config_file)
+    settings = PipelineConfig(criteria_file=str(tmp_path / "absent.md"))
+
+    components = load_components(settings, command="check")
+
+    assert components.evaluator.requires_criteria is False
 
 
 def test_default_renderer_subclass_owns_its_inputs(tmp_path, monkeypatch):

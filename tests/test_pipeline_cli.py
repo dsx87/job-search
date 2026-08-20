@@ -213,6 +213,59 @@ def test_manual_tailor_threads_custom_renderer_through_default_backend(monkeypat
     ]
 
 
+def test_manual_tailor_honors_env_only_cv_file_overrides(monkeypatch):
+    from job_search.components import DefaultOutputBackend
+
+    cfg = make_config()
+    cfg.base_tex_file = "custom-base.tex"
+    cfg.cv_tailoring_prompt_file = "custom-tailoring.md"
+    telegram = object()
+    cv_renderer = object()
+    output_renderer = object()
+    llm = object()
+    observed = []
+    components = SimpleNamespace(
+        _customized=False,
+        llm=llm,
+        cv_renderer=cv_renderer,
+        output_renderer=output_renderer,
+        output_backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        cli,
+        "LLMClient",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("use configured LLM")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "TelegramClient",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("use configured backend")),
+    )
+
+    def tailor(client, job, destination, renderer=None, fit_renderer=None):
+        observed.append((client, destination, renderer, fit_renderer))
+
+    monkeypatch.setattr(cli, "tailor_single_job", tailor)
+
+    cli.run_tailor(make_args("x" * 200), cfg)
+
+    assert observed == [(llm, telegram, cv_renderer, output_renderer)]
+
+
+def test_check_config_reports_unknown_provider_without_traceback(monkeypatch, capsys):
+    from job_search.config import PipelineConfig
+
+    cfg = PipelineConfig(llm_primary_scheme="typo")
+    monkeypatch.setattr(cli.PipelineConfig, "from_env", lambda: cfg)
+    monkeypatch.setattr(cli.sys, "argv", ["job-search", "--check-config"])
+
+    assert cli.main() == 2
+    captured = capsys.readouterr()
+    assert "Unknown LLM scheme" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_manual_tailor_renders_fatal_notice_with_composed_default_backend(monkeypatch):
     from job_search.components import DefaultOutputBackend
 
@@ -246,3 +299,27 @@ def test_manual_tailor_renders_fatal_notice_with_composed_default_backend(monkey
 
     assert notices[0][0] == "rendered"
     assert notices[1] == ("delivered", "CUSTOM ERROR")
+
+
+def test_manual_tailor_plain_backend_error_has_no_telegram_markup(monkeypatch):
+    from job_search.output import PlainMessageBackend, PlainTextOutputRenderer
+
+    messages = []
+    components = SimpleNamespace(
+        _customized=True,
+        llm=object(),
+        cv_renderer=SimpleNamespace(
+            render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
+                RuntimeError("compile failed")
+            )
+        ),
+        output_renderer=PlainTextOutputRenderer(),
+        output_backend=PlainMessageBackend(messages.append),
+    )
+    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+
+    with pytest.raises(RuntimeError, match="compile failed"):
+        cli.run_tailor(make_args("x" * 200), make_config())
+
+    assert messages == ["Pipeline error: RuntimeError: compile failed"]
+    assert "<" not in messages[0]

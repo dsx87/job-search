@@ -216,7 +216,9 @@ def validate_components(
     # remain a soft presentation fallback and seen-state may be absent on a
     # first run, so neither belongs here.
     required_files = []
-    if command in ("daily", "check"):
+    if command in ("daily", "check") and getattr(
+        components.evaluator, "requires_criteria", True
+    ):
         required_files.append(
             ("criteria_file", getattr(settings, "criteria_file", "criteria.md"))
         )
@@ -268,7 +270,17 @@ def load_components(
     path; it may import separately installed packages in the normal way.
     """
     path, explicit = _config_path()
-    defaults = defaults or default_components(settings)
+    if defaults is None:
+        try:
+            defaults = default_components(settings)
+        except ConfigurationError:
+            raise
+        except (Exception, SystemExit) as exc:
+            raise ConfigurationError(
+                "Built-in components could not be constructed ({}: {})".format(
+                    type(exc).__name__, exc
+                )
+            ) from exc
     if not os.path.exists(path):
         if explicit:
             raise ConfigurationError("Configured composition file does not exist: {}".format(path))
@@ -312,11 +324,17 @@ def load_components(
             configured.profile,
             prompts=configured.prompts,
         )
-    validate_components(configured, settings, command)
-    configured._customized = any(
+    customized = any(
         getattr(configured, name) is not value
         for name, value in baseline.items()
     )
+    validate_components(
+        configured,
+        settings,
+        command,
+        structural=validate_defaults or customized,
+    )
+    configured._customized = customized
     return configured
 
 

@@ -18,6 +18,11 @@ class HtmlOutputRenderer:
     kind = "html"
 
     def render_notice(self, notice, **context):
+        if context.get("level") == "error":
+            return "<p><strong>{}:</strong> {}</p>".format(
+                html.escape(str(context.get("title", "Pipeline error"))),
+                html.escape(str(notice)),
+            )
         return "<p>{}</p>".format(html.escape(str(notice)))
 
     def render_fit(self, job, evaluation):
@@ -39,6 +44,10 @@ class PlainTextOutputRenderer:
     kind = "plain"
 
     def render_notice(self, notice, **context):
+        if context.get("level") == "error":
+            return "{}: {}".format(
+                context.get("title", "Pipeline error"), notice
+            )
         return str(notice)
 
     def render_fit(self, job, evaluation):
