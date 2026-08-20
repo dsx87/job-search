@@ -146,3 +146,29 @@ def test_redacted_configuration_hides_all_secret_values(monkeypatch):
         assert secret not in rendered
     assert "<redacted>" in rendered
     assert "output_renderer" in rendered
+
+
+def test_custom_text_backend_needs_no_llm_key_or_telegram_credentials(tmp_path, monkeypatch):
+    config_file = tmp_path / "plain.py"
+    config_file.write_text(
+        "from dataclasses import replace\n"
+        "from job_search.output import PlainMessageBackend, PlainTextOutputRenderer\n"
+        "def configure(defaults, settings):\n"
+        "    return replace(defaults, output_renderer=PlainTextOutputRenderer(), "
+        "output_backend=PlainMessageBackend(lambda message: None))\n",
+        encoding="utf-8",
+    )
+    _configured_env(monkeypatch, config_file)
+    settings = PipelineConfig(
+        llm_primary_scheme="openai",
+        llm_primary_model="local-model",
+        llm_primary_api_base="http://127.0.0.1:1234/v1",
+        llm_primary_auth_mode="none",
+        llm_primary_api_key="",
+        telegram_bot_token="",
+        telegram_chat_id="",
+    )
+
+    components = load_components(settings, command="daily")
+
+    assert components.output_backend.cv_mode == "disabled"

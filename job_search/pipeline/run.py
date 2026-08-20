@@ -12,8 +12,14 @@ import os
 from dataclasses import dataclass, field
 
 from ..composition import ConfigurationError, load_components
-from ..components import DefaultJobEvaluator, DefaultPromptSet, default_components
-from ..components import CVArtifact
+from ..components import (
+    CVArtifact,
+    DefaultJobEvaluator,
+    DefaultOutputBackend,
+    DefaultPromptSet,
+    DigestOutcome,
+    default_components,
+)
 from ..config import (
     BASE_TEX_FILE,
     CRITERIA_FILE,
@@ -295,6 +301,18 @@ def _prepare_with_renderer(renderer, llm, job, evaluation=None):
     return payload
 
 
+class _OutputNoticeAdapter:
+    """Expose the legacy send_message seam over a configured output pair."""
+
+    def __init__(self, renderer, backend):
+        self.renderer = renderer
+        self.backend = backend
+
+    def send_message(self, message):
+        rendered = self.renderer.render_notice(message)
+        return self.backend.deliver_notice(rendered)
+
+
 # Reserved for pipeline metadata; these entries must never act as seen identities.
 _DEFERRED_MARKER_PREFIX = "deferred:"
 
@@ -463,6 +481,111 @@ def _commit_deferrals(seen, deferrals, today, cfg=None) -> None:
             record_evaluation(seen, job, signature, "deferred", today)
     if deferrals:
         save_seen_jobs(seen) if cfg is None else _save_seen_for(cfg, seen)
+
+
+def _configured_digest_context(
+    components, cfg, seen, stats, today, prepared, prepared_reviews,
+    uncertain, newly_deferred, source_warning,
+):
+    fit_jobs = [job for job, _payload, _retry, _evaluation in prepared]
+    review_jobs = [job for job, _evaluation in uncertain]
+    summaries = _summaries(
+        components.llm,
+        fit_jobs + review_jobs,
+        cfg.eval_workers,
+        components.prompts,
+    )
+    fit_summaries = summaries[:len(fit_jobs)]
+    review_summaries = summaries[len(fit_jobs):]
+    taken = set()
+    fits = []
+    for (job, payload, _retry, evaluation), summary in zip(prepared, fit_summaries):
+        artifact = payload.get("artifact")
+        if artifact is not None:
+            artifact = _unique_artifact(artifact, taken)
+            taken.add(artifact.filename)
+        fits.append(FitEntry(job, evaluation, summary, artifact=artifact))
+    review_payloads = {id(job): payload for job, payload, _evaluation in prepared_reviews}
+    review = []
+    for (job, evaluation), summary in zip(uncertain, review_summaries):
+        payload = review_payloads.get(id(job), {})
+        artifact = payload.get("artifact")
+        if artifact is not None:
+            artifact = _unique_artifact(artifact, taken)
+            taken.add(artifact.filename)
+        review.append(ReviewEntry(job, evaluation, summary, artifact=artifact))
+    sections, sections_error = components.section_provider.load()
+    return DigestContext(
+        date=today,
+        stats=stats,
+        source_warning=source_warning,
+        usage_summary=" ".join(
+            (components.llm.usage_summary(), state_size_summary(seen, _seen_file(cfg)))
+        ),
+        fits=fits,
+        review=review,
+        deferred=[DeferredEntry(job=job) for job in newly_deferred],
+        sections=sections,
+        sections_error=sections_error,
+    )
+
+
+def _deliver_configured_digest(
+    components, cfg, seen, stats, today, prepared, prepared_reviews,
+    uncertain, newly_deferred, source_warning, signature_for, deferrals,
+):
+    ctx = _configured_digest_context(
+        components, cfg, seen, stats, today, prepared, prepared_reviews,
+        uncertain, newly_deferred, source_warning,
+    )
+    artifacts = tuple(
+        entry.artifact
+        for entry in list(ctx.fits) + list(ctx.review)
+        if entry.artifact is not None
+    )
+    try:
+        rendered = components.output_renderer.render_digest(ctx)
+        outcome = components.output_backend.deliver_digest(
+            rendered, artifacts, context=ctx, date=today
+        )
+    except Exception as exc:
+        outcome = DigestOutcome(False, error=exc)
+    notifier = _OutputNoticeAdapter(
+        components.output_renderer, components.output_backend
+    )
+    if not outcome.delivered:
+        for job, _payload, _retry, _evaluation in prepared:
+            stats.delivery_failed += 1
+            _record_fit_failure(
+                seen, stats, job, "delivery", today, notifier, cfg
+            )
+        return
+
+    cv_required = components.output_backend.cv_mode == "required"
+    for job, payload, retry_state, _evaluation in prepared:
+        stats.notification_sent += int(not (retry_state and retry_state.notified))
+        stats.cv_sent += int(payload.get("artifact") is not None)
+        mark_delivery_notified(seen, **job)
+        seen.update(job_identity_keys(job))
+        signature = signature_for(job)
+        if signature is not None:
+            record_evaluation(seen, job, signature, "fit", today)
+    if prepared:
+        _save_seen_for(cfg, seen)
+
+    for job, _evaluation in uncertain:
+        # Required-CV backends only complete review entries whose artifact was
+        # produced; text-only backends complete the rendered review directly.
+        has_artifact = any(entry.job is job and entry.artifact for entry in ctx.review)
+        if cv_required and not has_artifact:
+            continue
+        seen.update(job_identity_keys(job))
+        signature = signature_for(job)
+        if signature is not None:
+            record_evaluation(seen, job, signature, "uncertain", today)
+    if uncertain:
+        _save_seen_for(cfg, seen)
+    _commit_deferrals(seen, deferrals, today, cfg)
 
 
 def _deliver_digest(
@@ -711,11 +834,14 @@ def run_daily(cfg, test: bool = False) -> int:
         path = _seen_file(cfg)
         pull_state() if path == SEEN_JOBS_FILE else pull_state(seen_file=path)
     llm = components.llm
-    telegram = getattr(components.output_backend, "telegram", None)
-    if telegram is None:
-        # Output backends become the sole delivery owner in the output layer;
-        # until then this preserves the legacy formatter/orchestrator path.
-        telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    default_output = isinstance(components.output_backend, DefaultOutputBackend)
+    telegram = (
+        components.output_backend.telegram
+        if default_output
+        else _OutputNoticeAdapter(
+            components.output_renderer, components.output_backend
+        )
+    )
     state_mutation_allowed = False
     try:
         shutdown_note = model_shutdown_warning(cfg.llm_primary_model)
@@ -972,7 +1098,8 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
         # Persist the non-fits and uncertain jobs captured above in one write.
         _save_seen_for(cfg, seen)
-        review_to_tailor = uncertain if cfg.digest_delivery else []
+        cv_required = components.output_backend.cv_mode == "required"
+        review_to_tailor = uncertain if cfg.digest_delivery and cv_required else []
         print(
             "{} fit(s) and {} review job(s) to tailor.".format(
                 len(fits), len(review_to_tailor)
@@ -986,7 +1113,21 @@ def run_daily(cfg, test: bool = False) -> int:
         # happens here, so order doesn't matter and failures stay soft.
         prepared = []  # list of (job, payload, retry_state, evaluation) ready to send
         prepared_reviews = []  # list of (job, payload, evaluation) ready to bundle
-        if fits or review_to_tailor:
+        if fits and not cv_required:
+            for job, evaluation, retry_state in fits:
+                prepared.append(
+                    (
+                        job,
+                        {
+                            "title": job.get("title", "?"),
+                            "company": job.get("company", "?"),
+                            "message": _format_notification(job, evaluation or {}),
+                        },
+                        retry_state,
+                        evaluation,
+                    )
+                )
+        elif fits or review_to_tailor:
             print(
                 "Tailoring {} CV(s) with {} workers...".format(
                     len(fits) + len(review_to_tailor), cfg.tailor_workers
@@ -1089,7 +1230,22 @@ def run_daily(cfg, test: bool = False) -> int:
                         prepared.append((job, payload, retry_state, evaluation))
 
         # ── Stage 4: Deliver ─────────────────────────────────────────────────
-        if cfg.digest_delivery:
+        if cfg.digest_delivery and not default_output:
+            _deliver_configured_digest(
+                components,
+                cfg,
+                seen,
+                stats,
+                today,
+                prepared,
+                prepared_reviews,
+                uncertain,
+                newly_deferred,
+                source_warning,
+                _signature_for,
+                pending_deferrals,
+            )
+        elif cfg.digest_delivery:
             # One ZIP per run: HTML dashboard + every tailored CV, folding in the
             # uncertain and deferred jobs too. All state reconciliation (mark
             # seen on success, record delivery failure on send error) happens
@@ -1099,7 +1255,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 uncertain, newly_deferred, source_warning, telegram,
                 _signature_for, pending_deferrals, components.prompts,
             )
-        else:
+        elif default_output:
             # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per
             # fit, sequentially, then a text run summary.
             for job, payload, retry_state, _evaluation in prepared:
@@ -1145,6 +1301,35 @@ def run_daily(cfg, test: bool = False) -> int:
                 telegram.send_message(_format_run_summary(stats, source_warning))
             except Exception as exc:
                 print(f"Telegram notification error: {exc}", file=sys.stderr)
+        else:
+            for job, payload, retry_state, evaluation in prepared:
+                rendered = components.output_renderer.render_fit(
+                    job, evaluation or {"reason": "Previously matched."}
+                )
+                outcome = components.output_backend.deliver_fit(
+                    rendered,
+                    payload.get("artifact"),
+                    notification_already_sent=retry_state.notified,
+                )
+                stats.notification_sent += int(outcome.notification_sent)
+                stats.cv_sent += int(outcome.cv_sent)
+                if outcome.notification_satisfied:
+                    mark_delivery_notified(seen, **job)
+                if outcome.complete:
+                    seen.update(job_identity_keys(job))
+                    signature = _signature_for(job)
+                    if signature is not None:
+                        record_evaluation(seen, job, signature, "fit", today)
+                    _save_seen_for(cfg, seen)
+                else:
+                    stats.delivery_failed += 1
+                    _record_fit_failure(
+                        seen, stats, job, "delivery", today, telegram, cfg
+                    )
+            try:
+                telegram.send_message(_format_run_summary(stats, source_warning))
+            except Exception as exc:
+                print("Output summary error: {}".format(exc), file=sys.stderr)
 
         print(llm.usage_summary(), flush=True)
         print("Done.", flush=True)
