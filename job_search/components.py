@@ -22,7 +22,9 @@ class PromptSet(Protocol):
 
     def fact_extraction(self, job: object) -> str: ...
     def job_summary(self, job: object) -> str: ...
-    def cv_bullet_selection(self, base_tex: str, job: object) -> str: ...
+    def cv_bullet_selection(
+        self, base_tex: str, job: object, profile: object = None
+    ) -> str: ...
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str: ...
 
 
@@ -127,7 +129,7 @@ class CVRenderer(Protocol):
     def render_tailored(
         self, llm: LLMService, job: object, evaluation: object = None
     ) -> CVArtifact: ...
-    def render_base(self) -> CVArtifact: ...
+    def render_base(self, llm: LLMService = None) -> CVArtifact: ...
 
 
 @runtime_checkable
@@ -223,9 +225,16 @@ class DefaultPromptSet:
         from .llm.summarize import build_job_summary_prompt
         return build_job_summary_prompt(job)
 
-    def cv_bullet_selection(self, base_tex: str, job: object) -> str:
+    def cv_bullet_selection(
+        self, base_tex: str, job: object, profile: object = None
+    ) -> str:
         from .llm.cv_edits import build_cv_bullet_selection_prompt
-        return build_cv_bullet_selection_prompt(base_tex, job)
+        return build_cv_bullet_selection_prompt(
+            base_tex,
+            job,
+            employer_order=getattr(profile, "employer_order", None),
+            candidate_name=getattr(profile, "display_name", "Igor Pivnyk"),
+        )
 
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
         from .latex.compile import build_compiler_repair_prompt
@@ -238,6 +247,20 @@ class FilePromptSet:
     Omitted files fall back to :class:`DefaultPromptSet`. A nonempty revision is
     mandatory because prompt behavior participates in evaluation reopening.
     """
+
+    _ALLOWED_PLACEHOLDERS = {
+        "fact_extraction": {
+            "title", "company", "location", "is_remote", "description",
+        },
+        "job_summary": {
+            "title", "company", "location", "is_remote", "description",
+        },
+        "cv_bullet_selection": {
+            "title", "company", "location", "is_remote", "description",
+            "resume_bullets", "candidate_name",
+        },
+        "compiler_repair": {"tex_source", "compiler_errors"},
+    }
 
     def __init__(
         self,
@@ -263,7 +286,24 @@ class FilePromptSet:
         ):
             if path:
                 with open(path, encoding="utf-8") as handle:
-                    self._templates[name] = Template(handle.read())
+                    template = Template(handle.read())
+                identifiers = set()
+                for match in template.pattern.finditer(template.template):
+                    identifier = match.group("named") or match.group("braced")
+                    if identifier:
+                        identifiers.add(identifier)
+                    elif match.group("invalid") is not None:
+                        raise ValueError(
+                            "{} prompt template has an invalid placeholder".format(name)
+                        )
+                unknown = identifiers - self._ALLOWED_PLACEHOLDERS[name]
+                if unknown:
+                    raise ValueError(
+                        "{} prompt template has unknown placeholder(s): {}".format(
+                            name, ", ".join(sorted(unknown))
+                        )
+                    )
+                self._templates[name] = template
 
     def _render(self, name: str, values: Mapping[str, object], fallback) -> str:
         template = self._templates.get(name)
@@ -300,11 +340,16 @@ class FilePromptSet:
             lambda: self.fallback.job_summary(job),
         )
 
-    def cv_bullet_selection(self, base_tex: str, job: object) -> str:
+    def cv_bullet_selection(
+        self, base_tex: str, job: object, profile: object = None
+    ) -> str:
         from .latex.tailor_render import extract_job_bullets
+        from .llm.cv_edits import _configured_selection_prompt
 
         lines = []
-        for entry in extract_job_bullets(base_tex):
+        for entry in extract_job_bullets(
+            base_tex, getattr(profile, "employer_order", None)
+        ):
             lines.append("{}:".format(entry["company"]))
             lines.extend(
                 "  [{}] {}".format(index, " ".join(str(bullet).split()))
@@ -312,9 +357,14 @@ class FilePromptSet:
             )
         values = self._job_values(job, 7000)
         values["resume_bullets"] = "\n".join(lines)
+        values["candidate_name"] = getattr(
+            profile, "display_name", "Igor Pivnyk"
+        )
         return self._render(
             "cv_bullet_selection", values,
-            lambda: self.fallback.cv_bullet_selection(base_tex, job),
+            lambda: _configured_selection_prompt(
+                self.fallback, base_tex, job, profile
+            ),
         )
 
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
@@ -403,10 +453,21 @@ class DefaultCVRenderer:
         from .pipeline.stages import CVPreparationError
 
         source = load_base_tex(self.profile.base_tex_path)
-        result = self.compiler.compile(llm, source)
+        compile_base = getattr(self.compiler, "compile_base", None)
+        result = (
+            compile_base(source)
+            if callable(compile_base)
+            else self.compiler.compile(llm, source)
+        )
         if not result.ok or not result.pdf_bytes or result.page_count != 1:
             raise CVPreparationError(
                 result.error_excerpt or "base CV did not compile to exactly one page"
+            )
+        final_tex = getattr(result, "tex_source", "") or source
+        violations = self.profile.validate_tex(final_tex)
+        if violations:
+            raise CVPreparationError(
+                "Base CV validation failed: " + "; ".join(violations)
             )
         return CVArtifact(
             os.path.basename(self.profile.rendered_base_path),

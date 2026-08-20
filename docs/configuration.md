@@ -98,7 +98,7 @@ method signatures and do not need to inherit project classes.
 | `candidate_filter` | `revision` and `include(job) -> bool` |
 | `evaluator` | `revision`, `evaluate(llm, criteria, job) -> dict`, and `fingerprint(criteria) -> str` |
 | `profile` | `CandidateProfile` data and validation behavior |
-| `cv_renderer` | `media_types`, `render_tailored(...)`, and `render_base()` returning `CVArtifact` |
+| `cv_renderer` | `media_types`, `render_tailored(...)`, and `render_base(llm=None)` returning `CVArtifact` |
 | `section_provider` | `load() -> (sections, error)` |
 | `output_renderer` | `kind` and pure `render_notice`, `render_fit`, `render_digest` methods |
 | `output_backend` | accepted renderer/media kinds, `cv_mode`, and atomic notice/fit/digest delivery methods |
@@ -140,7 +140,7 @@ def configure(defaults, settings):
 
 The fact and summary templates receive `$title`, `$company`, `$location`,
 `$is_remote`, and `$description`. CV selection also receives
-`$resume_bullets`. Compiler repair receives `$tex_source` and
+`$resume_bullets` and `$candidate_name`. Compiler repair receives `$tex_source` and
 `$compiler_errors`. Use `$$` for a literal dollar sign. Omitted file arguments
 fall back individually to `DefaultPromptSet`.
 
@@ -316,7 +316,7 @@ class TextCVRenderer:
         body = "Candidate summary for {} at {}\n".format(job.title, job.company)
         return CVArtifact("candidate-summary.txt", "text/plain", body.encode())
 
-    def render_base(self):
+    def render_base(self, llm=None):
         return CVArtifact("candidate-base.txt", "text/plain", b"Candidate base\n")
 
 
@@ -351,7 +351,8 @@ def configure(defaults, settings):
 
 ## Filesystem, plain messages, and Telegram
 
-The built-in HTML/filesystem pair writes `index.html` and artifacts atomically:
+The built-in HTML/filesystem pair stages a complete hidden generation and
+atomically promotes `index.html` and its artifacts together:
 
 ```python
 from dataclasses import replace

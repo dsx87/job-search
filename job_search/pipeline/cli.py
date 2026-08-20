@@ -18,6 +18,18 @@ from .stages import (
 )
 
 
+def _notify_composed_error(components, exc):
+    try:
+        notice = "⚠️ <b>Pipeline error</b>\n\n<code>{}: {}</code>".format(
+            type(exc).__name__, exc
+        )
+        components.output_backend.deliver_notice(
+            components.output_renderer.render_notice(notice)
+        )
+    except Exception:
+        pass
+
+
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
     components = load_components(cfg, command="tailor")
@@ -47,7 +59,7 @@ def run_tailor(args, cfg) -> None:
 
     custom_output = (
         getattr(components, "_customized", False)
-        and not isinstance(components.output_backend, DefaultOutputBackend)
+        and type(components.output_backend) is not DefaultOutputBackend
     )
     if custom_output:
         client = components.llm
@@ -63,14 +75,7 @@ def run_tailor(args, cfg) -> None:
             return
         except Exception as exc:
             print(f"Fatal error: {exc}", file=sys.stderr)
-            try:
-                components.output_backend.deliver_notice(
-                    components.output_renderer.render_notice(
-                        "Pipeline error: {}: {}".format(type(exc).__name__, exc)
-                    )
-                )
-            except Exception:
-                pass
+            _notify_composed_error(components, exc)
             raise
     if getattr(components, "_customized", False):
         client = components.llm
@@ -82,13 +87,22 @@ def run_tailor(args, cfg) -> None:
         telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     try:
         if getattr(components, "_customized", False):
-            tailor_single_job(client, job, telegram, renderer=components.cv_renderer)
+            tailor_single_job(
+                client,
+                job,
+                telegram,
+                renderer=components.cv_renderer,
+                fit_renderer=components.output_renderer,
+            )
         else:
             tailor_single_job(client, job, telegram)
         print("Done.", flush=True)
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        _send_error_notification(exc, telegram)
+        if getattr(components, "_customized", False):
+            _notify_composed_error(components, exc)
+        else:
+            _send_error_notification(exc, telegram)
         raise
 
 

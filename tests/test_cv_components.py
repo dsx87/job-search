@@ -8,6 +8,7 @@ from job_search.digest.model import FitEntry, ReviewEntry
 from job_search.latex import compile as compile_mod
 from job_search.latex.compile import CompileResult
 from job_search.models import Job
+from job_search.llm.tailor import tailor_resume
 
 
 class SelectingLLM:
@@ -27,6 +28,30 @@ class SuccessfulCompiler:
     def compile(self, llm, tex_source, max_attempts=3):
         self.sources.append(tex_source)
         return CompileResult(True, b"PDF", "", 1, False, tex_source)
+
+
+class FailFastBaseCompiler:
+    executable = "fake"
+
+    def __init__(self, tex_source):
+        self.tex_source = tex_source
+        self.base_calls = []
+
+    def compile_base(self, source):
+        self.base_calls.append(source)
+        return CompileResult(True, b"BASE-PDF", "", 1, False, self.tex_source)
+
+    def compile(self, llm, tex_source, max_attempts=3):
+        raise AssertionError("base rendering must not enter repair/shrink compilation")
+
+
+class SelectionLLM:
+    def generate(self, prompt, **kwargs):
+        assert "Example Labs" in prompt
+        return '{"jobs": [{"company": "Example Labs", "keep_bullets": [1]}]}'
+
+    def usage_summary(self):
+        return "usage"
 
 
 def test_candidate_profile_drives_validation_and_private_placeholders():
@@ -49,6 +74,37 @@ def test_candidate_profile_drives_validation_and_private_placeholders():
     assert profile.validate_tex(tex + " forbidden claim") == [
         "forbidden term present: 'forbidden claim'"
     ]
+
+
+def test_candidate_profile_employers_drive_deterministic_bullet_selection():
+    profile = CandidateProfile(
+        display_name="Ada Example",
+        employer_order=("Example Labs",),
+        forbidden_claim_patterns=(),
+        revision="ada-v1",
+    )
+    base_tex = r"""\documentclass{article}
+\newcommand{\jobheader}[4]{#1 #2 #3 #4}
+\begin{document}
+\jobheader{Example Labs}{Engineer}{Remote}{2024--Present}
+\begin{itemize}
+  \item First project
+  \item Second project
+\end{itemize}
+\end{document}
+"""
+
+    rendered = tailor_resume(
+        SelectionLLM(),
+        "compatibility instructions",
+        base_tex,
+        Job(title="Engineer", company="Acme", description="Swift role"),
+        profile=profile,
+    )
+
+    assert "Second project" in rendered
+    assert "First project" not in rendered
+    assert profile.validate_tex(rendered) == []
 
 
 def test_latex_compiler_uses_configured_executable_for_both_passes(monkeypatch, tmp_path):
@@ -97,6 +153,25 @@ def test_default_cv_renderer_returns_profile_named_artifact():
     assert compiler.sources and profile.validate_tex(compiler.sources[0]) == []
 
 
+def test_default_base_renderer_uses_fail_fast_compile_and_validates_source():
+    from job_search.pipeline.stages import CVPreparationError
+
+    base_source = load_base_tex()
+    compiler = FailFastBaseCompiler(base_source)
+    profile = CandidateProfile()
+    renderer = DefaultCVRenderer(PipelineConfig(), profile, compiler=compiler)
+
+    artifact = renderer.render_base(SelectionLLM())
+
+    assert artifact.content == b"BASE-PDF"
+    assert compiler.base_calls == [base_source]
+
+    unsafe = FailFastBaseCompiler(base_source + " banking")
+    unsafe_renderer = DefaultCVRenderer(PipelineConfig(), profile, compiler=unsafe)
+    with pytest.raises(CVPreparationError, match="validation"):
+        unsafe_renderer.render_base(SelectionLLM())
+
+
 def test_digest_entries_accept_generic_artifacts_and_keep_pdf_compatibility():
     artifact = CVArtifact("candidate.txt", "text/plain", b"hello")
 
@@ -114,14 +189,15 @@ def test_digest_entries_accept_generic_artifacts_and_keep_pdf_compatibility():
 def test_render_base_command_uses_configured_renderer(monkeypatch, tmp_path):
     from job_search.latex import render_base
 
-    out = tmp_path / "configured-base.pdf"
-    settings = PipelineConfig(rendered_base_file=str(out))
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "renderer-base.txt"
+    settings = PipelineConfig(rendered_base_file=str(tmp_path / "ignored.pdf"))
     calls = []
 
     class Renderer:
         def render_base(self, llm=None):
             calls.append(llm)
-            return CVArtifact("ignored-name.pdf", "application/pdf", b"CONFIGURED")
+            return CVArtifact("renderer-base.txt", "text/plain", b"CONFIGURED")
 
     llm = object()
     components = SimpleNamespace(cv_renderer=Renderer(), llm=llm)
@@ -130,3 +206,20 @@ def test_render_base_command_uses_configured_renderer(monkeypatch, tmp_path):
     assert render_base.main(settings) == 0
     assert out.read_bytes() == b"CONFIGURED"
     assert calls == [llm]
+
+
+def test_render_base_command_uses_default_profile_output_path(monkeypatch, tmp_path):
+    from job_search.latex import render_base
+
+    out = tmp_path / "ada-base.pdf"
+    settings = PipelineConfig(rendered_base_file="ignored-default.pdf")
+    profile = CandidateProfile(rendered_base_path=str(out))
+    renderer = DefaultCVRenderer(settings, profile, compiler=SuccessfulCompiler())
+    renderer.render_base = lambda llm=None: CVArtifact(
+        "ada-base.pdf", "application/pdf", b"ADA"
+    )
+    components = SimpleNamespace(cv_renderer=renderer, llm=object())
+    monkeypatch.setattr(render_base, "load_components", lambda *_a, **_k: components)
+
+    assert render_base.main(settings) == 0
+    assert out.read_bytes() == b"ADA"

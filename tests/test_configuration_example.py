@@ -3,7 +3,7 @@ import importlib.util
 from pathlib import Path
 
 from job_search.components import Components, default_components
-from job_search.composition import validate_components
+from job_search.composition import load_components, validate_components
 from job_search.config import PipelineConfig
 
 
@@ -37,6 +37,24 @@ def test_configuration_example_imports_and_preserves_defaults(monkeypatch):
     assert isinstance(configured, Components)
     assert configured is defaults
     validate_components(configured, settings, command="check")
+
+
+def test_noop_configuration_example_keeps_legacy_dispatch(monkeypatch):
+    for name in (
+        "JOB_SEARCH_OUTPUT_DIR",
+        "JOB_SEARCH_OUTPUT_CV_MODE",
+        "JOB_SEARCH_PROMPT_DIR",
+        "JOB_SEARCH_PROMPT_REVISION",
+        "JOB_SEARCH_PROFILE_NAME",
+        "JOB_SEARCH_CV_FILENAME_PREFIX",
+        "JOB_SEARCH_LATEX_EXECUTABLE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(EXAMPLE))
+
+    configured = load_components(PipelineConfig(), command="check")
+
+    assert configured._customized is False
 
 
 def test_configuration_example_can_select_filesystem_text_only_output(

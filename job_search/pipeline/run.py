@@ -14,8 +14,10 @@ from dataclasses import dataclass, field
 from ..composition import ConfigurationError, load_components
 from ..components import (
     CVArtifact,
+    DefaultCVRenderer,
     DefaultJobEvaluator,
     DefaultOutputBackend,
+    DefaultOutputRenderer,
     DefaultPromptSet,
     DigestOutcome,
     default_components,
@@ -70,6 +72,8 @@ from ..state.seen_jobs import (
     state_size_summary,
 )
 from .stages import (
+    CVDeliveryError,
+    DeliveryOutcome,
     _format_deferred_notification,
     _format_notification,
     _format_uncertain_notification,
@@ -103,7 +107,9 @@ class RunStats:
     failure_details: list = field(default_factory=list)
 
 
-def _format_run_summary(stats: RunStats, source_warning="") -> str:
+def _format_run_summary(
+    stats: RunStats, source_warning="", cv_required=True
+) -> str:
     lines = [
         "✅ <b>Job search complete</b>",
         f"New candidates: {stats.new_jobs}",
@@ -111,7 +117,11 @@ def _format_run_summary(stats: RunStats, source_warning="") -> str:
         f"Needs review (uncertain): {stats.uncertain}",
         f"Deferred: {stats.deferred}",
         f"Fit notifications sent: {stats.notification_sent}",
-        f"Verified CVs delivered: {stats.cv_sent}",
+        (
+            f"Verified CVs delivered: {stats.cv_sent}"
+            if cv_required
+            else "CV delivery: disabled"
+        ),
         f"Evaluation failures: {stats.evaluation_failed}",
         f"Preparation failures: {stats.preparation_failed}",
         f"Delivery failures: {stats.delivery_failed}",
@@ -122,7 +132,7 @@ def _format_run_summary(stats: RunStats, source_warning="") -> str:
     ]
     if stats.fits == 0 and stats.retries_waiting == 0:
         lines.extend(("", "No evaluated jobs matched your criteria."))
-    if stats.fits > stats.cv_sent:
+    if cv_required and stats.fits > stats.cv_sent:
         pending = stats.fits - stats.cv_sent
         noun = "fit" if pending == 1 else "fits"
         lines.extend(
@@ -591,6 +601,7 @@ def _deliver_configured_digest(
 def _deliver_digest(
     llm, cfg, seen, stats, today, prepared, prepared_reviews, uncertain, newly_deferred,
     source_warning, telegram, signature_for, deferrals=(), prompts=None,
+    section_provider=None, output_renderer=None, notifier=None,
 ):
     """Deliver a whole run in ONE Telegram message, by one of two routes.
 
@@ -614,6 +625,7 @@ def _deliver_digest(
     the jobs "already announced" while the notice is still undelivered
     (finding N9).
     """
+    notifier = notifier or telegram
     fit_jobs = [job for job, _payload, _rs, _ev in prepared]
     review_jobs = [job for job, _ev in uncertain]
     summaries = _summaries(llm, fit_jobs + review_jobs, cfg.eval_workers, prompts)
@@ -676,17 +688,24 @@ def _deliver_digest(
         _commit_deferrals(seen, deferrals, today, cfg)
         # Keep the lightweight text completion notice.
         try:
-            telegram.send_message(_format_run_summary(stats, source_warning))
+            notifier.send_message(_format_run_summary(stats, source_warning))
         except Exception as exc:
             print(f"Telegram notification error: {exc}", file=sys.stderr)
         return
+
+    # Hosted Telegraph pages use the built-in node renderer. A configured
+    # output renderer must remain authoritative, so it takes the private ZIP
+    # route even when Telegraph credentials are present.
+    use_telegraph = bool(cfg.telegraph_access_token) and (
+        output_renderer is None or type(output_renderer) is DefaultOutputRenderer
+    )
 
     # Host the CVs before anything is published: the page carries links, so it
     # cannot be built until the archive URL exists — and a failure here means no page
     # was ever created, so there is nothing to retract. Gated on the token
     # because without one the run sends the ZIP and the file host is irrelevant.
     uploads_ok, cv_password, cv_zip_url = True, "", ""
-    if cfg.telegraph_access_token:
+    if use_telegraph:
         uploads_ok, cv_password, cv_zip_url = _publish_cvs(
             fit_entries + review_entries, today
         )
@@ -694,11 +713,15 @@ def _deliver_digest(
     # Loaded here rather than in run_daily so the legacy per-job delivery path
     # never pays for it, and so a config problem is announced only on a run that
     # actually had something to group.
-    sections, sections_error = load_sections(cfg.sections_file)
+    sections, sections_error = (
+        section_provider.load()
+        if section_provider is not None
+        else load_sections(cfg.sections_file)
+    )
     if sections_error:
         print("  Digest sections: {}".format(sections_error), file=sys.stderr)
         try:
-            telegram.send_message(
+            notifier.send_message(
                 "⚠️ Digest sections: {}".format(html.escape(sections_error))
             )
         except Exception as exc:
@@ -724,7 +747,7 @@ def _deliver_digest(
     # could not be encrypted/hosted) falls through to the ZIP, which is the same delivery
     # this pipeline has always done.
     page_url = ""
-    if cfg.telegraph_access_token and uploads_ok:
+    if use_telegraph and uploads_ok:
         try:
             page_url = publish_digest(
                 TelegraphClient(), cfg.telegraph_access_token, ctx, today
@@ -739,9 +762,20 @@ def _deliver_digest(
         len(fit_entries), len(review_entries), len(deferred_entries), today,
         page_url, cv_password,
     )
+    render_error = None
     if not page_url:
-        zip_bytes = build_digest_zip(ctx)
-        if len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
+        # Preserve the legacy one-argument helper call for the built-in
+        # renderer. Besides keeping the public helper compatible, this lets
+        # existing instrumentation wrap it without learning about composition.
+        if output_renderer is None or type(output_renderer) is DefaultOutputRenderer:
+            zip_bytes = build_digest_zip(ctx)
+        else:
+            try:
+                rendered_digest = output_renderer.render_digest(ctx)
+                zip_bytes = build_digest_zip(ctx, rendered_digest)
+            except Exception as exc:
+                render_error = exc
+        if render_error is None and len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
             # Diagnosable rather than silent: the send below will fail and the
             # fits will retry, but at least the log says why.
             print(
@@ -750,6 +784,8 @@ def _deliver_digest(
                 file=sys.stderr,
             )
     try:
+        if render_error is not None:
+            raise render_error
         if page_url:
             telegram.send_message(caption)
         else:
@@ -765,7 +801,7 @@ def _deliver_digest(
             retract_digest(TelegraphClient(), cfg.telegraph_access_token, page_url)
         for job, _payload, _rs, _ev in prepared:
             stats.delivery_failed += 1
-            _record_fit_failure(seen, stats, job, "delivery", today, telegram, cfg)
+            _record_fit_failure(seen, stats, job, "delivery", today, notifier, cfg)
             # Mark notified so the retry takes the known-fit route: the fallback
             # run summary below names each pending fit, and without this the next
             # run re-pays fact extraction, bullet selection AND pdflatex from
@@ -777,7 +813,7 @@ def _deliver_digest(
         # fall back to the text run summary (which reports the delivery failures
         # and the pending retries).
         try:
-            telegram.send_message(_format_run_summary(stats, source_warning))
+            notifier.send_message(_format_run_summary(stats, source_warning))
         except Exception as summary_exc:
             print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
         return
@@ -827,20 +863,15 @@ def _deliver_digest(
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
     components = _runtime_components(cfg, command="daily")
-    if cfg.state_sync:
-        # Pull the shared dedup baseline FIRST: linkedin-guest peeks at
-        # seen_jobs.json during fetch to skip description requests for jobs the
-        # other runner already delivered. Best-effort; never raises.
-        path = _seen_file(cfg)
-        pull_state() if path == SEEN_JOBS_FILE else pull_state(seen_file=path)
     llm = components.llm
-    default_output = isinstance(components.output_backend, DefaultOutputBackend)
+    default_output = type(components.output_backend) is DefaultOutputBackend
+    notifier = _OutputNoticeAdapter(
+        components.output_renderer, components.output_backend
+    )
     telegram = (
         components.output_backend.telegram
         if default_output
-        else _OutputNoticeAdapter(
-            components.output_renderer, components.output_backend
-        )
+        else notifier
     )
     state_mutation_allowed = False
     try:
@@ -864,13 +895,34 @@ def run_daily(cfg, test: bool = False) -> int:
                 )
         criteria = _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
         crit_ver = components.evaluator.fingerprint(criteria)
-        tailoring_instructions = _load_file_for(
-            cfg,
-            "cv_tailoring_prompt_file",
-            CV_TAILORING_PROMPT_FILE,
-            load_tailoring_instructions,
-        )
-        base_tex = _load_file_for(cfg, "base_tex_file", BASE_TEX_FILE, load_base_tex)
+        tailoring_instructions = ""
+        base_tex = ""
+        # Preflight every file owned by the built-in renderer before state sync
+        # or fetch. A whole custom renderer owns its inputs, while
+        # cv_mode=disabled must not require CV source/compatibility files.
+        if (
+            components.output_backend.cv_mode == "required"
+            and type(getattr(components, "cv_renderer", None)) is DefaultCVRenderer
+        ):
+            tailoring_instructions = _load_file_for(
+                cfg,
+                "cv_tailoring_prompt_file",
+                CV_TAILORING_PROMPT_FILE,
+                load_tailoring_instructions,
+            )
+            profile_base_path = components.cv_renderer.profile.base_tex_path
+            base_tex = (
+                load_base_tex()
+                if profile_base_path == BASE_TEX_FILE
+                else load_base_tex(profile_base_path)
+            )
+
+        if cfg.state_sync:
+            # Pull only after configuration and required local files have
+            # passed preflight. linkedin-guest then sees the shared baseline
+            # during fetch. Sync remains best-effort and never raises.
+            path = _seen_file(cfg)
+            pull_state() if path == SEEN_JOBS_FILE else pull_state(seen_file=path)
 
         print("Fetching jobs...", flush=True)
         report = _fetch_for_pipeline(cfg)
@@ -878,7 +930,7 @@ def run_daily(cfg, test: bool = False) -> int:
             message = "🚨 <b>Job source outage</b>\nNo selected source completed successfully; evaluation and state updates were aborted."
             print("No usable job source completed; daily run aborted.", file=sys.stderr)
             try:
-                telegram.send_message(message)
+                notifier.send_message(message)
             except Exception as exc:
                 print(f"Telegram source-outage notification error: {exc}", file=sys.stderr)
             return 1
@@ -899,7 +951,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     flush=True,
                 )
                 try:
-                    telegram.send_message(_format_deferred_notification([d]))
+                    notifier.send_message(_format_deferred_notification([d]))
                 except Exception as exc:
                     print(
                         f"Telegram deferred-job notification error: {exc}",
@@ -907,7 +959,41 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
                 print("Done.", flush=True)
                 return 0
-            process_job(llm, criteria, tailoring_instructions, base_tex, d, telegram)
+            if not getattr(components, "_customized", False):
+                process_job(
+                    llm, criteria, tailoring_instructions, base_tex, d, telegram
+                )
+                print("Done.", flush=True)
+                return 0
+            if not components.candidate_filter.include(d):
+                print("Test job excluded by the configured candidate filter.")
+                print("Done.", flush=True)
+                return 0
+            evaluation = components.evaluator.evaluate(llm, criteria, d)
+            if not evaluation.get("fit"):
+                print("    Skip — {}".format(evaluation.get("reason", "")))
+                print("Done.", flush=True)
+                return 0
+            artifact = None
+            if components.output_backend.cv_mode == "required":
+                artifact = components.cv_renderer.render_tailored(
+                    llm, d, evaluation
+                )
+            rendered = components.output_renderer.render_fit(d, evaluation)
+            if default_output:
+                outcome = send_fit(
+                    {
+                        "title": d.get("title", "?"),
+                        "company": d.get("company", "?"),
+                        "message": rendered,
+                        "artifact": artifact,
+                    },
+                    telegram,
+                )
+            else:
+                outcome = components.output_backend.deliver_fit(rendered, artifact)
+            if not outcome.complete:
+                raise CVDeliveryError(outcome)
             print("Done.", flush=True)
             return 0
 
@@ -918,7 +1004,7 @@ def run_daily(cfg, test: bool = False) -> int:
         # history. Logging the growth every run means a future pruning decision
         # rests on real numbers.
         print(state_size_summary(seen, _seen_file(cfg)), flush=True)
-        _drain_block_alerts(seen, telegram, cfg)
+        _drain_block_alerts(seen, notifier, cfg)
 
         today = _today()
         cutoff = today - datetime.timedelta(days=7)
@@ -1082,7 +1168,7 @@ def run_daily(cfg, test: bool = False) -> int:
         if not cfg.digest_delivery:
             if newly_deferred:
                 try:
-                    telegram.send_message(_format_deferred_notification(newly_deferred))
+                    notifier.send_message(_format_deferred_notification(newly_deferred))
                 except Exception as exc:
                     print(
                         f"Telegram deferred-job notification error: {exc}",
@@ -1090,7 +1176,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
             if uncertain:
                 try:
-                    telegram.send_message(_format_uncertain_notification(uncertain))
+                    notifier.send_message(_format_uncertain_notification(uncertain))
                 except Exception as exc:
                     print(
                         f"Telegram uncertain-job notification error: {exc}",
@@ -1202,7 +1288,7 @@ def run_daily(cfg, test: bool = False) -> int:
                             job,
                             "preparation",
                             today,
-                            telegram,
+                            notifier,
                             cfg,
                         )
                         print(
@@ -1211,7 +1297,7 @@ def run_daily(cfg, test: bool = False) -> int:
                         )
                         if failure_state.attempt == 1 and not retry_state.notified:
                             try:
-                                telegram.send_message(
+                                notifier.send_message(
                                     _pending_fit_message(job, evaluation or {}, failure_state.retry_on)
                                 )
                             except Exception as notify_exc:
@@ -1253,13 +1339,23 @@ def run_daily(cfg, test: bool = False) -> int:
             _deliver_digest(
                 llm, cfg, seen, stats, today, prepared, prepared_reviews,
                 uncertain, newly_deferred, source_warning, telegram,
-                _signature_for, pending_deferrals, components.prompts,
+                _signature_for,
+                pending_deferrals,
+                components.prompts,
+                components.section_provider,
+                components.output_renderer,
+                notifier,
             )
         elif default_output:
             # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per
             # fit, sequentially, then a text run summary.
             for job, payload, retry_state, _evaluation in prepared:
                 try:
+                    if not retry_state.notified:
+                        payload = dict(payload)
+                        payload["message"] = components.output_renderer.render_fit(
+                            job, _evaluation or {}
+                        )
                     outcome = send_fit(
                         payload,
                         telegram,
@@ -1268,7 +1364,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 except Exception as exc:
                     stats.delivery_failed += 1
                     _record_fit_failure(
-                        seen, stats, job, "notification", today, telegram, cfg
+                        seen, stats, job, "notification", today, notifier, cfg
                     )
                     print(
                         f"  Error sending '{payload.get('title')}': {exc}",
@@ -1290,7 +1386,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 else:
                     stats.delivery_failed += 1
                     stage = "document" if outcome.notification_satisfied else "notification"
-                    _record_fit_failure(seen, stats, job, stage, today, telegram, cfg)
+                    _record_fit_failure(seen, stats, job, stage, today, notifier, cfg)
                     detail = outcome.error or "incomplete delivery"
                     print(
                         f"  Error sending '{payload.get('title')}': {detail}",
@@ -1298,19 +1394,32 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
 
             try:
-                telegram.send_message(_format_run_summary(stats, source_warning))
+                notifier.send_message(
+                    _format_run_summary(
+                        stats,
+                        source_warning,
+                        cv_required=components.output_backend.cv_mode == "required",
+                    )
+                )
             except Exception as exc:
                 print(f"Telegram notification error: {exc}", file=sys.stderr)
         else:
             for job, payload, retry_state, evaluation in prepared:
-                rendered = components.output_renderer.render_fit(
-                    job, evaluation or {"reason": "Previously matched."}
-                )
-                outcome = components.output_backend.deliver_fit(
-                    rendered,
-                    payload.get("artifact"),
-                    notification_already_sent=retry_state.notified,
-                )
+                try:
+                    rendered = components.output_renderer.render_fit(
+                        job, evaluation or {"reason": "Previously matched."}
+                    )
+                    outcome = components.output_backend.deliver_fit(
+                        rendered,
+                        payload.get("artifact"),
+                        notification_already_sent=retry_state.notified,
+                    )
+                except Exception as exc:
+                    outcome = DeliveryOutcome(
+                        error=exc,
+                        notification_satisfied=retry_state.notified,
+                        cv_required=components.output_backend.cv_mode == "required",
+                    )
                 stats.notification_sent += int(outcome.notification_sent)
                 stats.cv_sent += int(outcome.cv_sent)
                 if outcome.notification_satisfied:
@@ -1324,10 +1433,16 @@ def run_daily(cfg, test: bool = False) -> int:
                 else:
                     stats.delivery_failed += 1
                     _record_fit_failure(
-                        seen, stats, job, "delivery", today, telegram, cfg
+                        seen, stats, job, "delivery", today, notifier, cfg
                     )
             try:
-                telegram.send_message(_format_run_summary(stats, source_warning))
+                notifier.send_message(
+                    _format_run_summary(
+                        stats,
+                        source_warning,
+                        cv_required=components.output_backend.cv_mode == "required",
+                    )
+                )
             except Exception as exc:
                 print("Output summary error: {}".format(exc), file=sys.stderr)
 
@@ -1337,7 +1452,7 @@ def run_daily(cfg, test: bool = False) -> int:
 
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        _send_error_notification(exc, telegram)
+        _send_error_notification(exc, notifier)
         raise
     finally:
         if cfg.state_sync and not test and state_mutation_allowed:

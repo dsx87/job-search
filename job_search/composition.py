@@ -5,11 +5,16 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
+import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 
 from .components import (
+    CVCompiler,
     CVRenderer,
     CandidateFilter,
+    CandidateProfile,
     Components,
     DefaultCVRenderer,
     DefaultJobEvaluator,
@@ -48,7 +53,16 @@ def _load_module(path: str):
         if spec is None or spec.loader is None:
             raise ImportError("not an importable Python source file")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        previous = sys.modules.get(name)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+            raise
         return module
     except (Exception, SystemExit) as exc:
         raise ConfigurationError(
@@ -70,10 +84,78 @@ def validate_components(
         _require_protocol("llm", components.llm, LLMService, problems)
         _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
         _require_protocol("evaluator", components.evaluator, JobEvaluator, problems)
+        if not isinstance(components.profile, CandidateProfile):
+            problems.append("profile must be a CandidateProfile")
         _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
         _require_protocol("section_provider", components.section_provider, SectionProvider, problems)
         _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
         _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
+
+    profile = getattr(components, "profile", None)
+    if isinstance(profile, CandidateProfile):
+        for label, value in (
+            ("profile.display_name", profile.display_name),
+            ("profile.base_tex_path", profile.base_tex_path),
+            ("profile.rendered_base_path", profile.rendered_base_path),
+            ("profile.cv_filename_prefix", profile.cv_filename_prefix),
+            ("profile.revision", profile.revision),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                problems.append("{} must be a nonempty string".format(label))
+
+        employer_order = profile.employer_order
+        if (
+            not isinstance(employer_order, Sequence)
+            or isinstance(employer_order, (str, bytes))
+            or not employer_order
+            or any(
+                not isinstance(employer, str) or not employer.strip()
+                for employer in employer_order
+            )
+        ):
+            problems.append(
+                "profile.employer_order must be a nonempty sequence of nonempty strings"
+            )
+
+        patterns = profile.forbidden_claim_patterns
+        if not isinstance(patterns, Sequence) or isinstance(patterns, (str, bytes)):
+            problems.append(
+                "profile.forbidden_claim_patterns must be a sequence of strings"
+            )
+        else:
+            for pattern in patterns:
+                if not isinstance(pattern, str):
+                    problems.append(
+                        "profile.forbidden_claim_patterns must contain only strings"
+                    )
+                    continue
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    problems.append(
+                        "invalid profile forbidden-claim pattern: {}".format(exc)
+                    )
+
+        placeholders = profile.private_placeholders
+        if not isinstance(placeholders, Mapping):
+            problems.append("profile.private_placeholders must be a string mapping")
+        else:
+            for placeholder, env_name in placeholders.items():
+                if (
+                    not isinstance(placeholder, str)
+                    or not placeholder
+                    or not isinstance(env_name, str)
+                    or not env_name.strip()
+                ):
+                    problems.append(
+                        "profile.private_placeholders must map nonempty strings"
+                    )
+    renderer = getattr(components, "cv_renderer", None)
+    if type(renderer) is DefaultCVRenderer:
+        if not isinstance(renderer.compiler, CVCompiler):
+            problems.append("default CV renderer compiler does not implement CVCompiler")
+        elif not str(getattr(renderer.compiler, "executable", "") or "").strip():
+            problems.append("default CV renderer compiler executable must be nonempty")
 
     auth_modes = {
         "llm_primary_auth_mode": getattr(settings, "llm_primary_auth_mode", "bearer"),
@@ -82,6 +164,14 @@ def validate_components(
     for name, value in auth_modes.items():
         if value not in ("bearer", "none"):
             problems.append("{} must be 'bearer' or 'none'".format(name))
+    primary = getattr(components.llm, "primary", None)
+    fallback = getattr(components.llm, "fallback", None)
+    if auth_modes["llm_primary_auth_mode"] == "none" and primary is not None:
+        if getattr(primary, "scheme", "") != "openai":
+            problems.append("llm_primary_auth_mode='none' requires the openai scheme")
+    if auth_modes["llm_fallback_auth_mode"] == "none" and fallback is not None:
+        if getattr(fallback, "scheme", "") != "openai":
+            problems.append("llm_fallback_auth_mode='none' requires the openai scheme")
 
     renderer_kind = getattr(components.output_renderer, "kind", "")
     accepted_kinds = tuple(getattr(components.output_backend, "accepted_renderer_kinds", ()))
@@ -122,6 +212,46 @@ def validate_components(
                     "and TELEGRAM_CHAT_ID"
                 )
 
+    # Command-aware local-file preflight is deliberately read-only. Sections
+    # remain a soft presentation fallback and seen-state may be absent on a
+    # first run, so neither belongs here.
+    required_files = []
+    if command in ("daily", "check"):
+        required_files.append(
+            ("criteria_file", getattr(settings, "criteria_file", "criteria.md"))
+        )
+    renderer_profile = getattr(
+        getattr(components, "cv_renderer", None), "profile", None
+    )
+    if (
+        command in ("daily", "tailor", "base", "check")
+        and cv_mode == "required"
+        and type(getattr(components, "cv_renderer", None)) is DefaultCVRenderer
+        and isinstance(renderer_profile, CandidateProfile)
+    ):
+        required_files.append(("base_tex_path", renderer_profile.base_tex_path))
+        if command in ("daily", "tailor", "check"):
+            required_files.append(
+                (
+                    "cv_tailoring_prompt_file",
+                    getattr(
+                        settings,
+                        "cv_tailoring_prompt_file",
+                        "cv_tailoring_prompt.md",
+                    ),
+                )
+            )
+    for label, path in required_files:
+        try:
+            file_path = os.fspath(path)
+            valid_file = bool(str(file_path or "").strip()) and os.path.isfile(
+                file_path
+            )
+        except TypeError:
+            valid_file = False
+        if not valid_file:
+            problems.append("{} does not name a readable file: {}".format(label, path))
+
     if problems:
         raise ConfigurationError("Invalid job-search configuration: " + "; ".join(problems))
 
@@ -152,6 +282,9 @@ def load_components(
     configure = getattr(module, "configure", None)
     if not callable(configure):
         raise ConfigurationError("{} must export configure(defaults, settings)".format(path))
+    baseline = {
+        name: getattr(defaults, name) for name in Components.__dataclass_fields__
+    }
     try:
         configured = configure(defaults, settings)
     except (Exception, SystemExit) as exc:
@@ -168,7 +301,7 @@ def load_components(
         configured.evaluator = type(defaults.evaluator)(configured.prompts)
     if (
         configured.cv_renderer is defaults.cv_renderer
-        and isinstance(defaults.cv_renderer, DefaultCVRenderer)
+        and type(defaults.cv_renderer) is DefaultCVRenderer
         and (
             configured.profile is not defaults.profile
             or configured.prompts is not defaults.prompts
@@ -180,7 +313,10 @@ def load_components(
             prompts=configured.prompts,
         )
     validate_components(configured, settings, command)
-    configured._customized = True
+    configured._customized = any(
+        getattr(configured, name) is not value
+        for name, value in baseline.items()
+    )
     return configured
 
 

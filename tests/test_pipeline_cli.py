@@ -182,3 +182,67 @@ def test_manual_tailor_uses_custom_non_telegram_output_pair(monkeypatch):
         ("render", "iOS Engineer", "Manual tailoring"),
         ("deliver", "rendered fit", artifact),
     ]
+
+
+def test_manual_tailor_threads_custom_renderer_through_default_backend(monkeypatch):
+    from job_search.components import DefaultOutputBackend
+
+    telegram = object()
+    cv_renderer = object()
+    output_renderer = object()
+    llm = object()
+    observed = []
+    components = SimpleNamespace(
+        _customized=True,
+        llm=llm,
+        cv_renderer=cv_renderer,
+        output_renderer=output_renderer,
+        output_backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+
+    def tailor(client, job, destination, renderer=None, fit_renderer=None):
+        observed.append((client, job.title, destination, renderer, fit_renderer))
+
+    monkeypatch.setattr(cli, "tailor_single_job", tailor)
+
+    cli.run_tailor(make_args("x" * 200), make_config())
+
+    assert observed == [
+        (llm, "iOS Engineer", telegram, cv_renderer, output_renderer)
+    ]
+
+
+def test_manual_tailor_renders_fatal_notice_with_composed_default_backend(monkeypatch):
+    from job_search.components import DefaultOutputBackend
+
+    notices = []
+
+    class Telegram:
+        def send_message(self, rendered):
+            notices.append(("delivered", rendered))
+
+    class Renderer:
+        def render_notice(self, notice, **_context):
+            notices.append(("rendered", notice))
+            return "CUSTOM ERROR"
+
+    components = SimpleNamespace(
+        _customized=True,
+        llm=object(),
+        cv_renderer=object(),
+        output_renderer=Renderer(),
+        output_backend=DefaultOutputBackend(Telegram()),
+    )
+    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        cli,
+        "tailor_single_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("compile failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="compile failed"):
+        cli.run_tailor(make_args("x" * 200), make_config())
+
+    assert notices[0][0] == "rendered"
+    assert notices[1] == ("delivered", "CUSTOM ERROR")

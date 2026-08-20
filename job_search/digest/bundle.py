@@ -71,9 +71,9 @@ def build_encrypted_cv_zip(entries, password: str) -> bytes:
     return buffer.getvalue()
 
 
-def build_digest_zip(ctx) -> bytes:
+def build_digest_zip(ctx, rendered_html=None) -> bytes:
     """Render the dashboard and bundle every generated tailored CV."""
-    html = render_digest_html(ctx)
+    html = render_digest_html(ctx) if rendered_html is None else rendered_html
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("index.html", html)

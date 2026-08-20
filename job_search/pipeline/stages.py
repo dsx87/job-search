@@ -366,7 +366,9 @@ def process_job(llm, criteria: str, tailoring_instructions: str, base_tex: str, 
     return True
 
 
-def tailor_single_job(client, job: dict, telegram, renderer=None) -> None:
+def tailor_single_job(
+    client, job: dict, telegram, renderer=None, fit_renderer=None
+) -> None:
     """Tailor + compile + Telegram-deliver a CV for one manually supplied job.
 
     Reuses the same tailoring/compilation/delivery path as the scheduled
@@ -400,6 +402,8 @@ def tailor_single_job(client, job: dict, telegram, renderer=None) -> None:
         + (f'<a href="{safe_url}">View posting</a>\n' if job.get("url") else "")
         + "\n📄 Tailored CV attached."
     )
+    if fit_renderer is not None:
+        header = fit_renderer.render_fit(job, {"reason": "Manual tailoring"})
     outcome = send_fit(
         {
             "title": title,

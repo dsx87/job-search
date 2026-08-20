@@ -33,13 +33,16 @@ def tailor_resume(
     fallback is defensive.
     """
     job = coerce_job(job)
-    selection = select_cv_bullets(client, base_tex, job, prompts=prompts)
-    tex = render_tailored(base_tex, selection)
+    employer_order = getattr(profile, "employer_order", None)
+    selection = select_cv_bullets(
+        client, base_tex, job, prompts=prompts, profile=profile
+    )
+    tex = render_tailored(base_tex, selection, employer_order)
     validate = profile.validate_tex if profile is not None else validate_tailored_cv
     if not validate(tex):
         return tex
 
-    tex = render_tailored(base_tex, {})
+    tex = render_tailored(base_tex, {}, employer_order)
     remaining = validate(tex)
     if remaining:
         raise CVValidationError(remaining)
