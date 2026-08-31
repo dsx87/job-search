@@ -76,20 +76,19 @@ def _require_protocol(name: str, value: object, protocol: object, problems: list
 
 
 def validate_components(
-    components: Components, settings: object, command: str = "daily", structural: bool = True
+    components: Components, settings: object, command: str = "daily"
 ) -> None:
     problems = []
-    if structural:
-        _require_protocol("prompts", components.prompts, PromptSet, problems)
-        _require_protocol("llm", components.llm, LLMService, problems)
-        _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
-        _require_protocol("evaluator", components.evaluator, JobEvaluator, problems)
-        if not isinstance(components.profile, CandidateProfile):
-            problems.append("profile must be a CandidateProfile")
-        _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
-        _require_protocol("section_provider", components.section_provider, SectionProvider, problems)
-        _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
-        _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
+    _require_protocol("prompts", components.prompts, PromptSet, problems)
+    _require_protocol("llm", components.llm, LLMService, problems)
+    _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
+    _require_protocol("evaluator", components.evaluator, JobEvaluator, problems)
+    if not isinstance(components.profile, CandidateProfile):
+        problems.append("profile must be a CandidateProfile")
+    _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
+    _require_protocol("section_provider", components.section_provider, SectionProvider, problems)
+    _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
+    _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
 
     profile = getattr(components, "profile", None)
     if isinstance(profile, CandidateProfile):
@@ -260,7 +259,6 @@ def validate_components(
 
 def load_components(
     settings: object, command: str = "daily", defaults: Components = None,
-    validate_defaults: bool = True,
 ) -> Components:
     """Return validated defaults overlaid by ``configure`` when present.
 
@@ -284,8 +282,7 @@ def load_components(
     if not os.path.exists(path):
         if explicit:
             raise ConfigurationError("Configured composition file does not exist: {}".format(path))
-        validate_components(defaults, settings, command, structural=validate_defaults)
-        defaults._customized = False
+        validate_components(defaults, settings, command)
         return defaults
     if not os.path.isfile(path):
         raise ConfigurationError("Configured composition path is not a file: {}".format(path))
@@ -324,17 +321,7 @@ def load_components(
             configured.profile,
             prompts=configured.prompts,
         )
-    customized = any(
-        getattr(configured, name) is not value
-        for name, value in baseline.items()
-    )
-    validate_components(
-        configured,
-        settings,
-        command,
-        structural=validate_defaults or customized,
-    )
-    configured._customized = customized
+    validate_components(configured, settings, command)
     return configured
 
 

@@ -252,7 +252,7 @@ class FilesystemOutputBackend:
         content = rendered if isinstance(rendered, bytes) else str(rendered).encode("utf-8")
         self._publish((("notice.txt", content),))
 
-    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False):
+    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
         from .pipeline.stages import DeliveryOutcome
 
         try:
@@ -277,7 +277,7 @@ class FilesystemOutputBackend:
             cv_required=self.cv_mode == "required",
         )
 
-    def deliver_digest(self, rendered, artifacts=(), **context):
+    def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):
         try:
             artifacts = tuple(artifacts)
             content = rendered if isinstance(rendered, bytes) else str(rendered).encode("utf-8")
@@ -314,7 +314,7 @@ class PlainMessageBackend:
     def deliver_notice(self, rendered):
         return self.send(str(rendered))
 
-    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False):
+    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
         from .pipeline.stages import DeliveryOutcome
 
         if notification_already_sent:
@@ -331,7 +331,7 @@ class PlainMessageBackend:
             cv_required=False,
         )
 
-    def deliver_digest(self, rendered, artifacts=(), **context):
+    def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):
         try:
             self.send(str(rendered))
         except Exception as exc:

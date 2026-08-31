@@ -91,7 +91,7 @@ def test_configure_receives_defaults_and_exact_settings(tmp_path, monkeypatch):
     assert components._settings_seen is settings
 
 
-def test_noop_config_preserves_validate_defaults_false(tmp_path, monkeypatch):
+def test_noop_config_returns_the_defaults_untouched(tmp_path, monkeypatch):
     config_file = tmp_path / "noop.py"
     config_file.write_text(
         "def configure(defaults, settings):\n"
@@ -101,17 +101,10 @@ def test_noop_config_preserves_validate_defaults_false(tmp_path, monkeypatch):
     _configured_env(monkeypatch, config_file)
     settings = PipelineConfig()
     defaults = default_components(settings)
-    defaults.llm = object()
 
-    components = load_components(
-        settings,
-        command="list",
-        defaults=defaults,
-        validate_defaults=False,
-    )
+    components = load_components(settings, command="list", defaults=defaults)
 
     assert components is defaults
-    assert components._customized is False
 
 
 def test_in_place_config_mutation_rebuilds_dependent_defaults(tmp_path, monkeypatch):
@@ -131,7 +124,6 @@ def test_in_place_config_mutation_rebuilds_dependent_defaults(tmp_path, monkeypa
 
     components = load_components(PipelineConfig(), command="list")
 
-    assert components._customized is True
     assert components.evaluator.prompts is components.prompts
     assert components.cv_renderer.prompts is components.prompts
     assert components.cv_renderer.profile is components.profile

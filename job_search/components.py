@@ -163,10 +163,11 @@ class OutputBackend(Protocol):
     def deliver_notice(self, rendered: object) -> object: ...
     def deliver_fit(
         self, rendered: object, artifact: CVArtifact = None,
-        notification_already_sent: bool = False,
+        notification_already_sent: bool = False, *, job: object = None,
     ) -> object: ...
     def deliver_digest(
-        self, rendered: object, artifacts: Sequence[CVArtifact] = (), **context: object
+        self, rendered: object, artifacts: Sequence[CVArtifact] = (),
+        *, context: object = None, date: object = None,
     ) -> DigestOutcome: ...
 
 
@@ -496,34 +497,60 @@ class DefaultOutputBackend:
     cv_mode = "required"
     requires_telegram_credentials = True
 
-    def __init__(self, telegram: object):
+    def __init__(self, telegram: object, telegraph_token: str = ""):
         self.telegram = telegram
+        self.telegraph_token = str(telegraph_token or "")
 
     def deliver_notice(self, rendered: object) -> object:
         return self.telegram.send_message(str(rendered))
 
     def deliver_fit(
         self, rendered: object, artifact: CVArtifact = None,
-        notification_already_sent: bool = False,
+        notification_already_sent: bool = False, *, job: object = None,
     ) -> object:
+        from .models import coerce_job
         from .pipeline.stages import send_fit
-        payload = {"title": "", "company": "", "message": rendered}
+
+        # ``job`` only supplies the document caption ("Tailored CV — <title> at
+        # <company>"); the filename comes from the artifact. Backends that do
+        # not caption anything are free to ignore it.
+        described = coerce_job(job) if job is not None else None
+        payload = {
+            "title": described.get("title", "") if described is not None else "",
+            "company": described.get("company", "") if described is not None else "",
+            "message": rendered,
+        }
         if artifact is not None:
+            payload["artifact"] = artifact
             payload["pdf_bytes"] = artifact.content
         return send_fit(payload, self.telegram, notification_already_sent)
 
     def deliver_digest(
-        self, rendered: object, artifacts: Sequence[CVArtifact] = (), **context: object
+        self, rendered: object, artifacts: Sequence[CVArtifact] = (),
+        *, context: object = None, date: object = None,
     ) -> DigestOutcome:
-        try:
-            self.telegram.send_message(str(rendered))
-        except Exception as exc:
-            return DigestOutcome(False, error=exc)
-        # This compatibility backend sends only the rendered notice. Exact
-        # DefaultOutputBackend instances use the legacy ZIP/Telegraph path;
-        # subclasses routed through composition must never claim that artifact
-        # bytes were delivered when this inherited method did not send them.
-        return DigestOutcome(True, notification_sent=True, cv_sent=0)
+        """Publish the run as a telegra.ph page, or send it as one ZIP.
+
+        The whole routing decision lives in ``digest.delivery`` — including
+        which route a missing token forces — so this backend behaves like any
+        other one: the pipeline hands it a rendered digest and gets back a
+        completion receipt. ``context`` is the ``DigestContext`` the page
+        renderer needs; ``artifacts`` is accepted for contract parity and is
+        already reachable through the context's entries.
+        """
+        from .digest.delivery import deliver_telegram_digest
+
+        if context is None:
+            # No context means no page and no ZIP to build; the rendered notice
+            # is all there is to send.
+            try:
+                self.telegram.send_message(str(rendered))
+            except Exception as exc:
+                return DigestOutcome(False, error=exc)
+            return DigestOutcome(True, notification_sent=True, cv_sent=0)
+        return deliver_telegram_digest(
+            self.telegram, self.telegraph_token, context, rendered, date
+        )
 
 
 def default_components(
@@ -558,7 +585,9 @@ def default_components(
         cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
         section_provider=DefaultSectionProvider(getattr(settings, "sections_file", "sections.py")),
         output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        output_backend=DefaultOutputBackend(
+            telegram, getattr(settings, "telegraph_access_token", "")
+        ),
     )
 
 

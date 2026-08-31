@@ -3,24 +3,16 @@ import argparse
 import sys
 import urllib.parse
 
-from ..config import (
-    BASE_TEX_FILE,
-    CV_TAILORING_PROMPT_FILE,
-    MIN_JOB_TEXT_LEN,
-    PipelineConfig,
-)
+from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
 from ..composition import ConfigurationError, load_components, redacted_configuration
-from ..components import DefaultOutputBackend, DefaultOutputRenderer
-from ..llm.clients import LLMClient
 from ..models import Job
-from ..notify.telegram import TelegramClient
 from .run import run_daily, run_list, run_seed
-from .stages import (
-    CVDeliveryError,
-    _send_error_notification,
-    ensure_job_description,
-    tailor_single_job,
-)
+from .stages import CVDeliveryError, ensure_job_description
+
+
+# A manual tailor is a fit like any other, so it goes through the one fit
+# renderer. The reason line carries what the old bespoke header said.
+MANUAL_TAILOR_REASON = "Manually requested — tailored CV attached."
 
 
 def _notify_composed_error(components, exc):
@@ -66,67 +58,24 @@ def run_tailor(args, cfg) -> None:
         )
         sys.exit(1)
 
-    custom_output = (
-        getattr(components, "_customized", False)
-        and type(components.output_backend) is not DefaultOutputBackend
-    )
-    use_configured_tailoring = (
-        getattr(components, "_customized", False)
-        or getattr(cfg, "base_tex_file", BASE_TEX_FILE) != BASE_TEX_FILE
-        or getattr(
-            cfg, "cv_tailoring_prompt_file", CV_TAILORING_PROMPT_FILE
-        ) != CV_TAILORING_PROMPT_FILE
-    )
-    if custom_output:
-        client = components.llm
-        try:
-            artifact = components.cv_renderer.render_tailored(client, job)
-            rendered = components.output_renderer.render_fit(
-                job, {"reason": "Manual tailoring"}
-            )
-            outcome = components.output_backend.deliver_fit(rendered, artifact)
-            if not outcome.complete:
-                raise CVDeliveryError(outcome)
-            print("Done.", flush=True)
-            return
-        except Exception as exc:
-            print(f"Fatal error: {exc}", file=sys.stderr)
-            _notify_composed_error(components, exc)
-            raise
-    if use_configured_tailoring:
-        client = components.llm
-        telegram = components.output_backend.telegram
-    else:
-        # Compatibility seam for callers/tests that patch the historical
-        # factories directly; custom composition uses the configured objects.
-        client = LLMClient.from_config(cfg)
-        telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    # One path, whatever the components are: render the CV, render the fit,
+    # hand both to the backend. The built-in Telegram backend turns that into
+    # the message-plus-document pair it always sent.
     try:
-        if use_configured_tailoring:
-            tailor_single_job(
-                client,
-                job,
-                telegram,
-                renderer=components.cv_renderer,
-                fit_renderer=(
-                    components.output_renderer
-                    if (
-                        getattr(components, "_customized", False)
-                        and type(components.output_renderer)
-                        is not DefaultOutputRenderer
-                    )
-                    else None
-                ),
-            )
-        else:
-            tailor_single_job(client, job, telegram)
+        # No cv_mode branch: validate_components already refuses --tailor on a
+        # backend that cannot carry a CV, so there is always one to render.
+        artifact = components.cv_renderer.render_tailored(components.llm, job)
+        rendered = components.output_renderer.render_fit(
+            job, {"reason": MANUAL_TAILOR_REASON}
+        )
+        outcome = components.output_backend.deliver_fit(rendered, artifact, job=job)
+        if not outcome.complete:
+            raise CVDeliveryError(outcome)
+        print("  Verified CV delivered.", flush=True)
         print("Done.", flush=True)
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        if use_configured_tailoring:
-            _notify_composed_error(components, exc)
-        else:
-            _send_error_notification(exc, telegram)
+        _notify_composed_error(components, exc)
         raise
 
 

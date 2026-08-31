@@ -16,8 +16,6 @@ from ..components import (
     CVArtifact,
     DefaultCVRenderer,
     DefaultJobEvaluator,
-    DefaultOutputBackend,
-    DefaultOutputRenderer,
     DefaultPromptSet,
     DigestOutcome,
     default_components,
@@ -31,35 +29,19 @@ from ..config import (
     load_criteria,
     load_tailoring_instructions,
 )
-from ..digest import (
-    DeferredEntry,
-    DigestContext,
-    FitEntry,
-    ReviewEntry,
-    build_digest_zip,
-    build_encrypted_cv_zip,
-    cv_filename_for,
-    digest_filename,
-    load_sections,
-    publish_digest,
-    retract_digest,
-)
+from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
 from ..identity import job_identity_keys, normalize_url
-from ..latex.encrypt import new_password
 from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
-from ..notify.telegraph import TelegraphClient
-from ..notify.x0 import X0Client
 from ..sources.fetch import fetch_jobs_with_health, select_sources
 from ..sources.health import format_source_health
 from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
     SeenSet,
     acknowledge_block_alert,
-    criteria_version,
     delivery_retry_state,
     evaluation_signature,
     load_seen_jobs,
@@ -79,10 +61,6 @@ from .stages import (
     _format_uncertain_notification,
     clean_job_description,
     ensure_job_description,
-    prepare_fit,
-    prepare_retry_fit,
-    process_job,
-    send_fit,
 )
 
 
@@ -302,9 +280,7 @@ def _runtime_components(cfg, command):
                 type(exc).__name__, exc
             )
         ) from exc
-    configured = load_components(
-        cfg, command=command, defaults=defaults, validate_defaults=False
-    )
+    configured = load_components(cfg, command=command, defaults=defaults)
     # Replacing only prompts is the common override. Keep the default evaluator
     # but bind it to the configured prompts so the revision and prompt body both
     # take effect; an explicitly replaced evaluator is left untouched.
@@ -446,42 +422,6 @@ def _summaries(llm, jobs, workers, prompts=None):
         return list(pool.map(lambda job: summarize_job(llm, job, prompts=prompts), jobs))
 
 
-def _digest_caption(n_fits, n_review, n_deferred, date, page_url="", password="") -> str:
-    # Counts come from what actually went into the digest, not the run-level
-    # stats (a fit whose CV failed to compile is not included).
-    bits = ["{} fit{}".format(n_fits, "" if n_fits == 1 else "s")]
-    if n_review:
-        bits.append(f"{n_review} to review")
-    if n_deferred:
-        bits.append(f"{n_deferred} deferred")
-    lines = ["✅ Job Search Digest — {}".format(date.isoformat())]
-    if page_url and password:
-        # Second line, above the counts, on purpose: bound_message truncates
-        # from the end, and a truncated password is a silently unusable digest.
-        # <code> makes it tap-to-copy in Telegram.
-        lines.append("CV password: <code>{}</code>".format(html.escape(password)))
-    lines.append(" · ".join(bits))
-    lines.append(page_url or "Open index.html in the archive.")
-    return "\n".join(lines)
-
-
-# Telegram's bot sendDocument ceiling. A real run bundles a handful of ~40 KB
-# CVs (well under 1 MB), so this only guards a pathological batch; we log rather
-# than split, since exceeding it here would mean something is badly wrong.
-_TELEGRAM_DOC_LIMIT = 50 * 1024 * 1024
-
-
-def _cv_archive_filename(date) -> str:
-    """The "download all CVs" archive, e.g. ``job-cvs-2026-07-21.zip``.
-
-    Deliberately not ``digest_filename``'s ``job-digest-<date>.zip``: that one is
-    the whole digest (dashboard + CVs) sent through Telegram, this one is only
-    the CVs and it is public. Two different things should not share a name.
-    """
-    iso = date.isoformat() if hasattr(date, "isoformat") else str(date)
-    return "job-cvs-{}.zip".format(iso)
-
-
 def _unique_artifact(artifact, taken):
     if artifact.filename not in taken:
         return artifact
@@ -492,37 +432,6 @@ def _unique_artifact(artifact, taken):
         counter += 1
         name = "{}_{}{}".format(stem, counter, extension)
     return CVArtifact(name, artifact.media_type, artifact.content)
-
-
-def _publish_cvs(entries, date):
-    """Encrypt and host one archive containing the tailored CVs.
-
-    Returns ``(ok, password, zip_url)``. The page needs that URL, so this runs
-    *before* publishing — which also means a failure leaves no page to retract.
-
-    Nothing to upload is success, not failure: a review-only or deferred-only
-    run has no CVs and must still get its page.
-
-    Any encryption or upload exception takes the whole run back to the Telegram
-    ZIP. The host is called only after the AES archive is complete, so raw PDF
-    bytes can never reach it.
-    """
-    entries = [entry for entry in entries if entry.pdf_bytes]
-    if not entries:
-        return True, "", ""
-
-    password = new_password()
-    host = X0Client()
-    try:
-        archive = build_encrypted_cv_zip(entries, password)
-        zip_url = host.upload(_cv_archive_filename(date), archive)
-    except Exception as exc:
-        print(
-            "  CV archive encryption/upload failed — falling back to the Telegram ZIP: {}".format(exc),
-            file=sys.stderr,
-        )
-        return False, "", ""
-    return True, password, zip_url
 
 
 def _commit_deferrals(seen, deferrals, today, cfg=None) -> None:
@@ -536,9 +445,9 @@ def _commit_deferrals(seen, deferrals, today, cfg=None) -> None:
         save_seen_jobs(seen) if cfg is None else _save_seen_for(cfg, seen)
 
 
-def _configured_digest_context(
+def _digest_context(
     components, cfg, seen, stats, today, prepared, prepared_reviews,
-    uncertain, newly_deferred, source_warning,
+    uncertain, newly_deferred, source_warning, notifier=None,
 ):
     fit_jobs = [job for job, _payload, _retry, _evaluation in prepared]
     review_jobs = [job for job, _evaluation in uncertain]
@@ -568,6 +477,18 @@ def _configured_digest_context(
             taken.add(artifact.filename)
         review.append(ReviewEntry(job, evaluation, summary, artifact=artifact))
     sections, sections_error = components.section_provider.load()
+    if sections_error:
+        # Announced here rather than at load time so a config problem surfaces
+        # only on a run that actually had something to group, and exactly once
+        # regardless of which backend the digest goes out through.
+        print("  Digest sections: {}".format(sections_error), file=sys.stderr)
+        if notifier is not None:
+            try:
+                notifier.send_message(
+                    "⚠️ Digest sections: {}".format(html.escape(sections_error))
+                )
+            except Exception as exc:
+                print(f"Sections alert error: {exc}", file=sys.stderr)
     return DigestContext(
         date=today,
         stats=stats,
@@ -583,16 +504,18 @@ def _configured_digest_context(
     )
 
 
-def _deliver_configured_digest(
+def _deliver_digest(
     components, cfg, seen, stats, today, prepared, prepared_reviews,
     uncertain, newly_deferred, source_warning, signature_for, deferrals,
 ):
-    ctx = _configured_digest_context(
-        components, cfg, seen, stats, today, prepared, prepared_reviews,
-        uncertain, newly_deferred, source_warning,
-    )
     notifier = _OutputNoticeAdapter(
         components.output_renderer, components.output_backend
+    )
+    telegram_markup = components.output_renderer.kind == "telegram"
+    cv_required = components.output_backend.cv_mode == "required"
+    ctx = _digest_context(
+        components, cfg, seen, stats, today, prepared, prepared_reviews,
+        uncertain, newly_deferred, source_warning, notifier,
     )
     if not (ctx.fits or ctx.review or ctx.deferred):
         _commit_deferrals(seen, deferrals, today, cfg)
@@ -601,8 +524,8 @@ def _deliver_configured_digest(
                 _format_run_summary(
                     stats,
                     source_warning,
-                    cv_required=components.output_backend.cv_mode == "required",
-                    telegram_markup=False,
+                    cv_required=cv_required,
+                    telegram_markup=telegram_markup,
                 )
             )
         except Exception as exc:
@@ -621,12 +544,17 @@ def _deliver_configured_digest(
     )
     try:
         rendered = components.output_renderer.render_digest(ctx)
+    except Exception as exc:
+        # A renderer that blows up is a presentation problem for this run's
+        # content: the fits stay unseen and the next run tries again.
+        outcome = DigestOutcome(False, error=exc)
+    else:
+        # A backend reports *delivery* problems as an outcome. Anything it lets
+        # escape is a bug (a broken bundler, say); that stays fatal rather than
+        # spending every job's retry budget on something retrying cannot fix.
         outcome = components.output_backend.deliver_digest(
             rendered, artifacts, context=ctx, date=today
         )
-    except Exception as exc:
-        outcome = DigestOutcome(False, error=exc)
-    cv_required = components.output_backend.cv_mode == "required"
     cv_complete = not cv_required or outcome.cv_sent >= len(artifacts)
     complete = outcome.delivered and outcome.notification_sent and cv_complete
     if not complete:
@@ -637,11 +565,15 @@ def _deliver_configured_digest(
             and not (retry_state and retry_state.notified)
         )
         stats.cv_sent += min(max(outcome.cv_sent, 0), fit_artifact_count)
-        if outcome.notification_sent:
-            for job, _payload, _retry, _evaluation in prepared:
-                mark_delivery_notified(seen, **job)
-            if prepared:
-                _save_seen_for(cfg, seen)
+        # Mark every prepared fit notified even when the digest itself failed:
+        # the fallback run summary below names each pending fit, so the user has
+        # heard about them, and the retry can take the known-fit route instead
+        # of re-paying fact extraction, bullet selection and pdflatex for a job
+        # already known to be a fit (finding N9).
+        for job, _payload, _retry, _evaluation in prepared:
+            mark_delivery_notified(seen, **job)
+        if prepared:
+            _save_seen_for(cfg, seen)
 
         if outcome.error:
             detail = str(outcome.error)
@@ -666,7 +598,7 @@ def _deliver_configured_digest(
                     stats,
                     source_warning,
                     cv_required=cv_required,
-                    telegram_markup=False,
+                    telegram_markup=telegram_markup,
                 )
             )
         except Exception as exc:
@@ -700,298 +632,12 @@ def _deliver_configured_digest(
     return True
 
 
-def _deliver_digest(
-    llm, cfg, seen, stats, today, prepared, prepared_reviews, uncertain, newly_deferred,
-    source_warning, telegram, signature_for, deferrals=(), prompts=None,
-    section_provider=None, output_renderer=None, notifier=None,
-):
-    """Deliver a whole run in ONE Telegram message, by one of two routes.
-
-    With ``TELEGRAPH_ACCESS_TOKEN`` set: host one encrypted archive of ordinary
-    CV PDFs, publish a telegra.ph page linking to it, and send one message with
-    the page URL and archive password. Without it — or if encryption, upload or
-    publishing fails — send the ZIP (HTML dashboard + tailored CVs) as one
-    document, which is the delivery this pipeline has always done.
-
-    Either way it is a single send, and the two routes are mutually exclusive by
-    construction: the uploads happen before the page exists, so a failure leaves
-    nothing published and nothing to retract.
-
-    On a successful send every included fit is marked delivered/seen exactly as
-    the per-job path does; on a failed send each fit records a delivery failure
-    so it retries next run (the day+1/day+2/block-after-3 machinery is reused).
-
-    ``deferrals`` is the list of (markers, job, signature) tuples for jobs whose
-    deferral is *announced by this ZIP*. Like the review section, they are only
-    committed to ``seen`` once the send succeeds — recording them earlier marks
-    the jobs "already announced" while the notice is still undelivered
-    (finding N9).
-    """
-    notifier = notifier or telegram
-    fit_jobs = [job for job, _payload, _rs, _ev in prepared]
-    review_jobs = [job for job, _ev in uncertain]
-    summaries = _summaries(llm, fit_jobs + review_jobs, cfg.eval_workers, prompts)
-    fit_summaries = summaries[: len(fit_jobs)]
-    review_summaries = summaries[len(fit_jobs):]
-
-    taken = set()
-    fit_entries = []
-    for (job, payload, _rs, evaluation), summary in zip(prepared, fit_summaries):
-        artifact = payload.get("artifact")
-        if artifact is not None:
-            artifact = _unique_artifact(artifact, taken)
-            name = artifact.filename
-        else:
-            name = cv_filename_for(job, taken)
-        taken.add(name)
-        fit_entries.append(
-            FitEntry(
-                job=job,
-                evaluation=evaluation,
-                summary=summary,
-                pdf_bytes=payload.get("pdf_bytes"),
-                cv_filename=name,
-                artifact=artifact,
-            )
-        )
-    review_payloads = {id(job): payload for job, payload, _evaluation in prepared_reviews}
-    review_entries = []
-    for (job, evaluation), summary in zip(uncertain, review_summaries):
-        payload = review_payloads.get(id(job))
-        artifact = payload.get("artifact") if payload else None
-        if artifact is not None:
-            artifact = _unique_artifact(artifact, taken)
-            name = artifact.filename
-        else:
-            name = cv_filename_for(job, taken) if payload else ""
-        if name:
-            taken.add(name)
-        review_entries.append(
-            ReviewEntry(
-                job=job,
-                evaluation=evaluation,
-                summary=summary,
-                pdf_bytes=payload.get("pdf_bytes") if payload else b"",
-                cv_filename=name,
-                artifact=artifact,
-            )
-        )
-    deferred_entries = [DeferredEntry(job=job) for job in newly_deferred]
-
-    if not (fit_entries or review_entries or deferred_entries):
-        # Nothing to bundle. Any pending deferral still has to be committed:
-        # reaching here with a non-empty `deferrals` means every one of them had
-        # markers already in `seen` (that is exactly why it isn't in
-        # newly_deferred / deferred_entries), so its notice went out in an
-        # earlier run and there is nothing left to wait for. Skipping them —
-        # which is what happened before this early return committed them — loses
-        # the "deferred" signature that stops the reopen→defer cycle, and the job
-        # re-pays the description fetch every run forever.
-        _commit_deferrals(seen, deferrals, today, cfg)
-        # Keep the lightweight text completion notice.
-        try:
-            notifier.send_message(
-                _format_run_summary(
-                    stats,
-                    source_warning,
-                    telegram_markup=(
-                        output_renderer is None
-                        or type(output_renderer) is DefaultOutputRenderer
-                    ),
-                )
-            )
-        except Exception as exc:
-            print(f"Telegram notification error: {exc}", file=sys.stderr)
-        return
-
-    # Hosted Telegraph pages use the built-in node renderer. A configured
-    # output renderer must remain authoritative, so it takes the private ZIP
-    # route even when Telegraph credentials are present.
-    use_telegraph = bool(cfg.telegraph_access_token) and (
-        output_renderer is None or type(output_renderer) is DefaultOutputRenderer
-    )
-
-    # Host the CVs before anything is published: the page carries links, so it
-    # cannot be built until the archive URL exists — and a failure here means no page
-    # was ever created, so there is nothing to retract. Gated on the token
-    # because without one the run sends the ZIP and the file host is irrelevant.
-    uploads_ok, cv_password, cv_zip_url = True, "", ""
-    if use_telegraph:
-        uploads_ok, cv_password, cv_zip_url = _publish_cvs(
-            fit_entries + review_entries, today
-        )
-
-    # Loaded here rather than in run_daily so the legacy per-job delivery path
-    # never pays for it, and so a config problem is announced only on a run that
-    # actually had something to group.
-    sections, sections_error = (
-        section_provider.load()
-        if section_provider is not None
-        else load_sections(cfg.sections_file)
-    )
-    if sections_error:
-        print("  Digest sections: {}".format(sections_error), file=sys.stderr)
-        try:
-            notifier.send_message(
-                "⚠️ Digest sections: {}".format(html.escape(sections_error))
-            )
-        except Exception as exc:
-            print(f"Telegram sections alert error: {exc}", file=sys.stderr)
-
-    ctx = DigestContext(
-        date=today,
-        stats=stats,
-        source_warning=source_warning,
-        # The state-size line rides along here so the growth trend is visible in
-        # the archive itself, not only in a CI log nobody reads.
-        usage_summary=" ".join((llm.usage_summary(), state_size_summary(seen, _seen_file(cfg)))),
-        fits=fit_entries,
-        review=review_entries,
-        deferred=deferred_entries,
-        sections=sections,
-        sections_error=sections_error,
-        cv_zip_url=cv_zip_url,
-        cv_encrypted=bool(cv_password),
-    )
-    # Telegraph first: a page plus a link message is the whole digest. Any
-    # failure here (no token, API down, content rejected, or an archive that
-    # could not be encrypted/hosted) falls through to the ZIP, which is the same delivery
-    # this pipeline has always done.
-    page_url = ""
-    if use_telegraph and uploads_ok:
-        try:
-            page_url = publish_digest(
-                TelegraphClient(), cfg.telegraph_access_token, ctx, today
-            )
-        except Exception as exc:
-            print(
-                f"  Telegraph publish failed — falling back to the ZIP: {exc}",
-                file=sys.stderr,
-            )
-
-    caption = _digest_caption(
-        len(fit_entries), len(review_entries), len(deferred_entries), today,
-        page_url, cv_password,
-    )
-    render_error = None
-    if not page_url:
-        # Preserve the legacy one-argument helper call for the built-in
-        # renderer. Besides keeping the public helper compatible, this lets
-        # existing instrumentation wrap it without learning about composition.
-        if output_renderer is None or type(output_renderer) is DefaultOutputRenderer:
-            zip_bytes = build_digest_zip(ctx)
-        else:
-            try:
-                rendered_digest = output_renderer.render_digest(ctx)
-                zip_bytes = build_digest_zip(ctx, rendered_digest)
-            except Exception as exc:
-                render_error = exc
-        if render_error is None and len(zip_bytes) > _TELEGRAM_DOC_LIMIT:
-            # Diagnosable rather than silent: the send below will fail and the
-            # fits will retry, but at least the log says why.
-            print(
-                f"  Digest is {len(zip_bytes) // (1024 * 1024)} MB, over Telegram's "
-                f"{_TELEGRAM_DOC_LIMIT // (1024 * 1024)} MB limit — send will likely fail.",
-                file=sys.stderr,
-            )
-    try:
-        if render_error is not None:
-            raise render_error
-        if page_url:
-            telegram.send_message(caption)
-        else:
-            telegram.send_document(digest_filename(today), zip_bytes, caption)
-    except Exception as exc:
-        # Whole-batch delivery failed: every fit stays unseen and retries.
-        print(f"  Digest delivery failed — fits will retry next run: {exc}", file=sys.stderr)
-        if page_url:
-            # The page went up but its link never reached the user, and the fits
-            # below are about to be queued for another run — which publishes
-            # another page. Withdraw this one so the orphans do not pile up in
-            # the index. Best-effort; never raises.
-            retract_digest(TelegraphClient(), cfg.telegraph_access_token, page_url)
-        for job, _payload, _rs, _ev in prepared:
-            stats.delivery_failed += 1
-            _record_fit_failure(seen, stats, job, "delivery", today, notifier, cfg)
-            # Mark notified so the retry takes the known-fit route: the fallback
-            # run summary below names each pending fit, and without this the next
-            # run re-pays fact extraction, bullet selection AND pdflatex from
-            # scratch for a job it already knows is a fit (finding N9).
-            mark_delivery_notified(seen, **job)
-        if prepared:
-            _save_seen_for(cfg, seen)
-        # Never leave the user in silence — the digest was the only delivery, so
-        # fall back to the text run summary (which reports the delivery failures
-        # and the pending retries).
-        try:
-            notifier.send_message(
-                _format_run_summary(
-                    stats,
-                    source_warning,
-                    telegram_markup=(
-                        output_renderer is None
-                        or type(output_renderer) is DefaultOutputRenderer
-                    ),
-                )
-            )
-        except Exception as summary_exc:
-            print(f"Telegram fallback summary error: {summary_exc}", file=sys.stderr)
-        return
-
-    # Every fit is delivered by now, whichever route the digest took: the ZIP
-    # carries the CVs itself, and a published page links the archive that was
-    # hosted before the page existed. There is no per-CV delivery step here.
-    for _entry, (job, _payload, retry_state, _ev) in zip(fit_entries, prepared):
-        # Only count a notification the user is actually seeing for the first
-        # time; a retried fit was announced in an earlier run, and the legacy
-        # path avoids double-counting the same way (finding N9).
-        stats.notification_sent += int(not (retry_state and retry_state.notified))
-        # "CV delivered" now means "inside the ZIP or linked from the page" —
-        # the counter is unchanged, only what it counts has widened.
-        stats.cv_sent += 1
-        mark_delivery_notified(seen, **job)
-        seen.update(job_identity_keys(job))
-        sig = signature_for(job)
-        if sig is not None:
-            record_evaluation(seen, job, sig, "fit", today)
-    # One write for the whole batch rather than one per fit: save_seen_jobs
-    # re-sorts and rewrites the entire file, and every key here is union-safe, so
-    # a crash mid-loop is already covered by the retry ladder.
-    if prepared:
-        _save_seen_for(cfg, seen)
-
-    # The review and deferral sections rode on this same (now-delivered) ZIP, so
-    # it is finally safe to record them — a failed send above returns early and
-    # leaves them unrecorded to re-surface next run.
-    for entry, (job, evaluation) in zip(review_entries, uncertain):
-        if not entry.pdf_bytes:
-            continue
-        seen.update(job_identity_keys(job))
-        sig = signature_for(job)
-        if sig is not None:
-            record_evaluation(seen, job, sig, "uncertain", today)
-    if any(entry.pdf_bytes for entry in review_entries):
-        _save_seen_for(cfg, seen)
-    _commit_deferrals(seen, deferrals, today, cfg)
-    # Finding 4 ("every delivery-failure branch ends in a Telegram notice") is
-    # satisfied by construction now rather than by a notice: a CV that cannot be
-    # hosted fails the *whole* digest into the ZIP branch above, which already
-    # sends _format_run_summary. There is no longer a way for one fit's CV to go
-    # missing while the digest is delivered.
-
-
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
     components = _runtime_components(cfg, command="daily")
     llm = components.llm
-    default_output = type(components.output_backend) is DefaultOutputBackend
     notifier = _OutputNoticeAdapter(
         components.output_renderer, components.output_backend
-    )
-    telegram = (
-        components.output_backend.telegram
-        if default_output
-        else notifier
     )
     state_mutation_allowed = False
     exit_code = 0
@@ -1027,7 +673,7 @@ def run_daily(cfg, test: bool = False) -> int:
         # cv_mode=disabled must not require CV source/compatibility files.
         if (
             components.output_backend.cv_mode == "required"
-            and type(getattr(components, "cv_renderer", None)) is DefaultCVRenderer
+            and isinstance(getattr(components, "cv_renderer", None), DefaultCVRenderer)
         ):
             tailoring_instructions = _load_file_for(
                 cfg,
@@ -1089,12 +735,6 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
                 print("Done.", flush=True)
                 return 0
-            if not getattr(components, "_customized", False):
-                process_job(
-                    llm, criteria, tailoring_instructions, base_tex, d, telegram
-                )
-                print("Done.", flush=True)
-                return 0
             if not components.candidate_filter.include(d):
                 print("Test job excluded by the configured candidate filter.")
                 print("Done.", flush=True)
@@ -1110,18 +750,9 @@ def run_daily(cfg, test: bool = False) -> int:
                     llm, d, evaluation
                 )
             rendered = components.output_renderer.render_fit(d, evaluation)
-            if default_output:
-                outcome = send_fit(
-                    {
-                        "title": d.get("title", "?"),
-                        "company": d.get("company", "?"),
-                        "message": rendered,
-                        "artifact": artifact,
-                    },
-                    telegram,
-                )
-            else:
-                outcome = components.output_backend.deliver_fit(rendered, artifact)
+            outcome = components.output_backend.deliver_fit(
+                rendered, artifact, job=d
+            )
             if not outcome.complete:
                 raise CVDeliveryError(outcome)
             print("Done.", flush=True)
@@ -1353,50 +984,25 @@ def run_daily(cfg, test: bool = False) -> int:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.tailor_workers) as pool:
                 future_to_candidate = {}
                 for job, evaluation, retry_state in fits:
-                    if getattr(components, "_customized", False):
-                        future = pool.submit(
-                            _prepare_with_renderer,
-                            components.cv_renderer,
-                            llm,
-                            job,
-                            None if retry_state.notified else evaluation,
-                        )
-                    elif retry_state.notified:
-                        future = pool.submit(
-                            prepare_retry_fit,
-                            llm,
-                            tailoring_instructions,
-                            base_tex,
-                            job,
-                        )
-                    else:
-                        future = pool.submit(
-                            prepare_fit,
-                            llm,
-                            tailoring_instructions,
-                            base_tex,
-                            job,
-                            evaluation,
-                        )
+                    # A retried fit was announced in an earlier run, so it gets
+                    # no second fit message — passing no evaluation is what
+                    # tells the renderer to skip it.
+                    future = pool.submit(
+                        _prepare_with_renderer,
+                        components.cv_renderer,
+                        llm,
+                        job,
+                        None if retry_state.notified else evaluation,
+                    )
                     future_to_candidate[future] = ("fit", job, evaluation, retry_state)
                 for job, evaluation in review_to_tailor:
-                    if getattr(components, "_customized", False):
-                        future = pool.submit(
-                            _prepare_with_renderer,
-                            components.cv_renderer,
-                            llm,
-                            job,
-                            evaluation,
-                        )
-                    else:
-                        future = pool.submit(
-                            prepare_fit,
-                            llm,
-                            tailoring_instructions,
-                            base_tex,
-                            job,
-                            evaluation,
-                        )
+                    future = pool.submit(
+                        _prepare_with_renderer,
+                        components.cv_renderer,
+                        llm,
+                        job,
+                        evaluation,
+                    )
                     future_to_candidate[future] = ("review", job, evaluation, None)
                 for future in concurrent.futures.as_completed(future_to_candidate):
                     kind, job, evaluation, retry_state = future_to_candidate[future]
@@ -1446,8 +1052,12 @@ def run_daily(cfg, test: bool = False) -> int:
                         prepared.append((job, payload, retry_state, evaluation))
 
         # ── Stage 4: Deliver ─────────────────────────────────────────────────
-        if cfg.digest_delivery and not default_output:
-            if not _deliver_configured_digest(
+        if cfg.digest_delivery:
+            # One digest per run: the rendered dashboard plus every tailored CV,
+            # folding in the uncertain and deferred jobs too. All state
+            # reconciliation (mark seen on success, record a delivery failure on
+            # send error) happens inside _deliver_digest.
+            if not _deliver_digest(
                 components,
                 cfg,
                 seen,
@@ -1462,52 +1072,34 @@ def run_daily(cfg, test: bool = False) -> int:
                 pending_deferrals,
             ):
                 exit_code = 1
-        elif cfg.digest_delivery:
-            # One ZIP per run: HTML dashboard + every tailored CV, folding in the
-            # uncertain and deferred jobs too. All state reconciliation (mark
-            # seen on success, record delivery failure on send error) happens
-            # inside _deliver_digest.
-            _deliver_digest(
-                llm, cfg, seen, stats, today, prepared, prepared_reviews,
-                uncertain, newly_deferred, source_warning, telegram,
-                _signature_for,
-                pending_deferrals,
-                components.prompts,
-                components.section_provider,
-                components.output_renderer,
-                notifier,
-            )
-        elif default_output:
-            # Legacy per-job path (DIGEST_DELIVERY=0): a notification + PDF per
-            # fit, sequentially, then a text run summary.
-            for job, payload, retry_state, _evaluation in prepared:
+        else:
+            # Per-job path (DIGEST_DELIVERY=0): one rendered fit and its CV per
+            # job, sequentially, then a text run summary.
+            for job, payload, retry_state, evaluation in prepared:
                 try:
-                    if not retry_state.notified:
-                        payload = dict(payload)
-                        payload["message"] = components.output_renderer.render_fit(
-                            job, _evaluation or {}
-                        )
-                    outcome = send_fit(
-                        payload,
-                        telegram,
+                    rendered = components.output_renderer.render_fit(
+                        job, evaluation or {"reason": "Previously matched."}
+                    )
+                    outcome = components.output_backend.deliver_fit(
+                        rendered,
+                        payload.get("artifact"),
                         notification_already_sent=retry_state.notified,
+                        job=job,
                     )
                 except Exception as exc:
-                    stats.delivery_failed += 1
-                    _record_fit_failure(
-                        seen, stats, job, "notification", today, notifier, cfg
+                    outcome = DeliveryOutcome(
+                        error=exc,
+                        notification_satisfied=retry_state.notified,
+                        cv_required=components.output_backend.cv_mode == "required",
                     )
-                    print(
-                        f"  Error sending '{payload.get('title')}': {exc}",
-                        file=sys.stderr,
-                    )
-                    continue
-
                 stats.notification_sent += int(outcome.notification_sent)
                 stats.cv_sent += int(outcome.cv_sent)
-                if outcome.notification_sent:
+                if outcome.notification_satisfied:
+                    # Recorded before any failure below, because
+                    # _record_fit_failure is what persists the seen set on the
+                    # error path — a delivered notification must not be re-sent
+                    # next run just because the document failed.
                     mark_delivery_notified(seen, **job)
-                    _save_seen_for(cfg, seen)
                 if outcome.complete:
                     seen.update(job_identity_keys(job))
                     signature = _signature_for(job)
@@ -1520,65 +1112,17 @@ def run_daily(cfg, test: bool = False) -> int:
                     _record_fit_failure(seen, stats, job, stage, today, notifier, cfg)
                     detail = outcome.error or "incomplete delivery"
                     print(
-                        f"  Error sending '{payload.get('title')}': {detail}",
+                        f"  Error sending '{job.get('title')}': {detail}",
                         file=sys.stderr,
                     )
-
+            summary = _format_run_summary(
+                stats,
+                source_warning,
+                cv_required=cv_required,
+                telegram_markup=components.output_renderer.kind == "telegram",
+            )
             try:
-                notifier.send_message(
-                    _format_run_summary(
-                        stats,
-                        source_warning,
-                        cv_required=components.output_backend.cv_mode == "required",
-                        telegram_markup=(
-                            type(components.output_renderer)
-                            is DefaultOutputRenderer
-                        ),
-                    )
-                )
-            except Exception as exc:
-                print(f"Telegram notification error: {exc}", file=sys.stderr)
-        else:
-            for job, payload, retry_state, evaluation in prepared:
-                try:
-                    rendered = components.output_renderer.render_fit(
-                        job, evaluation or {"reason": "Previously matched."}
-                    )
-                    outcome = components.output_backend.deliver_fit(
-                        rendered,
-                        payload.get("artifact"),
-                        notification_already_sent=retry_state.notified,
-                    )
-                except Exception as exc:
-                    outcome = DeliveryOutcome(
-                        error=exc,
-                        notification_satisfied=retry_state.notified,
-                        cv_required=components.output_backend.cv_mode == "required",
-                    )
-                stats.notification_sent += int(outcome.notification_sent)
-                stats.cv_sent += int(outcome.cv_sent)
-                if outcome.notification_satisfied:
-                    mark_delivery_notified(seen, **job)
-                if outcome.complete:
-                    seen.update(job_identity_keys(job))
-                    signature = _signature_for(job)
-                    if signature is not None:
-                        record_evaluation(seen, job, signature, "fit", today)
-                    _save_seen_for(cfg, seen)
-                else:
-                    stats.delivery_failed += 1
-                    _record_fit_failure(
-                        seen, stats, job, "delivery", today, notifier, cfg
-                    )
-            try:
-                notifier.send_message(
-                    _format_run_summary(
-                        stats,
-                        source_warning,
-                        cv_required=components.output_backend.cv_mode == "required",
-                        telegram_markup=False,
-                    )
-                )
+                notifier.send_message(summary)
             except Exception as exc:
                 print("Output summary error: {}".format(exc), file=sys.stderr)
 

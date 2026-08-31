@@ -226,3 +226,101 @@ def test_render_base_command_uses_default_profile_output_path(monkeypatch, tmp_p
 
     assert render_base.main(settings) == 0
     assert out.read_bytes() == b"ADA"
+
+
+# --- behaviors that used to live on stages.prepare_fit -----------------------
+# The tailoring/compilation/validation guarantees moved onto DefaultCVRenderer
+# when the pipeline lost its second, legacy preparation path. They are asserted
+# here against the renderer that now owns them.
+
+
+class FailingCompiler:
+    executable = "fake"
+
+    def compile(self, llm, tex_source, max_attempts=3):
+        return CompileResult(False, None, "compilation failed", 0, False, tex_source)
+
+
+class RepairingCompiler:
+    """A compiler whose repair pass silently introduces a forbidden claim."""
+
+    executable = "fake"
+
+    def __init__(self, repaired):
+        self.repaired = repaired
+
+    def compile(self, llm, tex_source, max_attempts=3):
+        return CompileResult(True, b"PDF", "", 1, False, self.repaired)
+
+
+def _tailorable_job():
+    return Job(
+        title="iOS Engineer",
+        company="Acme",
+        description="Swift UIKit engineering role. " * 10,
+    )
+
+
+def test_cv_renderer_requires_verified_pdf():
+    from job_search.pipeline.stages import CVPreparationError
+
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), CandidateProfile(), compiler=FailingCompiler()
+    )
+
+    with pytest.raises(CVPreparationError):
+        renderer.render_tailored(SelectingLLM(), _tailorable_job())
+
+
+def test_cv_renderer_revalidates_compiler_repair_output():
+    """A repair pass that adds a fabricated claim must not reach delivery."""
+    from job_search.pipeline.stages import CVPreparationError
+
+    profile = CandidateProfile()
+    clean = load_base_tex()
+    repaired_with_false_claim = clean.replace(
+        "\\end{document}", "Built consumer banking systems.\\end{document}"
+    )
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), profile,
+        compiler=RepairingCompiler(repaired_with_false_claim),
+    )
+
+    with pytest.raises(CVPreparationError) as raised:
+        renderer.render_tailored(SelectingLLM(), _tailorable_job())
+
+    assert "banking" in str(raised.value)
+
+
+def test_cv_renderer_accepts_a_raw_scraped_mapping():
+    """The renderer takes whatever the scraper produced; canonicalization is
+    tailor_resume's job (it calls coerce_job), so a plain dict must still yield
+    a correctly named artifact rather than an attribute error."""
+    compiler = SuccessfulCompiler()
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), CandidateProfile(), compiler=compiler
+    )
+
+    artifact = renderer.render_tailored(
+        SelectingLLM(),
+        {"title": "iOS", "company": "Example Labs", "description": "Swift role. " * 40},
+    )
+
+    assert artifact.filename == "igor_pivnyk_cv_example_labs.pdf"
+    assert compiler.sources and CandidateProfile().validate_tex(compiler.sources[0]) == []
+
+
+def test_tailor_resume_canonicalizes_its_job_argument(monkeypatch):
+    """The Job-shape guarantee prepare_fit used to provide now lives here."""
+    received = []
+    monkeypatch.setattr(
+        "job_search.llm.tailor.select_cv_bullets",
+        lambda llm, base, job, prompts=None, profile=None: received.append(job) or {},
+    )
+
+    tailor_resume(
+        SelectingLLM(), "instr", load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "Swift role. " * 40},
+    )
+
+    assert isinstance(received[0], Job)

@@ -204,6 +204,9 @@ def _stub_daily(monkeypatch, calls):
         def from_config(cls, _cfg):
             return cls()
 
+        def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+            raise AssertionError("this test stubs the stages that call the LLM")
+
         def usage_summary(self):
             return ""
 
