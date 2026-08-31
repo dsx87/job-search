@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import threading
 
-from .components import CVArtifact, DigestOutcome
+from .components import DeliveryOutcome, DigestOutcome
 from .digest.render import render_digest_html
 from .models import coerce_job
 
@@ -253,8 +253,6 @@ class FilesystemOutputBackend:
         self._publish((("notice.txt", content),))
 
     def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
-        from .pipeline.stages import DeliveryOutcome
-
         try:
             if self.cv_mode == "required" and artifact is None:
                 raise ValueError("a CV artifact is required for filesystem delivery")
@@ -315,8 +313,6 @@ class PlainMessageBackend:
         return self.send(str(rendered))
 
     def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
-        from .pipeline.stages import DeliveryOutcome
-
         if notification_already_sent:
             return DeliveryOutcome(
                 notification_satisfied=True, cv_required=False

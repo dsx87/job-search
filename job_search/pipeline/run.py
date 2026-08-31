@@ -11,11 +11,9 @@ import sys
 import os
 from dataclasses import dataclass, field
 
-from ..composition import ConfigurationError, load_components
+from ..composition import ConfigurationError, load_components, reads_profile_sources
 from ..components import (
     CVArtifact,
-    DefaultCVRenderer,
-    DefaultJobEvaluator,
     DefaultPromptSet,
     DigestOutcome,
     default_components,
@@ -32,7 +30,6 @@ from ..config import (
 from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient, model_shutdown_warning
-from ..llm.eval import evaluate_job
 from ..llm.summarize import summarize_job
 from ..models import coerce_job
 from ..notify.telegram import TelegramClient
@@ -252,24 +249,13 @@ def _record_fit_failure(seen, stats, job, stage, today, telegram, cfg=None):
     return state
 
 
-class _PipelineDefaultEvaluator(DefaultJobEvaluator):
-    """Default evaluator seam that preserves monkeypatch-compatible wrappers."""
-
-    def evaluate(self, llm, criteria, job):
-        if getattr(self.prompts, "revision", "") == DefaultPromptSet.revision:
-            return evaluate_job(llm, criteria, job)
-        return evaluate_job(llm, criteria, job, prompts=self.prompts)
-
-
 def _runtime_components(cfg, command):
     prompts = DefaultPromptSet()
-    evaluator = _PipelineDefaultEvaluator(prompts)
     try:
         defaults = default_components(
             cfg,
             prompts=prompts,
             llm=LLMClient.from_config(cfg),
-            evaluator=evaluator,
             telegram=TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id),
         )
     except ConfigurationError:
@@ -280,24 +266,17 @@ def _runtime_components(cfg, command):
                 type(exc).__name__, exc
             )
         ) from exc
-    configured = load_components(cfg, command=command, defaults=defaults)
-    # Replacing only prompts is the common override. Keep the default evaluator
-    # but bind it to the configured prompts so the revision and prompt body both
-    # take effect; an explicitly replaced evaluator is left untouched.
-    if configured.evaluator is evaluator and configured.prompts is not prompts:
-        configured.evaluator = _PipelineDefaultEvaluator(configured.prompts)
-    return configured
+    # load_components rebinds the default evaluator to configured prompts on
+    # its own (see composition.rebind_defaults), so there is nothing to fix up
+    # here any more.
+    return load_components(cfg, command=command, defaults=defaults)
 
 
-def _evaluate_candidate(llm, criteria, job, evaluator=None):
+def _evaluate_candidate(llm, criteria, job, evaluator):
     """Evaluate a candidate only when its cleaned description is sufficient."""
     if not ensure_job_description(job):
         return None
-    return (
-        evaluator.evaluate(llm, criteria, job)
-        if evaluator is not None
-        else evaluate_job(llm, criteria, job)
-    )
+    return evaluator.evaluate(llm, criteria, job)
 
 
 def _prepare_with_renderer(renderer, llm, job, evaluation=None):
@@ -666,23 +645,23 @@ def run_daily(cfg, test: bool = False) -> int:
             else ""
         )
         crit_ver = components.evaluator.fingerprint(criteria)
-        tailoring_instructions = ""
-        base_tex = ""
-        # Preflight every file owned by the built-in renderer before state sync
-        # or fetch. A whole custom renderer owns its inputs, while
-        # cv_mode=disabled must not require CV source/compatibility files.
+        # Preflight the files the built-in renderer opens, before state sync or
+        # fetch. validate_components already checked they exist; this reads them,
+        # which is what catches an unreadable or empty one. The values are
+        # discarded — the renderer loads them again when it actually runs. A
+        # whole custom renderer owns its inputs, and cv_mode=disabled needs none.
         if (
             components.output_backend.cv_mode == "required"
-            and isinstance(getattr(components, "cv_renderer", None), DefaultCVRenderer)
+            and reads_profile_sources(getattr(components, "cv_renderer", None))
         ):
-            tailoring_instructions = _load_file_for(
+            _load_file_for(
                 cfg,
                 "cv_tailoring_prompt_file",
                 CV_TAILORING_PROMPT_FILE,
                 load_tailoring_instructions,
             )
             profile_base_path = components.cv_renderer.profile.base_tex_path
-            base_tex = (
+            (
                 load_base_tex()
                 if profile_base_path == BASE_TEX_FILE
                 else load_base_tex(profile_base_path)

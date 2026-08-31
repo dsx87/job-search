@@ -21,6 +21,11 @@ from job_search.state.seen_jobs import (
 )
 
 
+# The built-in evaluator calls llm.eval.evaluate_job (with prompts=), so tests
+# patch it where it is defined rather than through a pipeline-local alias.
+EVALUATE_JOB = "job_search.llm.eval.evaluate_job"
+
+
 class FakeLLM:
     """Shaped like LLMService: the daily run now validates its components even
     when nothing is customized, so a fake that only reported usage no longer
@@ -149,7 +154,7 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
         state.update(seen)
         saved.append(set(state))
 
-    monkeypatch.setattr(run, "TelegramClient", lambda *_args: telegram)
+    monkeypatch.setattr(run, "TelegramClient", lambda *_args, **_kwargs: telegram)
 
     class FakeLLMClient:
         @staticmethod
@@ -771,7 +776,7 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
         candidate_filter=SimpleNamespace(include=lambda _job: True),
         evaluator=SimpleNamespace(
             fingerprint=lambda _criteria: "signature",
-            evaluate=lambda *_args: {
+            evaluate=lambda *_args, **_kwargs: {
                 "fit": True,
                 "verdict": "fit",
                 "reason": "custom fit",
@@ -1131,7 +1136,7 @@ def test_all_deferred_stays_unseen_and_summary_reports_zero_matches(monkeypatch)
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
 
     run.run_daily(make_config())
 
@@ -1150,12 +1155,12 @@ def test_mixed_run_evaluates_only_sufficient_job(monkeypatch):
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
     evaluated = []
 
-    def fake_evaluate(_client, _criteria, job):
+    def fake_evaluate(_client, _criteria, job, **_kwargs):
         assert isinstance(job, Job)
         evaluated.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", fake_evaluate)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate)
     run.run_daily(make_config())
 
     assert evaluated == ["Complete"]
@@ -1175,11 +1180,11 @@ def test_successful_enrichment_is_cleaned_before_evaluation(monkeypatch):
     )
     descriptions = []
 
-    def fake_evaluate(_client, _criteria, candidate):
+    def fake_evaluate(_client, _criteria, candidate, **_kwargs):
         descriptions.append(candidate["description"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", fake_evaluate)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate)
     run.run_daily(make_config())
 
     assert len(descriptions[0]) >= 200
@@ -1192,7 +1197,7 @@ def test_deferred_notice_failure_is_soft_and_job_stays_unseen(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     _telegram, saved = install_daily_fakes(monkeypatch, [job], FakeTelegram(fail_deferred=True))
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
 
     run.run_daily(make_config())
 
@@ -1232,9 +1237,8 @@ def test_previously_deferred_job_can_later_be_evaluated(monkeypatch):
 
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: next(sufficiency))
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda _client, _criteria, candidate: (
+        EVALUATE_JOB,
+        lambda _client, _criteria, candidate, **_kwargs: (
             evaluated.append(candidate["url"])
             or {"fit": False, "reason": "no", "timezone_note": None}
         ),
@@ -1269,9 +1273,8 @@ def test_all_evaluations_error_still_sends_completion_notice(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("llm down")),
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("llm down")),
     )
 
     run.run_daily(make_config())
@@ -1288,15 +1291,14 @@ def test_fit_that_fails_to_send_does_not_claim_none_matched(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {"fit": True, "reason": "great", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args: {"title": "Match"})
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args, **_kwargs: {"title": "Match"})
     monkeypatch.setattr(
         stages,
         "send_fit",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("telegram down")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("telegram down")),
     )
 
     run.run_daily(make_config())
@@ -1310,15 +1312,14 @@ def test_fit_that_fails_to_send_does_not_claim_none_matched(monkeypatch):
 def _install_fit(monkeypatch, send_outcome=None, prepare_error=None):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {"fit": True, "reason": "great", "timezone_note": None},
     )
     if prepare_error is not None:
         monkeypatch.setattr(
             run,
             "_prepare_with_renderer",
-            lambda *_args: (_ for _ in ()).throw(prepare_error),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(prepare_error),
         )
     else:
         monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
@@ -1398,12 +1399,12 @@ def test_mixed_outcomes_have_accurate_summary(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, jobs)
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
 
-    def evaluate(_client, _criteria, job):
+    def evaluate(_client, _criteria, job, **_kwargs):
         if job["title"] == "EvalFail":
             raise RuntimeError("eval down")
         return {"fit": job["title"] != "No", "reason": "result", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", evaluate)
+    monkeypatch.setattr(EVALUATE_JOB, evaluate)
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
     outcomes = {
         "Good": DeliveryOutcome(notification_sent=True, notification_satisfied=True, cv_sent=True),
@@ -1614,7 +1615,7 @@ def test_waiting_retry_skips_all_llm_work(monkeypatch):
     )
     telegram, _saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 15))
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
     monkeypatch.setattr(
         run,
         "_prepare_with_renderer",
@@ -1637,7 +1638,7 @@ def test_notified_due_retry_skips_evaluation_and_uploads_only_pdf(monkeypatch):
     mark_delivery_notified(seen, **job_dict)
     telegram, saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
 
     run.run_daily(make_config())
@@ -1656,11 +1657,10 @@ def test_failed_pending_notification_re_evaluates_on_due_retry(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: today[0])
     evaluations = []
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args: (_ for _ in ()).throw(RuntimeError("compile down")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("compile down")))
 
     run.run_daily(make_config())
     today[0] = datetime.date(2026, 7, 16)
@@ -1680,8 +1680,8 @@ def test_third_failure_blocks_without_seen_keys_and_sends_terminal_alert(monkeyp
     mark_delivery_notified(seen, **job_dict)
     telegram, saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 18))
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
-    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args: (_ for _ in ()).throw(RuntimeError("compile down")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("compile down")))
 
     run.run_daily(make_config())
 
@@ -1702,7 +1702,7 @@ def test_blocked_job_only_retries_terminal_alert_until_acknowledged(monkeypatch)
     record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 18), "document")
     telegram = FakeTelegram(fail_block=True)
     _telegram, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram, initial_seen=seen)
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
     monkeypatch.setattr(
         run,
         "_prepare_with_renderer",
@@ -1726,14 +1726,13 @@ def test_three_attempt_lifecycle_runs_on_days_zero_one_and_three(monkeypatch):
     preparations = []
     monkeypatch.setattr(run, "_today", lambda: today[0])
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
     )
     monkeypatch.setattr(
         run,
         "_prepare_with_renderer",
-        lambda *_args: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
+        lambda *_args, **_kwargs: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
     )
 
     run.run_daily(make_config())
@@ -1769,11 +1768,11 @@ def test_reopen_on_description_change_reevaluates(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     evaluations = []
 
-    def counting_nonfit(_client, _criteria, job):
+    def counting_nonfit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())
     # Same identity (url/title/company), different sufficient description.
@@ -1790,11 +1789,11 @@ def test_same_description_is_not_reevaluated(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     evaluations = []
 
-    def counting_nonfit(_client, _criteria, job):
+    def counting_nonfit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())
     run.run_daily(make_config())
@@ -1814,11 +1813,11 @@ def test_delivered_fit_is_not_reopened_on_change(monkeypatch):
     )
     evaluations = []
 
-    def counting_fit(_client, _criteria, job):
+    def counting_fit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": True, "reason": "great", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_fit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_fit)
 
     run.run_daily(make_config())
     # Change the description; a delivered fit must never be re-opened.
@@ -1839,9 +1838,8 @@ def test_legacy_seen_job_without_lifecycle_markers_stays_skipped(monkeypatch):
     )
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("legacy job must stay skipped")),
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy job must stay skipped")),
     )
 
     assert run.run_daily(make_config()) == 0  # skipped, evaluate never called
@@ -1854,11 +1852,11 @@ def test_criteria_change_reopens_prior_nonfit(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     evaluations = []
 
-    def counting_nonfit(_client, _criteria, job):
+    def counting_nonfit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())  # criteria == "criteria" (harness default)
     monkeypatch.setattr(run, "load_criteria", lambda: "totally different criteria")
@@ -1884,9 +1882,8 @@ def test_reopened_job_that_defers_records_signature_and_stops_reopening(monkeypa
 
     monkeypatch.setattr(run, "ensure_job_description", ensure)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {"fit": False, "reason": "no", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None},
     )
 
     run.run_daily(make_config())  # run 1: evaluated, non-fit
@@ -1902,16 +1899,15 @@ def test_uncertain_verdict_is_surfaced_for_review_and_marked_seen(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {
             "fit": False,
             "verdict": "uncertain",
             "reason": "policy could not decide",
             "timezone_note": None,
         },
     )
-    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_a: (_ for _ in ()).throw(AssertionError("no tailoring")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_a, **_kwargs: (_ for _ in ()).throw(AssertionError("no tailoring")))
 
     run.run_daily(make_config())
 
@@ -1958,9 +1954,8 @@ def _capture_digest_contexts(monkeypatch):
 def _install_digest_fit(monkeypatch, pdf=b"PDFDATA", summary="One-line summary."):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(pdf))
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: summary)
@@ -2017,12 +2012,12 @@ def test_digest_folds_uncertain_and_deferred_into_zip_not_messages(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda job: job["title"] != "Sparse")
 
-    def evaluate(_client, _criteria, job):
+    def evaluate(_client, _criteria, job, **_kwargs):
         if job["title"] == "Match":
             return {"fit": True, "reason": "great", "timezone_note": None, "facts": {}}
         return {"fit": False, "verdict": "uncertain", "reason": "cannot decide", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", evaluate)
+    monkeypatch.setattr(EVALUATE_JOB, evaluate)
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "sum")
 
@@ -2042,9 +2037,8 @@ def test_digest_success_marks_uncertain_seen(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"REVIEW-PDF"))
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
@@ -2069,9 +2063,8 @@ def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
 
@@ -2089,9 +2082,8 @@ def test_digest_caption_counts_delivered_fits_not_found_fits(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great", "timezone_note": None, "facts": {}},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": True, "reason": "great", "timezone_note": None, "facts": {}},
     )
 
     real = fake_prepare(b"PDF")
@@ -2240,7 +2232,7 @@ def test_digest_reopened_defer_is_recorded_even_with_nothing_to_bundle(monkeypat
 
     monkeypatch.setattr(run, "ensure_job_description", ensure)
     monkeypatch.setattr(
-        run, "evaluate_job", lambda *_a: {"fit": False, "reason": "no", "timezone_note": None}
+        EVALUATE_JOB, lambda *_a, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None}
     )
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
     cfg = make_config(digest_delivery=True)
@@ -2262,9 +2254,8 @@ def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": False, "reason": "no", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None},
     )
 
     run.run_daily(make_config(digest_delivery=True))
@@ -2535,9 +2526,8 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {
             "fit": False,
             "verdict": "uncertain",
             "reason": "unclear",
@@ -2639,8 +2629,8 @@ def test_a_run_with_no_fits_still_publishes_a_page(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run, "evaluate_job",
-        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "unclear",
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "unclear",
                      "timezone_note": None, "facts": {}},
     )
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
@@ -2703,8 +2693,8 @@ def test_every_fit_commits_when_the_page_is_delivered(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run, "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDFDATA"))
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")

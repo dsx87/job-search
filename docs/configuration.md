@@ -429,7 +429,7 @@ def configure(defaults, settings):
 This is the expected shape of a WhatsApp adapter, not a maintained built-in
 integration. A document-capable adapter should instead implement the full
 `OutputBackend`, declare accepted media types and `cv_mode="required"`, and
-return `job_search.pipeline.stages.DeliveryOutcome` for each fit plus
+return `job_search.components.DeliveryOutcome` for each fit plus
 `job_search.components.DigestOutcome` for a digest.
 
 ## Deployment

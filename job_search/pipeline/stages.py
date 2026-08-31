@@ -12,9 +12,8 @@ import sys
 import urllib.parse
 import urllib.request
 from collections.abc import MutableMapping
-from dataclasses import dataclass
-from typing import Optional
 
+from ..components import DeliveryOutcome
 from ..config import MIN_JOB_TEXT_LEN
 from ..http import read_capped
 from ..models import Job, coerce_job
@@ -23,23 +22,6 @@ from ..text import collapse_ws, strip_html
 
 class CVPreparationError(RuntimeError):
     """Raised when a verified one-page PDF cannot be prepared."""
-
-
-@dataclass(frozen=True)
-class DeliveryOutcome:
-    notification_sent: bool = False
-    cv_sent: bool = False
-    error: Optional[Exception] = None
-    notification_satisfied: bool = False
-    cv_required: bool = True
-
-    @property
-    def complete(self) -> bool:
-        return (
-            self.notification_satisfied
-            and (self.cv_sent or not self.cv_required)
-            and self.error is None
-        )
 
 
 class CVDeliveryError(RuntimeError):

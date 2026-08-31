@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from .components import (
     CVCompiler,
@@ -75,10 +75,28 @@ def _require_protocol(name: str, value: object, protocol: object, problems: list
         problems.append("{} does not implement {}".format(name, protocol.__name__))
 
 
-def validate_components(
-    components: Components, settings: object, command: str = "daily"
-) -> None:
-    problems = []
+def reads_profile_sources(renderer: object) -> bool:
+    """True when ``renderer`` will run the built-in code that opens the .tex.
+
+    This asks which implementation is about to run, not what class the object
+    is: a subclass that overrides both render methods owns its own inputs, so
+    preflighting it would demand a file it never opens.
+    """
+    kind = type(renderer)
+    return any(
+        getattr(kind, name, None) is getattr(DefaultCVRenderer, name)
+        for name in ("render_tailored", "render_base")
+    )
+
+
+def _validate_shape(components: Components, problems: list) -> None:
+    """Check the object graph against the component contracts.
+
+    Note what ``isinstance`` against a ``runtime_checkable`` Protocol actually
+    does: it checks that the named *methods and attributes exist*, never their
+    signatures or return types. This catches a typo'd method name and a missing
+    attribute; it does not prove a component behaves.
+    """
     _require_protocol("prompts", components.prompts, PromptSet, problems)
     _require_protocol("llm", components.llm, LLMService, problems)
     _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
@@ -149,13 +167,50 @@ def validate_components(
                     problems.append(
                         "profile.private_placeholders must map nonempty strings"
                     )
-    renderer = getattr(components, "cv_renderer", None)
-    if type(renderer) is DefaultCVRenderer:
-        if not isinstance(renderer.compiler, CVCompiler):
-            problems.append("default CV renderer compiler does not implement CVCompiler")
-        elif not str(getattr(renderer.compiler, "executable", "") or "").strip():
-            problems.append("default CV renderer compiler executable must be nonempty")
+    # Duck-typed rather than keyed on DefaultCVRenderer: any renderer that
+    # exposes a compiler is making the same promise about it, and a validator
+    # that names concrete classes is a sign the contract is not carrying its
+    # weight.
+    compiler = getattr(getattr(components, "cv_renderer", None), "compiler", None)
+    if compiler is not None:
+        if not isinstance(compiler, CVCompiler):
+            problems.append("CV renderer compiler does not implement CVCompiler")
+        elif not str(getattr(compiler, "executable", "") or "").strip():
+            problems.append("CV renderer compiler executable must be nonempty")
 
+    renderer_kind = getattr(components.output_renderer, "kind", "")
+    accepted_kinds = tuple(getattr(components.output_backend, "accepted_renderer_kinds", ()))
+    if renderer_kind not in accepted_kinds:
+        problems.append(
+            "output renderer kind {!r} is not accepted by backend ({})".format(
+                renderer_kind, ", ".join(accepted_kinds) or "none"
+            )
+        )
+
+    cv_mode = getattr(components.output_backend, "cv_mode", "")
+    if cv_mode not in ("required", "disabled"):
+        problems.append("output backend cv_mode must be 'required' or 'disabled'")
+    if cv_mode == "required":
+        produced = set(getattr(components.cv_renderer, "media_types", ()))
+        accepted = set(getattr(components.output_backend, "accepted_media_types", ()))
+        if not produced.intersection(accepted):
+            problems.append(
+                "CV artifact media types ({}) are not accepted by the output backend ({})".format(
+                    ", ".join(sorted(produced)) or "none",
+                    ", ".join(sorted(accepted)) or "none",
+                )
+            )
+
+
+def _validate_environment(
+    components: Components, settings: object, command: str, problems: list
+) -> None:
+    """Check this host: credentials, auth modes, and the files the command needs.
+
+    Separated from the shape checks because these are the ones that fail on a
+    real runner at 7am — a missing key, an unreadable criteria file — while the
+    shape checks fail the moment a configuration is written.
+    """
     auth_modes = {
         "llm_primary_auth_mode": getattr(settings, "llm_primary_auth_mode", "bearer"),
         "llm_fallback_auth_mode": getattr(settings, "llm_fallback_auth_mode", "bearer"),
@@ -172,30 +227,9 @@ def validate_components(
         if getattr(fallback, "scheme", "") != "openai":
             problems.append("llm_fallback_auth_mode='none' requires the openai scheme")
 
-    renderer_kind = getattr(components.output_renderer, "kind", "")
-    accepted_kinds = tuple(getattr(components.output_backend, "accepted_renderer_kinds", ()))
-    if renderer_kind not in accepted_kinds:
-        problems.append(
-            "output renderer kind {!r} is not accepted by backend ({})".format(
-                renderer_kind, ", ".join(accepted_kinds) or "none"
-            )
-        )
-
     cv_mode = getattr(components.output_backend, "cv_mode", "")
-    if cv_mode not in ("required", "disabled"):
-        problems.append("output backend cv_mode must be 'required' or 'disabled'")
     if command == "tailor" and cv_mode != "required":
         problems.append("--tailor requires a CV-capable output backend")
-    if cv_mode == "required":
-        produced = set(getattr(components.cv_renderer, "media_types", ()))
-        accepted = set(getattr(components.output_backend, "accepted_media_types", ()))
-        if not produced.intersection(accepted):
-            problems.append(
-                "CV artifact media types ({}) are not accepted by the output backend ({})".format(
-                    ", ".join(sorted(produced)) or "none",
-                    ", ".join(sorted(accepted)) or "none",
-                )
-            )
 
     if command in ("daily", "tailor"):
         if getattr(components.llm, "requires_api_key", False) and not getattr(
@@ -221,14 +255,13 @@ def validate_components(
         required_files.append(
             ("criteria_file", getattr(settings, "criteria_file", "criteria.md"))
         )
-    renderer_profile = getattr(
-        getattr(components, "cv_renderer", None), "profile", None
-    )
+    renderer = getattr(components, "cv_renderer", None)
+    renderer_profile = getattr(renderer, "profile", None)
     if (
         command in ("daily", "tailor", "base", "check")
         and cv_mode == "required"
-        and type(getattr(components, "cv_renderer", None)) is DefaultCVRenderer
         and isinstance(renderer_profile, CandidateProfile)
+        and reads_profile_sources(renderer)
     ):
         required_files.append(("base_tex_path", renderer_profile.base_tex_path))
         if command in ("daily", "tailor", "check"):
@@ -253,8 +286,48 @@ def validate_components(
         if not valid_file:
             problems.append("{} does not name a readable file: {}".format(label, path))
 
+
+def validate_components(
+    components: Components, settings: object, command: str = "daily"
+) -> None:
+    """Raise ConfigurationError describing everything wrong, before side effects."""
+    problems = []
+    _validate_shape(components, problems)
+    _validate_environment(components, settings, command, problems)
     if problems:
         raise ConfigurationError("Invalid job-search configuration: " + "; ".join(problems))
+
+
+def rebind_defaults(baseline: Mapping, configured: Components) -> Components:
+    """Re-wire built-in components a configuration left alone but invalidated.
+
+    Replacing only ``prompts`` (or only ``profile``) is the common override, and
+    the built-in evaluator and CV renderer were constructed against the old
+    ones. A component the configuration replaced outright is never touched —
+    that object is the author's, and its wiring is their business.
+    """
+    changes = {}
+    evaluator = configured.evaluator
+    if (
+        evaluator is baseline["evaluator"]
+        and configured.prompts is not baseline["prompts"]
+        and isinstance(evaluator, DefaultJobEvaluator)
+    ):
+        changes["evaluator"] = type(evaluator)(configured.prompts)
+
+    renderer = configured.cv_renderer
+    if (
+        renderer is baseline["cv_renderer"]
+        and isinstance(renderer, DefaultCVRenderer)
+        and (
+            configured.profile is not baseline["profile"]
+            or configured.prompts is not baseline["prompts"]
+        )
+    ):
+        changes["cv_renderer"] = type(renderer)(
+            renderer.settings, configured.profile, prompts=configured.prompts
+        )
+    return replace(configured, **changes) if changes else configured
 
 
 def load_components(
@@ -302,25 +375,7 @@ def load_components(
         ) from exc
     if not isinstance(configured, Components):
         raise ConfigurationError("{} configure() must return Components".format(path))
-    if (
-        configured.evaluator is baseline["evaluator"]
-        and configured.prompts is not baseline["prompts"]
-        and isinstance(baseline["evaluator"], DefaultJobEvaluator)
-    ):
-        configured.evaluator = type(baseline["evaluator"])(configured.prompts)
-    if (
-        configured.cv_renderer is baseline["cv_renderer"]
-        and type(baseline["cv_renderer"]) is DefaultCVRenderer
-        and (
-            configured.profile is not baseline["profile"]
-            or configured.prompts is not baseline["prompts"]
-        )
-    ):
-        configured.cv_renderer = type(baseline["cv_renderer"])(
-            baseline["cv_renderer"].settings,
-            configured.profile,
-            prompts=configured.prompts,
-        )
+    configured = rebind_defaults(baseline, configured)
     validate_components(configured, settings, command)
     return configured
 
@@ -345,6 +400,6 @@ def redacted_configuration(settings: object, components: Components) -> str:
 
 
 __all__ = [
-    "Components", "ConfigurationError", "load_components",
-    "redacted_configuration", "validate_components",
+    "Components", "ConfigurationError", "load_components", "reads_profile_sources",
+    "rebind_defaults", "redacted_configuration", "validate_components",
 ]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from string import Template
-from typing import Any, Mapping, Protocol, Sequence, Tuple, runtime_checkable
+from typing import Mapping, Protocol, Sequence, Tuple, runtime_checkable
 
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
 from .latex.compile import LatexCompiler
@@ -147,7 +147,34 @@ class OutputRenderer(Protocol):
 
 
 @dataclass(frozen=True)
+class DeliveryOutcome:
+    """Completion receipt for one delivered fit.
+
+    Lives here, beside DigestOutcome, because it is half of the OutputBackend
+    contract: a third-party backend has to return one, and reaching into
+    ``pipeline.stages`` for it made a public contract depend on an internal
+    module. ``pipeline.stages`` re-exports it for existing callers.
+    """
+
+    notification_sent: bool = False
+    cv_sent: bool = False
+    error: object = None
+    notification_satisfied: bool = False
+    cv_required: bool = True
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.notification_satisfied
+            and (self.cv_sent or not self.cv_required)
+            and self.error is None
+        )
+
+
+@dataclass(frozen=True)
 class DigestOutcome:
+    """Completion receipt for one delivered digest."""
+
     delivered: bool
     notification_sent: bool = False
     cv_sent: int = 0
@@ -164,7 +191,7 @@ class OutputBackend(Protocol):
     def deliver_fit(
         self, rendered: object, artifact: CVArtifact = None,
         notification_already_sent: bool = False, *, job: object = None,
-    ) -> object: ...
+    ) -> DeliveryOutcome: ...
     def deliver_digest(
         self, rendered: object, artifacts: Sequence[CVArtifact] = (),
         *, context: object = None, date: object = None,
@@ -173,6 +200,15 @@ class OutputBackend(Protocol):
 
 @dataclass
 class Components:
+    """The pipeline's object graph.
+
+    Deliberately mutable: a ``configure`` function may either return
+    ``dataclasses.replace(defaults, ...)`` or assign fields on ``defaults`` in
+    place, and both are supported. Nothing in this package mutates a graph it
+    was handed — ``composition.rebind_defaults`` builds a new one with
+    ``replace`` — so an author's object is never modified behind their back.
+    """
+
     prompts: PromptSet
     llm: LLMService
     candidate_filter: CandidateFilter
@@ -507,7 +543,7 @@ class DefaultOutputBackend:
     def deliver_fit(
         self, rendered: object, artifact: CVArtifact = None,
         notification_already_sent: bool = False, *, job: object = None,
-    ) -> object:
+    ) -> DeliveryOutcome:
         from .models import coerce_job
         from .pipeline.stages import send_fit
 
@@ -594,7 +630,7 @@ def default_components(
 __all__ = [
     "CVArtifact", "CVCompiler", "CVRenderer", "CandidateFilter",
     "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
-    "FilePromptSet", "DigestOutcome", "LatexCompiler",
+    "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
     "JobEvaluator", "LLMProvider", "LLMService", "OutputBackend",
     "OutputRenderer", "PromptSet", "SectionProvider", "default_components",
 ]
