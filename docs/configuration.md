@@ -77,6 +77,8 @@ objects after those settings are read.
 | `CV_TAILORING_PROMPT_FILE` | `cv_tailoring_prompt.md` | compatibility instruction file |
 | `BASE_TEX_FILE` | `igor_pivnyk_cv_base_updated.tex` | default base CV source |
 | `OUT_PDF_FILE` | `igor_pivnyk_cv_base_updated.pdf` | rendered base-document output |
+| `CV_DISPLAY_NAME` | `Igor Pivnyk` | candidate name used in prompts and on the CV |
+| `CV_FILENAME_PREFIX` | `igor_pivnyk_cv` | prefix of every tailored PDF filename |
 | `SECTIONS_FILE` | `sections.py` | default soft-failing section configuration |
 | `LLM_PRIMARY_AUTH_MODE` | `bearer` | `bearer` or explicit `none` for a local OpenAI-compatible server |
 | `LLM_FALLBACK_AUTH_MODE` | `bearer` | fallback equivalent |
@@ -84,6 +86,11 @@ objects after those settings are read.
 `criteria.md` remains part of the built-in evaluator fingerprint, so changing
 it reopens previously rejected jobs. The executable built-in decisions live in
 `job_search/policy.py`; the criteria document does not itself execute policy.
+
+`CV_DISPLAY_NAME` and `CV_FILENAME_PREFIX` seed the default `CandidateProfile`,
+so changing the candidate needs no composition module at all. A profile
+replacement (below) is only needed to change employer order, forbidden-claim
+patterns, or private placeholders.
 
 `cv_tailoring_prompt.md` is retained for compatible paths and deployments. The
 current default tailorer asks the model to select existing bullet indices and
@@ -375,7 +382,7 @@ def configure(defaults, settings):
     return replace(defaults, section_provider=StaticSections())
 ```
 
-## Filesystem, plain messages, and Telegram
+## Filesystem output and Telegram
 
 The built-in HTML/filesystem pair stages a complete hidden generation and
 atomically promotes `index.html` and its artifacts together:
@@ -404,33 +411,11 @@ Telegraph/X0 delivery, fallback, retraction, alerts, and summaries. The inbound
 Telegram command bot remains a separate Telegram-only surface; composition
 does not generalize its commands.
 
-For a text messaging service, `PlainMessageBackend` adapts a callable and
-declares `cv_mode="disabled"`:
-
-```python
-from dataclasses import replace
-from job_search.output import PlainMessageBackend, PlainTextOutputRenderer
-
-
-def send_whatsapp(message):
-    # Call your chosen provider here. Read its token from the environment.
-    # Raise on failure so the existing retry state records the failed delivery.
-    raise NotImplementedError
-
-
-def configure(defaults, settings):
-    return replace(
-        defaults,
-        output_renderer=PlainTextOutputRenderer(),
-        output_backend=PlainMessageBackend(send_whatsapp),
-    )
-```
-
-This is the expected shape of a WhatsApp adapter, not a maintained built-in
-integration. A document-capable adapter should instead implement the full
-`OutputBackend`, declare accepted media types and `cv_mode="required"`, and
+A backend for some other destination implements the full `OutputBackend`:
+declare `accepted_renderer_kinds`, `accepted_media_types` and `cv_mode`, and
 return `job_search.components.DeliveryOutcome` for each fit plus
-`job_search.components.DigestOutcome` for a digest.
+`job_search.components.DigestOutcome` for a digest. Pair a message-oriented one
+with `PlainTextOutputRenderer` (kind `plain`), which emits no markup.
 
 ## Deployment
 

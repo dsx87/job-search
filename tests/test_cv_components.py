@@ -309,6 +309,15 @@ def test_cv_renderer_accepts_a_raw_scraped_mapping():
     assert artifact.filename == "igor_pivnyk_cv_example_labs.pdf"
     assert compiler.sources and CandidateProfile().validate_tex(compiler.sources[0]) == []
 
+    # A posting with no company still yields a usable name, and the name does
+    # not depend on the URL (it used to carry a hash of it).
+    unnamed = renderer.render_tailored(
+        SelectingLLM(),
+        {"title": "iOS", "company": "", "url": "https://x/1?ref=2",
+         "description": "Swift role. " * 40},
+    )
+    assert unnamed.filename == "igor_pivnyk_cv_unknown.pdf"
+
 
 def test_tailor_resume_canonicalizes_its_job_argument(monkeypatch):
     """The Job-shape guarantee prepare_fit used to provide now lives here."""

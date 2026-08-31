@@ -4,17 +4,16 @@ Layout inside the archive:
     index.html          the dashboard (render.py)
     cvs/<name>.pdf       one tailored CV per fit, linked from index.html
 
-CV filenames are ``igor_pivnyk_cv_<company>.pdf`` — identical to what the legacy
-per-job path sends (pipeline/stages.py), so both delivery paths finally agree on
-what a tailored CV is called. They are made unique within the archive so two
-fits at the same company never collide and overwrite each other; the same name
-string is written into the HTML link, so the local "Download CV" links always
-resolve after the user extracts the archive.
+CV filenames come from the CV renderer (``<cv_filename_prefix>_<company>.pdf``)
+and are made unique within the archive by ``pipeline.run._unique_artifact``, so
+two fits at the same company never collide and overwrite each other; the same
+name string is written into the HTML link, so the local "Download CV" links
+always resolve after the user extracts the archive.
 
 The name used to carry a six-hex SHA-256 prefix of the job URL. It is now also
 the name a human downloads from the digest page and forwards to a recruiter, and
-the hash read as noise on such a file; the uniqueness it provided is already
-covered by the numeric suffix below.
+the hash read as noise on such a file; the uniqueness it provided is covered by
+the numeric suffix instead.
 """
 import io
 import re
@@ -27,23 +26,6 @@ from .render import render_digest_html
 def _company_slug(company) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", str(company or "").lower()).strip("_")
     return slug or "unknown"
-
-
-def cv_filename_for(job, taken) -> str:
-    """A collision-free ``igor_pivnyk_cv_<company>.pdf`` name.
-
-    ``taken`` is the set of names already used in this run; a numeric suffix is
-    appended when the company repeats, so two fits at Acme give
-    ``igor_pivnyk_cv_acme.pdf`` and ``igor_pivnyk_cv_acme_2.pdf``.
-    """
-    job = coerce_job(job)
-    base = "igor_pivnyk_cv_{}".format(_company_slug(job.get("company", "")))
-    name = base + ".pdf"
-    counter = 2
-    while name in taken:
-        name = "{}_{}.pdf".format(base, counter)
-        counter += 1
-    return name
 
 
 def digest_filename(date) -> str:

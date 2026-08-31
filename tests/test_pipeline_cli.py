@@ -7,6 +7,39 @@ from job_search.models import Job
 from job_search.pipeline import cli, stages
 
 
+class RecordingTextBackend:
+    """A text-only sink: no markup, no CV, no credentials.
+
+    Stands in for whatever message-oriented adapter a user writes; the point of
+    the tests using it is that the *renderer* decides the markup.
+    """
+
+    accepted_renderer_kinds = ("plain",)
+    accepted_media_types = ()
+    cv_mode = "disabled"
+    requires_telegram_credentials = False
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    def deliver_notice(self, rendered):
+        self.sink(str(rendered))
+
+    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
+        from job_search.components import DeliveryOutcome
+
+        self.sink(str(rendered))
+        return DeliveryOutcome(
+            notification_sent=True, notification_satisfied=True, cv_required=False
+        )
+
+    def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):
+        from job_search.components import DigestOutcome
+
+        self.sink(str(rendered))
+        return DigestOutcome(True, notification_sent=True)
+
+
 def make_config():
     return SimpleNamespace(
         llm_primary_scheme="gemini",
@@ -370,7 +403,7 @@ def test_manual_tailor_renders_fatal_notice_with_composed_default_backend(monkey
 
 
 def test_manual_tailor_plain_backend_error_has_no_telegram_markup(monkeypatch):
-    from job_search.output import PlainMessageBackend, PlainTextOutputRenderer
+    from job_search.output import PlainTextOutputRenderer
 
     messages = []
     components = SimpleNamespace(
@@ -381,7 +414,7 @@ def test_manual_tailor_plain_backend_error_has_no_telegram_markup(monkeypatch):
             )
         ),
         output_renderer=PlainTextOutputRenderer(),
-        output_backend=PlainMessageBackend(messages.append),
+        output_backend=RecordingTextBackend(messages.append),
     )
     monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
 

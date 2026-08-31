@@ -14,7 +14,7 @@ import urllib.request
 from collections.abc import MutableMapping
 
 from ..components import DeliveryOutcome
-from ..config import MIN_JOB_TEXT_LEN
+from ..config import CV_FILENAME_PREFIX, MIN_JOB_TEXT_LEN
 from ..http import read_capped
 from ..models import Job, coerce_job
 from ..text import collapse_ws, strip_html
@@ -242,7 +242,7 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
     slug = _company_slug(company)
     try:
         telegram.send_document(
-            artifact.filename if artifact is not None else f"igor_pivnyk_cv_{slug}.pdf",
+            artifact.filename if artifact is not None else f"{CV_FILENAME_PREFIX}_{slug}.pdf",
             pdf_bytes,
             caption=f"Tailored CV — {title} at {company}",
         )

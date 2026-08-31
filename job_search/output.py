@@ -296,46 +296,6 @@ class FilesystemOutputBackend:
         )
 
 
-class PlainMessageBackend:
-    """Small adapter base for SMS/Slack/WhatsApp-like text send callables."""
-
-    accepted_renderer_kinds = ("plain",)
-    accepted_media_types = ()
-    cv_mode = "disabled"
-    requires_telegram_credentials = False
-
-    def __init__(self, send):
-        if not callable(send):
-            raise TypeError("send must be callable")
-        self.send = send
-
-    def deliver_notice(self, rendered):
-        return self.send(str(rendered))
-
-    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
-        if notification_already_sent:
-            return DeliveryOutcome(
-                notification_satisfied=True, cv_required=False
-            )
-        try:
-            self.send(str(rendered))
-        except Exception as exc:
-            return DeliveryOutcome(error=exc, cv_required=False)
-        return DeliveryOutcome(
-            notification_sent=True,
-            notification_satisfied=True,
-            cv_required=False,
-        )
-
-    def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):
-        try:
-            self.send(str(rendered))
-        except Exception as exc:
-            return DigestOutcome(False, error=exc)
-        return DigestOutcome(True, notification_sent=True)
-
-
 __all__ = [
-    "FilesystemOutputBackend", "HtmlOutputRenderer", "PlainMessageBackend",
-    "PlainTextOutputRenderer",
+    "FilesystemOutputBackend", "HtmlOutputRenderer", "PlainTextOutputRenderer",
 ]

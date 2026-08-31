@@ -147,8 +147,29 @@ placeholders through the environment.
 [`docs/configuration.md`](docs/configuration.md) documents every component
 contract and includes examples for prompt files and revisions, LM Studio local
 inference, custom providers and evaluation policy, a non-default candidate,
-XeLaTeX and whole custom CV renderers, filesystem/HTML output, plain messaging,
-Telegram, and the expected shape of an unmaintained WhatsApp adapter.
+XeLaTeX and whole custom CV renderers, filesystem/HTML output, plain-text
+rendering, and Telegram.
+
+## Claude Code skills
+
+The repo ships its own [Claude Code](https://claude.com/claude-code) skills in
+[`.claude/skills/job-searcher/`](.claude/skills/job-searcher/), so an agent
+working in a fresh clone already knows how this system is wired:
+
+| Skill | Purpose |
+|---|---|
+| `/job-searcher:configure` | environment variables, LLM providers, `criteria.md`, source selection, digest sections, and the trusted `job_search_config.py` composition module |
+| `/job-searcher:deploy` | the Actions cron and Raspberry Pi installs, dedup-state seeding and sync, operating a host, and run triage |
+| `/job-searcher:explain` | how the pipeline works — stages, sources, provider fallback and circuit breaker, CV guards, delivery, and the local CLI/TUI |
+
+They are a checked-in *skills-directory plugin* (`.claude-plugin/plugin.json`
+next to a `skills/` directory), so they load as `job-searcher@skills-dir` with
+no marketplace and no install step — start Claude Code at the repository root
+and trust the workspace. `configure` and `explain` also load on their own when a
+request matches; `deploy` is manual-only because it acts on live runners. The
+skills are a map into `docs/configuration.md`, `docs/deploy-rpi.md`, and this
+README rather than a second copy of them. See
+[`.claude/skills/job-searcher/README.md`](.claude/skills/job-searcher/README.md).
 
 ## ☁️ Deploy on GitHub Actions
 
@@ -420,6 +441,7 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
+| `.claude/skills/job-searcher/` | Checked-in Claude Code skills: `/job-searcher:configure`, `:deploy`, `:explain` |
 
 > Dedup state (`seen_jobs.json`) is **not** on `main` — the GitHub Actions run
 > reads it from and commits it back to an orphan **`state`** branch, so the bot's

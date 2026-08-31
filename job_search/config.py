@@ -41,6 +41,15 @@ OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
 # digest — the feature is opt-in and costs nothing until it exists.
 SECTIONS_FILE = "sections.py"
 
+# ── Candidate identity ────────────────────────────────────────────────────────
+# The name on the CV and the prefix of every tailored PDF. These were class
+# defaults on CandidateProfile, which made the one thing most obviously *not*
+# reusable a property of the library rather than of the configuration. They are
+# still defaulted to this repository's owner so nothing changes without an env
+# var; a composition module can also set them on the profile directly.
+CV_DISPLAY_NAME = "Igor Pivnyk"
+CV_FILENAME_PREFIX = "igor_pivnyk_cv"
+
 # ── LLM defaults (generic, scheme-based providers) ─────────────────────────────
 # A provider is a wire-protocol *scheme* (gemini | openai | anthropic) + model +
 # API key (+ optional base). Switching providers is a config edit — no code
@@ -235,6 +244,8 @@ class PipelineConfig:
     base_tex_file: str = BASE_TEX_FILE
     rendered_base_file: str = OUT_PDF_FILE
     sections_file: str = SECTIONS_FILE
+    cv_display_name: str = CV_DISPLAY_NAME
+    cv_filename_prefix: str = CV_FILENAME_PREFIX
     # Source selection: names forced ON (adds default-off sources like
     # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
     # today's default-on set, so CI with no env is unchanged. See
@@ -292,6 +303,10 @@ class PipelineConfig:
             base_tex_file=_non_empty_env("BASE_TEX_FILE", BASE_TEX_FILE),
             rendered_base_file=_non_empty_env("OUT_PDF_FILE", OUT_PDF_FILE),
             sections_file=_non_empty_env("SECTIONS_FILE", SECTIONS_FILE),
+            cv_display_name=_non_empty_env("CV_DISPLAY_NAME", CV_DISPLAY_NAME),
+            cv_filename_prefix=_non_empty_env(
+                "CV_FILENAME_PREFIX", CV_FILENAME_PREFIX
+            ),
             eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
             tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),

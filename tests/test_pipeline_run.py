@@ -117,9 +117,42 @@ def make_config(digest_delivery=False, telegraph_access_token=""):
     )
 
 
+class RecordingTextBackend:
+    """A text-only sink: no markup, no CV, no credentials.
+
+    Stands in for whatever message-oriented adapter a user writes; the point of
+    the tests using it is that the *renderer* decides the markup.
+    """
+
+    accepted_renderer_kinds = ("plain",)
+    accepted_media_types = ()
+    cv_mode = "disabled"
+    requires_telegram_credentials = False
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    def deliver_notice(self, rendered):
+        self.sink(str(rendered))
+
+    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
+        from job_search.components import DeliveryOutcome
+
+        self.sink(str(rendered))
+        return DeliveryOutcome(
+            notification_sent=True, notification_satisfied=True, cv_required=False
+        )
+
+    def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):
+        from job_search.components import DigestOutcome
+
+        self.sink(str(rendered))
+        return DigestOutcome(True, notification_sent=True)
+
+
 def configured_plain_components(messages):
     from job_search.components import DefaultPromptSet
-    from job_search.output import PlainMessageBackend, PlainTextOutputRenderer
+    from job_search.output import PlainTextOutputRenderer
 
     return SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
@@ -140,7 +173,7 @@ def configured_plain_components(messages):
         cv_renderer=SimpleNamespace(),
         section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=PlainTextOutputRenderer(),
-        output_backend=PlainMessageBackend(messages.append),
+        output_backend=RecordingTextBackend(messages.append),
     )
 
 

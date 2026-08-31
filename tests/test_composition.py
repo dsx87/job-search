@@ -255,10 +255,12 @@ def test_custom_text_backend_needs_no_llm_key_or_telegram_credentials(tmp_path, 
     config_file = tmp_path / "plain.py"
     config_file.write_text(
         "from dataclasses import replace\n"
-        "from job_search.output import PlainMessageBackend, PlainTextOutputRenderer\n"
+        "from job_search.output import FilesystemOutputBackend, PlainTextOutputRenderer\n"
         "def configure(defaults, settings):\n"
         "    return replace(defaults, output_renderer=PlainTextOutputRenderer(), "
-        "output_backend=PlainMessageBackend(lambda message: None))\n",
+        "output_backend=FilesystemOutputBackend({!r}, cv_mode='disabled'))\n".format(
+            str(tmp_path / "out")
+        ),
         encoding="utf-8",
     )
     _configured_env(monkeypatch, config_file)

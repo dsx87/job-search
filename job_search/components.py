@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Mapping, Protocol, Sequence, Tuple, runtime_checkable
 
+from .config import CV_DISPLAY_NAME, CV_FILENAME_PREFIX
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
 from .latex.compile import LatexCompiler
 
@@ -68,10 +69,10 @@ class JobEvaluator(Protocol):
 class CandidateProfile:
     """Public candidate identity and CV-policy configuration."""
 
-    display_name: str = "Igor Pivnyk"
+    display_name: str = CV_DISPLAY_NAME
     base_tex_path: str = "igor_pivnyk_cv_base_updated.tex"
     rendered_base_path: str = "igor_pivnyk_cv_base_updated.pdf"
-    cv_filename_prefix: str = "igor_pivnyk_cv"
+    cv_filename_prefix: str = CV_FILENAME_PREFIX
     employer_order: Tuple[str, ...] = tuple(EXPECTED_JOB_ORDER)
     forbidden_claim_patterns: Tuple[str, ...] = tuple(FORBIDDEN_TERM_PATTERNS)
     private_placeholders: Mapping[str, str] = field(
@@ -271,7 +272,9 @@ class DefaultPromptSet:
             base_tex,
             job,
             employer_order=getattr(profile, "employer_order", None),
-            candidate_name=getattr(profile, "display_name", "Igor Pivnyk"),
+            candidate_name=getattr(
+                profile, "display_name", CandidateProfile.display_name
+            ),
         )
 
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
@@ -396,7 +399,7 @@ class FilePromptSet:
         values = self._job_values(job, 7000)
         values["resume_bullets"] = "\n".join(lines)
         values["candidate_name"] = getattr(
-            profile, "display_name", "Igor Pivnyk"
+            profile, "display_name", CandidateProfile.display_name
         )
         return self._render(
             "cv_bullet_selection", values,
@@ -607,6 +610,10 @@ def default_components(
         settings.telegram_bot_token, settings.telegram_chat_id
     )
     profile = CandidateProfile(
+        display_name=getattr(settings, "cv_display_name", CV_DISPLAY_NAME),
+        cv_filename_prefix=getattr(
+            settings, "cv_filename_prefix", CV_FILENAME_PREFIX
+        ),
         base_tex_path=getattr(settings, "base_tex_file", "igor_pivnyk_cv_base_updated.tex"),
         rendered_base_path=getattr(
             settings, "rendered_base_file", "igor_pivnyk_cv_base_updated.pdf"

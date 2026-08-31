@@ -7,7 +7,6 @@ from job_search.digest.fixtures import sample_context
 from job_search.output import (
     FilesystemOutputBackend,
     HtmlOutputRenderer,
-    PlainMessageBackend,
     PlainTextOutputRenderer,
 )
 from job_search.models import Job
@@ -56,31 +55,6 @@ def test_filesystem_digest_failure_keeps_previous_generation(monkeypatch, tmp_pa
     assert (tmp_path / "index.html").read_text(encoding="utf-8") == "old index"
     assert (tmp_path / "cvs" / "one.txt").read_bytes() == b"old one"
     assert (tmp_path / "cvs" / "two.txt").read_bytes() == b"old two"
-
-
-def test_plain_message_backend_reports_text_only_fit_completion():
-    messages = []
-    renderer = PlainTextOutputRenderer()
-    backend = PlainMessageBackend(messages.append)
-    job = Job(title="iOS Engineer", company="Acme", url="https://example.com")
-
-    outcome = backend.deliver_fit(renderer.render_fit(job, {"reason": "A match"}))
-
-    assert outcome.complete is True
-    assert outcome.cv_sent is False
-    assert messages and "iOS Engineer" in messages[0]
-
-
-def test_plain_message_backend_delivers_digest_as_one_message():
-    messages = []
-    backend = PlainMessageBackend(messages.append)
-    rendered = PlainTextOutputRenderer().render_digest(sample_context())
-
-    outcome = backend.deliver_digest(rendered)
-
-    assert outcome.delivered is True
-    assert outcome.notification_sent is True
-    assert messages == [rendered]
 
 
 def test_inherited_default_digest_backend_never_claims_unsent_cv_artifacts():
