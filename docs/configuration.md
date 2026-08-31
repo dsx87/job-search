@@ -35,9 +35,18 @@ def configure(defaults, settings):
 
 `defaults` is a `job_search.components.Components` instance and `settings` is
 the effective `PipelineConfig`. Use `dataclasses.replace` to retain every
-component you are not changing. The module is loaded directly from its source
-path with Python's standard import machinery; normal imports inside it still
-work.
+component you are not changing (assigning fields on `defaults` in place also
+works). The module is loaded directly from its source path with Python's
+standard import machinery; normal imports inside it still work.
+
+> **This file is executed, and its presence is the only trigger.** There is no
+> enable flag: if `job_search_config.py` exists in the working directory when
+> the pipeline starts, it runs, with the process's environment and secrets.
+> `.gitignore` deliberately tracks it, so a change to it is a change to what
+> every run executes — review it the way you would review a CI workflow. The
+> daily workflow is `schedule` + `workflow_dispatch` only, never
+> `pull_request`, so a fork's PR cannot get the repository's secrets this way;
+> keep it that way if you add triggers.
 
 Validate a configuration without scraping, changing state, calling an LLM,
 compiling a CV, or delivering output:

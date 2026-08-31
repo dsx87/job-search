@@ -11,11 +11,24 @@
 !igor_pivnyk_cv_base_updated.pdf
 !requirements.txt
 !sections.example.py
-# Deliberately trackable trusted CODE. Never put credentials or private CV
-# values here; keep those in environment variables or a mode-600 .env file.
+# Deliberately trackable trusted CODE — and note what "trusted" means: this
+# file is EXECUTED at startup whenever it exists in the working directory, with
+# no opt-in flag, so adding it is enough to run arbitrary code in any run that
+# picks it up. Review changes to it the way you would review a CI workflow.
+# Never put credentials or private CV values here; keep those in environment
+# variables or a mode-600 .env file.
 !job_search_config.py
 !job_search_config.example.py
 # seen_jobs.json is NOT tracked on main — it lives on the orphan `state` branch.
+
+# Unignore the in-repo agent skills and the shared permission allowlist. The
+# skills are repository documentation for agents (see README "Claude Code
+# skills"); per-developer settings (.claude/settings.local.json) stay ignored
+# by the `*` default above.
+!.claude/
+!.claude/skills/
+!.claude/skills/**
+!.claude/settings.json
 
 # Unignore GitHub Actions workflow directory
 !.github/

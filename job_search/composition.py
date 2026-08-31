@@ -332,15 +332,23 @@ def rebind_defaults(baseline: Mapping, configured: Components) -> Components:
 
 def load_components(
     settings: object, command: str = "daily", defaults: Components = None,
+    environ: Mapping = None,
 ) -> Components:
     """Return validated defaults overlaid by ``configure`` when present.
 
     The default filename is optional. Setting ``JOB_SEARCH_CONFIG_FILE`` makes
     the path explicit, so a missing file is an error rather than a silent
-    fallback. The module is trusted executable Python and is loaded directly by
-    path; it may import separately installed packages in the normal way.
+    fallback.
+
+    The module is **trusted executable Python**, loaded by path and run at
+    import: its mere presence in the working directory is enough to execute it,
+    with no opt-in flag. It may import separately installed packages in the
+    normal way. Treat adding or editing one as you would a CI workflow change.
+
+    ``environ`` is injected like ``settings`` rather than read from the process,
+    so a caller can resolve the path against something other than os.environ.
     """
-    path, explicit = _config_path()
+    path, explicit = _config_path(environ)
     if defaults is None:
         try:
             defaults = default_components(settings)
