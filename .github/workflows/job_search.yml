@@ -19,10 +19,11 @@ jobs:
         uses: actions/checkout@v4
 
       # A tracked job_search_config.py is used as-is. For an untracked
-      # deployment-specific module, store its source in the multiline
-      # JOB_SEARCH_CONFIG_PY secret. Composition code must still read actual
-      # credentials from environment variables rather than embedding them.
-      - name: Materialize optional composition config
+      # deployment-specific escape-hatch module, store its source in the
+      # multiline JOB_SEARCH_CONFIG_PY secret. That module must still read
+      # actual credentials from environment variables rather than embedding
+      # them.
+      - name: Materialize the optional config escape hatch
         env:
           JOB_SEARCH_CONFIG_PY: ${{ secrets.JOB_SEARCH_CONFIG_PY }}
         run: |

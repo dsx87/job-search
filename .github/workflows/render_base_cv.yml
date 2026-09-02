@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Materialize optional composition config
+      - name: Materialize the optional config escape hatch
         env:
           JOB_SEARCH_CONFIG_PY: ${{ secrets.JOB_SEARCH_CONFIG_PY }}
         run: |

@@ -107,12 +107,15 @@ secrets and enabling the timer — finish those two steps below.
    | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-5.4-mini`) |
    | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`); an absolute non-default HTTP(S) URL is required with fallback `none` auth |
    | `LLM_FALLBACK_AUTH_MODE` | optional | fallback `bearer` / explicit `none` mode |
-   | `JOB_SEARCH_CONFIG_FILE` | optional | absolute path to a trusted Python composition module; an optional repo-root `job_search_config.py` is used when unset |
+   | `JOB_SEARCH_CONFIG_FILE` | optional | absolute path to a trusted escape-hatch module; an optional repo-root `job_search_config.py` is used when unset. **Setting it to an empty value is an error**, not "disabled" — it doesn't silently fall back |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
    | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | comma lists forcing sources on/off; the Pi ships `linkedin-guest` on and the jobspy LinkedIn sources off |
    | `STATE_SYNC` | sync | `1` to sync `seen_jobs.json` with the `state` branch (see below); default `0` |
+   | `OUTPUT_MODE` / `OUTPUT_DIR` / `OUTPUT_CV_MODE` | optional | non-Telegram delivery (`html`/`plain` to a directory); `telegram` (default) requires `OUTPUT_CV_MODE=required` |
+   | `PROMPT_DIR` / `PROMPT_REVISION` | optional | file-backed prompt overrides; `PROMPT_REVISION` is required whenever `PROMPT_DIR` is set |
+   | `LATEX_ENGINE` | optional | LaTeX executable to compile the CV (default `pdflatex`) |
 
    A provider is a **scheme** (`gemini` \| `openai` \| `anthropic`) + model + key
    (+ optional base) — switching providers is a config edit, no code change. The
@@ -134,25 +137,16 @@ secrets and enabling the timer — finish those two steps below.
    for an LM Studio example. A URL on another machine must be reachable from
    the Pi; `127.0.0.1` always means the Pi itself.
 
-### Optional Python composition on the Pi
+### The escape hatch on the Pi
 
-No composition file is required. To customize components, either keep a
-reviewed `job_search_config.py` in the checkout or point `.env` at a file kept
-elsewhere:
-
-```dotenv
-JOB_SEARCH_CONFIG_FILE=/home/pi/job-search-config/production.py
-```
-
-The module is trusted executable Python. Keep tokens and private CV values in
-the mode-600 `.env`, not in that module. Use the `.venv` created by
-`scripts/setup-rpi.sh`; it already contains the core runtime dependency
-`pyzipper` used by Telegraph digest delivery. If you replace or create that
-environment manually, install `pyzipper~=0.4.0` as well as any packages imported
-by your custom module, or the hosted Telegraph route will fall back to the
-Telegram ZIP. The core will not install custom component dependencies. The
-complete contracts and examples are in
-[`configuration.md`](configuration.md).
+Almost everything above is a setting; no `job_search_config.py` is required.
+For the rare thing that genuinely needs code, keep a reviewed one in the
+checkout or point `JOB_SEARCH_CONFIG_FILE` at a file kept elsewhere. It's
+trusted, deliberately unvalidated executable Python — keep tokens and private
+CV values in the mode-600 `.env`, never in that module. If you replace the
+`.venv` `scripts/setup-rpi.sh` creates, reinstall `pyzipper~=0.4.0` (used by
+Telegraph digest delivery) plus anything your module imports. See
+[`configuration.md`](configuration.md#job_search_configpy-the-escape-hatch).
 
 4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
    ```bash

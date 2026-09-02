@@ -123,16 +123,22 @@ So the core has **none of them**:
   injected from a `CV_PHONE` secret only at compile time (see [Privacy](#privacy)).
 - **Pluggable sources** — every board is a small `BaseSource` subclass behind a
   `@register` decorator, so adding a provider is one class.
-- **Optional runtime composition** — a trusted Python module can replace
-  prompts, LLM service, pre-LLM filtering, evaluation policy, candidate profile,
-  CV rendering, sections, or output without changing the pipeline lifecycle.
-  Structural protocols and explicit dependency injection keep the zero-config
-  default unchanged; there is no automatic plugin discovery.
+- **Configured by environment, not by code** — every realistic knob (output
+  mode, prompts, candidate identity, sources, LaTeX engine, ...) is an
+  environment variable read once at startup. One optional trusted
+  `job_search_config.py` survives as a deliberately unvalidated escape hatch
+  for the rare thing that genuinely needs code, such as a pre-LLM candidate
+  filter.
 
 ## Customize the runtime
 
-Most deployments only need environment variables. For deeper changes, copy the
-tested composition example and validate it before running:
+Start with `python -m job_search.pipeline --check-config` to see every
+effective setting and validate your environment. Most deployments only need
+environment variables — see [`docs/configuration.md`](docs/configuration.md)
+for the full settings table.
+
+For the rare thing that genuinely needs code, copy the tested example and
+validate it before running:
 
 ```bash
 cp job_search_config.example.py job_search_config.py
@@ -140,15 +146,14 @@ python -m job_search.pipeline --check-config
 ```
 
 The default file is optional, so existing users need no migration. Set
-`JOB_SEARCH_CONFIG_FILE` for another path. The module is trusted executable code
-and must not contain secrets; continue to provide credentials and private CV
-placeholders through the environment.
+`JOB_SEARCH_CONFIG_FILE` for another path. The module is trusted executable
+code, deliberately unvalidated — a mistake in it surfaces as that file's own
+traceback — and must not contain secrets; continue to provide credentials and
+private CV placeholders through the environment.
 
-[`docs/configuration.md`](docs/configuration.md) documents every component
-contract and includes examples for prompt files and revisions, LM Studio local
-inference, custom providers and evaluation policy, a non-default candidate,
-XeLaTeX and whole custom CV renderers, filesystem/HTML output, plain-text
-rendering, and Telegram.
+[`docs/configuration.md`](docs/configuration.md) documents every setting plus
+`--check-config`, output modes, custom prompts, the `criteria.md` reopen
+lifecycle, LM Studio local inference, and the escape hatch.
 
 ## Claude Code skills
 
@@ -158,7 +163,7 @@ working in a fresh clone already knows how this system is wired:
 
 | Skill | Purpose |
 |---|---|
-| `/job-searcher:configure` | environment variables, LLM providers, `criteria.md`, source selection, digest sections, and the trusted `job_search_config.py` composition module |
+| `/job-searcher:configure` | environment variables, LLM providers, `criteria.md`, source selection, digest sections, and the trusted `job_search_config.py` escape hatch |
 | `/job-searcher:deploy` | the Actions cron and Raspberry Pi installs, dedup-state seeding and sync, operating a host, and run triage |
 | `/job-searcher:explain` | how the pipeline works — stages, sources, provider fallback and circuit breaker, CV guards, delivery, and the local CLI/TUI |
 
@@ -185,7 +190,7 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 | `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it uploads one AES-256 protected CV archive to [x0.at](https://x0.at); its password is sent in the Telegram message. Without ZIP-encryption support, the run safely sends the Telegram ZIP instead |
-| `JOB_SEARCH_CONFIG_PY` | optional | multiline trusted composition source materialized as `job_search_config.py`; keep credentials in the other secrets, not in this code |
+| `JOB_SEARCH_CONFIG_PY` | optional | multiline trusted escape-hatch source materialized as `job_search_config.py`; deliberately unvalidated, so keep credentials in the other secrets, not in this code |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
@@ -430,14 +435,14 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `job_search/bot/` | The Telegram control bot (`/run`, `/status`, `/tailor`) |
 | `job_search/latex/` | Base-CV render, `pdflatex` compile, one-page guard |
 | `job_search/llm/` | scheme-based LLM providers, criteria evaluation, résumé tailoring |
-| `job_search/components.py` | public structural extension contracts and built-in components |
-| `job_search/composition.py` | trusted optional module loader and capability validation |
+| `job_search/components.py` | the concrete object graph: profile, prompts, CV rendering, output delivery |
+| `job_search/runtime.py` | builds the `Runtime` from settings, applies the escape hatch, preflights the host |
 | `scripts/setup-rpi.sh` | One-shot Raspberry Pi provisioning |
 | `scripts/run_pipeline.sh` | The single `flock`'d entry point every run goes through |
 | `tests/` | Offline characterization suite (`pytest`) |
 | `criteria.md` | Human-readable rules and built-in evaluation fingerprint input; executable defaults live in `job_search/policy.py` |
 | `cv_tailoring_prompt.md` | Compatibility artifact; deterministic bullet selection no longer consumes its instruction block |
-| `job_search_config.example.py` | executable, test-imported composition example |
+| `job_search_config.example.py` | no-op template for the `job_search_config.py` escape hatch |
 | `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |

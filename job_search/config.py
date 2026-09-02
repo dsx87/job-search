@@ -90,7 +90,8 @@ LATEX_ENGINE = "pdflatex"
 # defaults on CandidateProfile, which made the one thing most obviously *not*
 # reusable a property of the library rather than of the configuration. They are
 # still defaulted to this repository's owner so nothing changes without an env
-# var; a composition module can also set them on the profile directly.
+# var; the job_search_config.py escape hatch can also set them on the profile
+# directly.
 CV_DISPLAY_NAME = "Igor Pivnyk"
 CV_FILENAME_PREFIX = "igor_pivnyk_cv"
 

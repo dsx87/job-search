@@ -1,196 +1,122 @@
-# Runtime composition
+# Configuration
 
-The pipeline has an optional Python composition layer for replacing prompts,
-providers, filtering policy, candidate identity, CV rendering, section loading,
-and output delivery. Existing installations do not need a config file: when
-`job_search_config.py` is absent, the built-in behavior is unchanged.
+The pipeline is configured by environment variables — `PipelineConfig.from_env()`
+reads them once at startup. Every realistic knob is a setting. One optional
+`job_search_config.py` survives as a deliberately *unvalidated* escape hatch for
+the rare thing that genuinely needs code (see below); most deployments never
+need it.
 
-> **Security boundary:** the composition file is trusted executable code and
-> `job_search_config.py` is intentionally allowed by the repository's
-> deny-by-default `.gitignore`. Treat it like application source and review it
-> before every commit. Never put credentials, tokens, private CV values, or
-> secret-derived output in it. Those values belong only in environment
-> variables, a mode-600 `.env`, or dedicated GitHub Actions secrets.
+## Settings
 
-A composition module may explicitly import a separately installed package;
-the core does not discover plugins or install their dependencies.
+| Group | Variable | Default | Purpose |
+|---|---|---|---|
+| Files | `JOB_SEARCH_CONFIG_FILE` | optional `job_search_config.py` | escape-hatch module path (see below) |
+| Files | `SEEN_JOBS_FILE` | `seen_jobs.json` | persisted dedupe/retry state |
+| Files | `CRITERIA_FILE` | `criteria.md` | evaluation criteria text and the default reopen-fingerprint input |
+| Files | `CV_TAILORING_PROMPT_FILE` | `cv_tailoring_prompt.md` | compatibility instruction file (bullet selection is deterministic and no longer reads its prompt block) |
+| Files | `BASE_TEX_FILE` | `igor_pivnyk_cv_base_updated.tex` | base CV LaTeX source |
+| Files | `OUT_PDF_FILE` | `igor_pivnyk_cv_base_updated.pdf` | rendered base-CV output path |
+| Files | `SECTIONS_FILE` | `sections.py` | optional digest section grouping; a missing/invalid file is a soft fallback to an ungrouped digest |
+| Candidate & CV | `CV_DISPLAY_NAME` | `Igor Pivnyk` | name on the CV and in tailoring prompts |
+| Candidate & CV | `CV_FILENAME_PREFIX` | `igor_pivnyk_cv` | prefix of every tailored PDF filename |
+| Candidate & CV | `CV_PHONE` | unset | substituted for `((PHONE))` at compile time only; never stored, never written to the repo |
+| LLM | `LLM_PRIMARY_SCHEME` | `gemini` | primary wire scheme: `gemini` \| `openai` \| `anthropic` |
+| LLM | `LLM_PRIMARY_MODEL` | `gemini-2.5-flash` | primary model (also read as legacy `GEMINI_MODEL`) |
+| LLM | `LLM_PRIMARY_API_KEY` | unset | primary key (also read as legacy `GEMINI_API_KEY`) |
+| LLM | `LLM_PRIMARY_API_BASE` | scheme default | primary endpoint override (also read as legacy `GEMINI_API_BASE`) |
+| LLM | `LLM_PRIMARY_AUTH_MODE` | `bearer` | `bearer`, or explicit `none` for a trusted local OpenAI-compatible server |
+| LLM | `LLM_FALLBACK_SCHEME` | `openai` | fallback scheme; `openai` covers any OpenAI-compatible endpoint via `*_API_BASE` |
+| LLM | `LLM_FALLBACK_MODEL` | `gpt-5.4-mini` | fallback model |
+| LLM | `LLM_FALLBACK_API_KEY` | unset | fallback key (also read as legacy `OPENAI_API_KEY`) |
+| LLM | `LLM_FALLBACK_API_BASE` | scheme default | fallback endpoint override, e.g. Groq, xAI |
+| LLM | `LLM_FALLBACK_AUTH_MODE` | `bearer` | fallback `bearer` / explicit `none` |
+| LLM | `LLM_BREAKER_THRESHOLD` | `2` | consecutive circuit-break failures before the primary is disabled for the run |
+| LLM | `ANTHROPIC_MAX_TOKENS` | `4096` | `max_tokens` sent to the Anthropic scheme |
+| LLM | `TELEGRAM_BOT_TOKEN` | unset | delivery credential |
+| LLM | `TELEGRAM_CHAT_ID` | unset | delivery credential; also the only chat the control bot accepts commands from |
+| LLM | `EVAL_WORKERS` | `12` | concurrent LLM evaluation calls |
+| LLM | `TAILOR_WORKERS` | `8` | concurrent tailoring calls |
+| Output | `OUTPUT_MODE` | `telegram` | `telegram` \| `html` \| `plain` — chooses the renderer/backend pair as a unit |
+| Output | `OUTPUT_DIR` | unset | filesystem destination for `html`/`plain` modes; unused for `telegram` |
+| Output | `OUTPUT_CV_MODE` | `required` | `required` \| `disabled` — disabled skips CV work entirely; `telegram` requires `required` (see [Output modes](#output-modes)) |
+| Output | `DIGEST_DELIVERY` | on (`1`) | one ZIP/page per run instead of a stream of per-job Telegram messages; `0` reverts to legacy per-job delivery |
+| Output | `TELEGRAPH_ACCESS_TOKEN` | unset | publish the digest as a telegra.ph page plus one AES-256 CV archive on x0.at, so the whole run is one Telegram message |
+| Prompts | `PROMPT_DIR` | unset | directory of file-backed prompt overrides (`fact_extraction.txt`, `job_summary.txt`, `cv_bullet_selection.txt`, `compiler_repair.txt`) |
+| Prompts | `PROMPT_REVISION` | unset | required whenever `PROMPT_DIR` is set; participates in the reopen fingerprint (see below) |
+| Prompts | `LATEX_ENGINE` | `pdflatex` | LaTeX executable used to compile the CV, e.g. `xelatex` |
+| Prompts | `LATEX_MAX_WORKERS` | `2` | concurrent `pdflatex` compilations (legacy name `XELATEX_MAX_WORKERS` still honored) |
+| Sources & state | `SOURCES_ENABLE` | unset | comma list of sources forced on |
+| Sources & state | `SOURCES_DISABLE` | unset | comma list of sources forced off |
+| Sources & state | `SCRAPE_BUDGET_SECONDS` | `600` | wall-clock ceiling on the fetch stage |
+| Sources & state | `STATE_SYNC` | off (`0`) | `1` git-syncs `seen_jobs.json` with the orphan `state` branch around each run |
 
-## Loading and checking configuration
+Two combinations are rejected at startup rather than failing mid-run: **`OUTPUT_MODE=telegram` requires `OUTPUT_CV_MODE=required`**
+(Telegram has no text-only delivery path), and **`PROMPT_DIR` requires
+`PROMPT_REVISION`** (prompt wording feeds the reopen fingerprint below, so an
+unnamed revision would silently reuse the wrong one).
 
-The loader looks for `job_search_config.py` in the working directory. Its
-absence is optional. Set `JOB_SEARCH_CONFIG_FILE` to use another path; an
-explicit path must exist. A present file that cannot be imported, does not
-export `configure`, returns the wrong type, or has incompatible capabilities is
-an error.
+## Checking your configuration
 
-Every module exports one function:
-
-```python
-from dataclasses import replace
-
-
-def configure(defaults, settings):
-    return replace(defaults, candidate_filter=MyFilter())
-```
-
-`defaults` is a `job_search.components.Components` instance and `settings` is
-the effective `PipelineConfig`. Use `dataclasses.replace` to retain every
-component you are not changing (assigning fields on `defaults` in place also
-works). The module is loaded directly from its source path with Python's
-standard import machinery; normal imports inside it still work.
-
-> **This file is executed, and its presence is the only trigger.** There is no
-> enable flag: if `job_search_config.py` exists in the working directory when
-> the pipeline starts, it runs, with the process's environment and secrets.
-> `.gitignore` deliberately tracks it, so a change to it is a change to what
-> every run executes — review it the way you would review a CI workflow. The
-> daily workflow is `schedule` + `workflow_dispatch` only, never
-> `pull_request`, so a fork's PR cannot get the repository's secrets this way;
-> keep it that way if you add triggers.
-
-Validate a configuration without scraping, changing state, calling an LLM,
+Validate configuration without scraping, changing state, calling an LLM,
 compiling a CV, or delivering output:
 
 ```bash
 python -m job_search.pipeline --check-config
-JOB_SEARCH_CONFIG_FILE=config/production.py \
-  python -m job_search.pipeline --check-config
 ```
 
-The command prints effective scalar settings and component class names as JSON.
-API keys, tokens, and chat identifiers are redacted. Runtime commands validate
-composition before state synchronization, scraping, or network activity.
+It prints every setting plus a `runtime` block as JSON — collaborator class
+names, the four derived flags, and `config_file` (the escape-hatch path that
+ran, or `null`). API keys, tokens, and chat identifiers are redacted:
 
-Start with the tested example:
-
-```bash
-cp job_search_config.example.py job_search_config.py
-python -m job_search.pipeline --check-config
+```json
+"runtime": {
+  "backend": "DefaultOutputBackend",
+  "cv_required": true,
+  "needs_telegram": true,
+  "config_file": null
+}
 ```
 
-The example is a no-op until one of its documented `JOB_SEARCH_*` variables is
-set. It demonstrates file-backed prompts, profile naming, XeLaTeX selection,
-and filesystem output.
+## Output modes
 
-## Scalar and file settings
+`OUTPUT_MODE` chooses the renderer/backend pair as a unit:
 
-`PipelineConfig.from_env()` remains the source for ordinary values and secrets.
-All legacy provider names continue to work. The composition module overlays
-objects after those settings are read.
+- **`telegram`** (default) — per-job messages, or (with `DIGEST_DELIVERY=1`,
+  the default) one ZIP/telegra.ph page per run. Requires `TELEGRAM_BOT_TOKEN`
+  and `TELEGRAM_CHAT_ID`, and always runs with `OUTPUT_CV_MODE=required`.
+- **`html`** — a filesystem generation with an HTML digest under `OUTPUT_DIR`,
+  staged hidden and promoted atomically with its artifacts.
+- **`plain`** — the same generation with a plain-text digest, for scripts or
+  notifications that shouldn't render markup.
 
-| Environment variable | Default | Purpose |
-|---|---|---|
-| `JOB_SEARCH_CONFIG_FILE` | optional `job_search_config.py` | trusted composition module |
-| `SEEN_JOBS_FILE` | `seen_jobs.json` | persistent seen/retry state |
-| `CRITERIA_FILE` | `criteria.md` | human-readable criteria and default evaluation fingerprint input |
-| `CV_TAILORING_PROMPT_FILE` | `cv_tailoring_prompt.md` | compatibility instruction file |
-| `BASE_TEX_FILE` | `igor_pivnyk_cv_base_updated.tex` | default base CV source |
-| `OUT_PDF_FILE` | `igor_pivnyk_cv_base_updated.pdf` | rendered base-document output |
-| `CV_DISPLAY_NAME` | `Igor Pivnyk` | candidate name used in prompts and on the CV |
-| `CV_FILENAME_PREFIX` | `igor_pivnyk_cv` | prefix of every tailored PDF filename |
-| `SECTIONS_FILE` | `sections.py` | default soft-failing section configuration |
-| `LLM_PRIMARY_AUTH_MODE` | `bearer` | `bearer` or explicit `none` for a local OpenAI-compatible server |
-| `LLM_FALLBACK_AUTH_MODE` | `bearer` | fallback equivalent |
+For `html`/`plain`, set `OUTPUT_CV_MODE=disabled` to skip tailoring and
+compilation — a successful delivery completes the fit without a CV. Manual
+`--tailor` is rejected at preflight when CV work is disabled.
 
-`criteria.md` remains part of the built-in evaluator fingerprint, so changing
-it reopens previously rejected jobs. The executable built-in decisions live in
-`job_search/policy.py`; the criteria document does not itself execute policy.
+## Custom prompts
 
-`CV_DISPLAY_NAME` and `CV_FILENAME_PREFIX` seed the default `CandidateProfile`,
-so changing the candidate needs no composition module at all. A profile
-replacement (below) is only needed to change employer order, forbidden-claim
-patterns, or private placeholders.
+`PROMPT_DIR` points at a directory of `string.Template` overrides using four
+conventional filenames — `fact_extraction.txt`, `job_summary.txt`,
+`cv_bullet_selection.txt`, `compiler_repair.txt`. A file missing from the
+directory falls back individually to the built-in prompt. Fact/summary
+templates receive `$title`, `$company`, `$location`, `$is_remote`,
+`$description`; CV selection also gets `$resume_bullets`/`$candidate_name`;
+compiler repair gets `$tex_source`/`$compiler_errors`. Use `$$` for a literal
+`$`. `PROMPT_REVISION` is required whenever `PROMPT_DIR` is set.
 
-`cv_tailoring_prompt.md` is retained for compatible paths and deployments. The
-current default tailorer asks the model to select existing bullet indices and
-renders that selection deterministically, so this instruction file is not part
-of the bullet-selection prompt.
+## criteria.md and the reopen lifecycle
 
-## Component contracts
-
-Contracts are structural protocols: custom classes match by attributes and
-method signatures and do not need to inherit project classes.
-
-| Component | Required shape |
-|---|---|
-| `prompts` | `revision`; builders `fact_extraction`, `job_summary`, `cv_bullet_selection`, `compiler_repair` |
-| `llm` | `generate(...)` and `usage_summary()` |
-| `candidate_filter` | `revision` and `include(job) -> bool` |
-| `evaluator` | `revision`, `evaluate(llm, criteria, job) -> dict`, and `fingerprint(criteria) -> str`; optionally `requires_criteria = False` |
-| `profile` | `CandidateProfile` data and validation behavior |
-| `cv_renderer` | `media_types`, `render_tailored(...)`, and `render_base(llm=None)` returning `CVArtifact` |
-| `section_provider` | `load() -> (sections, error)` |
-| `output_renderer` | `kind` and pure `render_notice`, `render_fit`, `render_digest` methods |
-| `output_backend` | accepted renderer/media kinds, `cv_mode`, and atomic notice/fit/digest delivery methods |
-
-`OutputRenderer.render_notice` must accept
-`render_notice(notice, **context)`. Notice paths may pass presentation metadata
-such as `level`, `title`, `icon`, and `code`; renderers should accept unknown
-context keys so future notice types remain compatible. The built-in plain,
-HTML, and Telegram renderers show how to interpret this metadata.
-
-An output backend declares `cv_mode = "required"` or `"disabled"`. Required
-mode keeps the verified-artifact retry lifecycle. Disabled mode skips tailoring
-and compilation; a successful configured delivery completes the fit. Manual
-`--tailor` is rejected during configuration validation for a disabled backend.
-Renderer kinds and CV media types must intersect the backend's accepted
-capabilities or validation fails.
-
-For digest delivery, `DigestOutcome` is an explicit completion receipt. Success
-requires `delivered=True` and `notification_sent=True`; a required-CV backend
-must also report `cv_sent >= len(artifacts)` for the artifacts passed to
-`deliver_digest`. Returning the shorthand `DigestOutcome(True)` therefore does
-not complete the batch: it schedules delivery retries and makes the run exit
-nonzero. On a partial result, set `notification_sent=True` only if the user was
-actually notified so retry reconciliation can avoid duplicating that notice.
-
-Evaluators require `CRITERIA_FILE` by default for compatibility. A replacement
-that completely owns its policy and fingerprint may declare
-`requires_criteria = False`; configuration preflight and runtime then neither
-require nor read that file, and both evaluator methods receive an empty string
-for their `criteria` argument.
-
-The default `LatexCompiler(executable="pdflatex")` retains two compiler passes,
-LLM repair for eligible failures, deterministic shrinking, and exact one-page
-enforcement. A `CVArtifact` carries `filename`, `media_type`, and `content`
-bytes. Existing digest callers may continue using `pdf_bytes` and
-`cv_filename`.
-
-## File-backed prompts and revisions
-
-`FilePromptSet` uses `string.Template` placeholders. A nonempty revision is
-required. That revision participates in the default evaluator fingerprint, so
-a behavioral prompt change can reopen previous non-fits.
-
-```python
-from dataclasses import replace
-from job_search.components import FilePromptSet
-
-
-def configure(defaults, settings):
-    prompts = FilePromptSet(
-        revision="team-prompts-2026-08-20",
-        fact_extraction_file="prompts/facts.txt",
-        job_summary_file="prompts/summary.txt",
-        cv_bullet_selection_file="prompts/cv-selection.txt",
-        compiler_repair_file="prompts/compiler-repair.txt",
-    )
-    return replace(defaults, prompts=prompts)
-```
-
-The fact and summary templates receive `$title`, `$company`, `$location`,
-`$is_remote`, and `$description`. CV selection also receives
-`$resume_bullets` and `$candidate_name`. Compiler repair receives `$tex_source` and
-`$compiler_errors`. Use `$$` for a literal dollar sign. Omitted file arguments
-fall back individually to `DefaultPromptSet`.
-
-The loader automatically rebuilds the built-in evaluator and CV renderer when
-only `prompts` changes. If a custom evaluator has its own prompt relationship,
-replace both components explicitly.
+`criteria.md` is plain text evaluated by the built-in policy in
+`job_search/policy.py` — the document itself executes nothing. A
+previously-rejected job reopens when its stored `criteria_fingerprint` no
+longer matches: that changes when `criteria.md` changes, or when
+`PROMPT_REVISION` changes from what was recorded. With no custom
+`PROMPT_DIR`/`PROMPT_REVISION`, the fingerprint is exactly
+`criteria_version(criteria)` — changing prompts alone doesn't reopen anything.
 
 ## Local OpenAI-compatible inference
 
-No composition module is needed for a local endpoint. LM Studio is the tested
+No escape-hatch module is needed for a local endpoint. LM Studio is the tested
 example: start its local server, load a model that supports structured output,
 and set:
 
@@ -205,246 +131,74 @@ LLM_PRIMARY_API_KEY=
 No-auth mode omits the `Authorization` header while retaining the OpenAI
 chat-completions JSON-schema request. It requires an explicit, non-default
 HTTP(S) `LLM_PRIMARY_API_BASE`; a blank, malformed, or public OpenAI endpoint is
-rejected. The mode is never inferred from a loopback URL. The URL is relative to
-the machine running the pipeline: a GitHub-hosted runner cannot reach LM Studio
-on your laptop. See the
+rejected, and the mode is never inferred from a loopback URL. The URL is
+relative to the machine running the pipeline: a GitHub-hosted runner cannot
+reach LM Studio on your laptop. See the
 [LM Studio server guide](https://lmstudio.ai/docs/developer/core/server) and
 [structured-output guide](https://lmstudio.ai/docs/developer/openai-compat/structured-output).
 
-## A custom provider
+## job_search_config.py, the escape hatch
 
-Implement `LLMProvider` and wrap it in `LLMClient` to retain usage aggregation,
-fallback routing, and circuit-breaker behavior. This sketch assumes the user
-installed `acme_llm`; it is not a core dependency.
+Everything above is a setting. Reach for `job_search_config.py` only for the
+rare thing that genuinely needs code — a candidate filter, say, which has no
+setting of its own. **Check the settings table first; only reach for the
+config file when no setting exists.**
 
-```python
-from dataclasses import replace
-from acme_llm import Client
-from job_search.llm.clients import LLMClient
+> **This module is deliberately unvalidated.** Nothing inspects what you hand
+> back. A mistake in it surfaces as that file's own traceback, unmodified —
+> the same way a bug in any other module you import would.
 
-
-class AcmeProvider:
-    scheme = "acme"
-    model = "acme-structured-v2"
-    requires_api_key = True
-
-    def __init__(self, api_key):
-        self.client = Client(api_key=api_key)
-
-    def generate(self, prompt, temperature=0.0, json_mode=False,
-                 response_schema=None):
-        return self.client.generate(
-            prompt=prompt,
-            temperature=temperature,
-            json_schema=response_schema,
-        )
-
-
-def configure(defaults, settings):
-    provider = AcmeProvider(settings.llm_primary_api_key)
-    return replace(defaults, llm=LLMClient(provider))
-```
-
-If a service replaces `LLMClient` entirely, it implements `generate(...)` and
-`usage_summary()`. It is then responsible for its own telemetry, fallback, and
-breaker semantics.
-
-## Custom filter, evaluator, and non-default candidate
-
-The candidate filter runs before any evaluation LLM call. The evaluator must
-return the existing shape: `fit`, `reason`, `timezone_note`, `verdict`, and
-`facts`. Its fingerprint controls when stored non-fit decisions are reopened.
+If present, it is loaded from the working directory (or the path named by
+`JOB_SEARCH_CONFIG_FILE`) and must export one function, called once after the
+built-in object graph is built from settings and before preflight validates
+the host:
 
 ```python
-from dataclasses import replace
-import hashlib
-
-from job_search.components import CandidateProfile
-
-
-class ProductEngineerFilter:
-    revision = "product-engineering-filter-v2"
-
-    def include(self, job):
-        title = str(getattr(job, "title", "")).lower()
-        return "engineer" in title and "qa" not in title
-
-
-class ProductEvaluator:
-    revision = "product-policy-v3"
-
-    def evaluate(self, llm, criteria, job):
-        is_fit = "swift" in str(getattr(job, "description", "")).lower()
-        return {
-            "fit": is_fit,
-            "verdict": "fit" if is_fit else "nonfit",
-            "reason": "Swift product role" if is_fit else "No Swift signal",
-            "timezone_note": None,
-            "facts": {},
-        }
-
-    def fingerprint(self, criteria):
-        material = (criteria + "\n" + self.revision).encode("utf-8")
-        return hashlib.sha256(material).hexdigest()[:16]
-
-
-def configure(defaults, settings):
-    profile = CandidateProfile(
-        display_name="Ada Example",
-        base_tex_path="ada_cv.tex",
-        rendered_base_path="ada_cv.pdf",
-        cv_filename_prefix="ada_example_cv",
-        employer_order=("Example Labs", "Earlier Studio"),
-        forbidden_claim_patterns=(r"invented patent", r"security clearance"),
-        private_placeholders={
-            "((PHONE))": "ADA_CV_PHONE",
-            "((EMAIL))": "ADA_CV_EMAIL",
-        },
-        revision="ada-profile-v4",
-    )
-    return replace(
-        defaults,
-        candidate_filter=ProductEngineerFilter(),
-        evaluator=ProductEvaluator(),
-        profile=profile,
-    )
+def configure(runtime, settings):
+    runtime.candidate_filter = lambda job: job.is_remote and "ios" in job.title.lower()
+    return runtime
 ```
 
-Private placeholder values are read from the named environment variables only
-when the document is compiled. Do not embed them in the profile or source file.
-When changing profile semantics, replace or rebuild the CV renderer as shown in
-the next section; the loader rebuilds the built-in evaluator when prompts change
-and the built-in CV renderer when prompts or the profile change.
+`runtime` is a `job_search.runtime.Runtime` — `llm`, `prompts`, `cv_renderer`,
+`renderer`, `backend`, `candidate_filter`, and four derived flags. Mutate it in
+place, return a replacement, or both; `build_runtime` uses whatever comes
+back, or the runtime unchanged if `configure` returns `None`.
 
-## XeLaTeX and custom CV artifacts
+`build_runtime` raises `ConfigurationError` before any pipeline side effect in
+exactly three cases: an explicit `JOB_SEARCH_CONFIG_FILE` names a file that
+doesn't exist; the module has no `configure`; or the module uses the old
+`configure(defaults, settings)` signature (a one-line migration message
+instead of an opaque `TypeError`). **An empty `JOB_SEARCH_CONFIG_FILE` is also
+an error**, not "disabled" — a blank line in a deployed `.env` shouldn't
+silently bypass a configured file. Anything `configure()` itself raises
+propagates unmodified.
 
-Use the default deterministic renderer with another LaTeX executable:
+> **Security boundary:** this file is trusted executable code, run with the
+> process's own environment and secrets, on nothing more than its presence in
+> the working directory. `.gitignore` deliberately tracks it — review changes
+> to it the way you would review a CI workflow. Never put credentials, tokens,
+> or private CV values in it; those belong only in environment variables, a
+> mode-600 `.env`, or GitHub Actions secrets.
 
-```python
-from dataclasses import replace
-from job_search.components import DefaultCVRenderer, LatexCompiler
+Start from `job_search_config.example.py`, a no-op until you edit it:
 
-
-def configure(defaults, settings):
-    compiler = LatexCompiler(
-        executable="xelatex",
-        prompts=defaults.prompts,
-        profile=defaults.profile,
-    )
-    renderer = DefaultCVRenderer(
-        settings,
-        defaults.profile,
-        prompts=defaults.prompts,
-        compiler=compiler,
-    )
-    return replace(defaults, cv_renderer=renderer)
+```bash
+cp job_search_config.example.py job_search_config.py
+python -m job_search.pipeline --check-config
 ```
-
-Install XeLaTeX on every host that runs this configuration. The command name is
-passed as one executable, not a shell command or arbitrary argument string.
-
-A whole renderer can produce another artifact type when the backend accepts it:
-
-```python
-from dataclasses import replace
-from job_search.components import CVArtifact
-from job_search.output import FilesystemOutputBackend, HtmlOutputRenderer
-
-
-class TextCVRenderer:
-    media_types = ("text/plain",)
-
-    def render_tailored(self, llm, job, evaluation=None):
-        body = "Candidate summary for {} at {}\n".format(job.title, job.company)
-        return CVArtifact("candidate-summary.txt", "text/plain", body.encode())
-
-    def render_base(self, llm=None):
-        return CVArtifact("candidate-base.txt", "text/plain", b"Candidate base\n")
-
-
-def configure(defaults, settings):
-    return replace(
-        defaults,
-        cv_renderer=TextCVRenderer(),
-        output_renderer=HtmlOutputRenderer(),
-        output_backend=FilesystemOutputBackend("build/job-digest", cv_mode="required"),
-    )
-```
-
-## Sections without a file
-
-The default `SectionProvider` keeps the existing `sections.py` loader: a
-missing or invalid file is a soft presentation fallback and the digest remains
-ungrouped. A composition module may provide sections directly:
-
-```python
-from dataclasses import replace
-from job_search.digest.sections import Section, is_remote
-
-
-class StaticSections:
-    def load(self):
-        return (Section("Remote", "🌍", match=is_remote),), ""
-
-
-def configure(defaults, settings):
-    return replace(defaults, section_provider=StaticSections())
-```
-
-## Filesystem output and Telegram
-
-The built-in HTML/filesystem pair stages a complete hidden generation and
-atomically promotes `index.html` and its artifacts together:
-
-```python
-from dataclasses import replace
-from job_search.output import FilesystemOutputBackend, HtmlOutputRenderer
-
-
-def configure(defaults, settings):
-    return replace(
-        defaults,
-        output_renderer=HtmlOutputRenderer(),
-        output_backend=FilesystemOutputBackend(
-            "build/job-digest", cv_mode="required"
-        ),
-    )
-```
-
-Set `cv_mode="disabled"` for an HTML-only digest. In that mode Telegram
-credentials are not required and CV work is skipped.
-
-With no output override, the built-in renderer/backend preserve the current
-Telegram behavior: per-job messages, the HTML ZIP digest, optional
-Telegraph/X0 delivery, fallback, retraction, alerts, and summaries. The inbound
-Telegram command bot remains a separate Telegram-only surface; composition
-does not generalize its commands.
-
-A backend for some other destination implements the full `OutputBackend`:
-declare `accepted_renderer_kinds`, `accepted_media_types` and `cv_mode`, and
-return `job_search.components.DeliveryOutcome` for each fit plus
-`job_search.components.DigestOutcome` for a digest. Pair a message-oriented one
-with `PlainTextOutputRenderer` (kind `plain`), which emits no markup.
 
 ## Deployment
 
-A tracked `job_search_config.py` is picked up automatically. This is an
-intentional exception to the repository's deny-by-default ignore rules: it must
-contain reviewed composition code only. GitHub Actions also supports a
-multiline `JOB_SEARCH_CONFIG_PY` Actions secret; each relevant workflow writes
-that value to `job_search_config.py` after checkout. That secret is a transport
-for source code, not a place for credentials or private values. Separately
-install any imports your module needs in the deployment workflow.
+A tracked `job_search_config.py` is picked up automatically — an intentional
+exception to the deny-by-default `.gitignore`; it must contain reviewed code
+only. GitHub Actions also supports a multiline `JOB_SEARCH_CONFIG_PY` secret;
+the daily, manual-tailor, and base-render workflows each materialize it to
+`job_search_config.py` after checkout, taking precedence over a tracked copy —
+a transport for source, not a place for credentials. Install any imports your
+module needs in the workflow yourself.
 
 On a persistent host such as a Raspberry Pi, either keep a reviewed
-`job_search_config.py` in the checkout or set an absolute path in `.env`:
+`job_search_config.py` in the checkout or point `.env` at a file kept
+elsewhere: `JOB_SEARCH_CONFIG_FILE=/home/pi/job-search-config/production.py`.
 
-```dotenv
-JOB_SEARCH_CONFIG_FILE=/home/pi/job-search-config/production.py
-```
-
-The core and the example remain Python 3.9-compatible and standard-library
-only. Source discovery stays under the existing enable/disable controls; it is
-not part of runtime composition. Custom components intentionally change their
-owned behavior, while built-in defaults retain the existing state and retry
-lifecycle.
+The core and the example are Python 3.9-compatible and standard-library only.
