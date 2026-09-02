@@ -10,7 +10,7 @@ import pytest
 # --- modules under test (repoint on migration) ---
 import job_search.llm.clients as clients_module
 from job_search.components import CandidateProfile
-from job_search.config import load_base_tex
+from job_search.config import ConfigurationError, load_base_tex
 from job_search.latex.tailor_render import extract_job_bullets
 from job_search.llm.clients import (
     SCHEME_DEFAULT_BASE,
@@ -503,6 +503,30 @@ def test_llm_client_from_config_omits_fallback_without_key():
         llm_fallback_scheme="openai", llm_fallback_model="m", llm_fallback_api_key="", llm_fallback_api_base="",
     )
     assert LLMClient.from_config(cfg).fallback is None
+
+
+def test_llm_client_from_config_rejects_no_auth_mode_for_non_openai_fallback():
+    cfg = SimpleNamespace(
+        llm_primary_scheme="gemini", llm_primary_model="m", llm_primary_api_key="pk",
+        llm_primary_api_base="",
+        llm_fallback_scheme="gemini", llm_fallback_model="m", llm_fallback_api_key="",
+        llm_fallback_api_base="", llm_fallback_auth_mode="none",
+    )
+
+    with pytest.raises(ConfigurationError, match="fallback.*openai"):
+        LLMClient.from_config(cfg)
+
+
+def test_llm_client_from_config_rejects_invalid_auth_mode_value():
+    cfg = SimpleNamespace(
+        llm_primary_scheme="gemini", llm_primary_model="m", llm_primary_api_key="pk",
+        llm_primary_api_base="", llm_primary_auth_mode="basic",
+        llm_fallback_scheme="openai", llm_fallback_model="m", llm_fallback_api_key="fk",
+        llm_fallback_api_base="",
+    )
+
+    with pytest.raises(ConfigurationError, match="bearer.*none"):
+        LLMClient.from_config(cfg)
 
 
 def test_llm_client_from_config_builds_no_auth_local_primary_without_a_key():

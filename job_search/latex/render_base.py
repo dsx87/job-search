@@ -10,15 +10,15 @@ Run with: python -m job_search.latex.render_base
 import os
 import sys
 
-from ..composition import load_components
 from ..config import PipelineConfig
+from ..runtime import build_runtime
 
 
 def main(cfg=None) -> int:
     cfg = PipelineConfig.from_env() if cfg is None else cfg
-    components = load_components(cfg, command="base")
+    rt = build_runtime(cfg, command="base")
     try:
-        artifact = components.cv_renderer.render_base(components.llm)
+        artifact = rt.cv_renderer.render_base(rt.llm)
     except Exception as exc:
         print("ERROR: base CV rendering failed: {}".format(exc), file=sys.stderr)
         return 1

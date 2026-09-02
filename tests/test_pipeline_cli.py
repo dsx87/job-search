@@ -111,8 +111,8 @@ def install_components(monkeypatch, settings_seen=None, cv_mode="required"):
     components = SimpleNamespace(
         llm=llm,
         cv_renderer=Renderer(),
-        output_renderer=OutputRenderer(),
-        output_backend=Backend(),
+        renderer=OutputRenderer(),
+        backend=Backend(),
     )
 
     def _load(settings, command="daily", **_kwargs):
@@ -120,7 +120,7 @@ def install_components(monkeypatch, settings_seen=None, cv_mode="required"):
             settings_seen.append((settings, command))
         return components
 
-    monkeypatch.setattr(cli, "load_components", _load)
+    monkeypatch.setattr(cli, "build_runtime", _load)
     return components, calls, artifact
 
 
@@ -186,9 +186,9 @@ def test_check_config_prints_redacted_configuration_without_dispatch(monkeypatch
     cfg = make_config()
     components = object()
     monkeypatch.setattr(cli.PipelineConfig, "from_env", lambda: cfg)
-    monkeypatch.setattr(cli, "load_components", lambda settings, command: components)
+    monkeypatch.setattr(cli, "build_runtime", lambda settings, command: components)
     monkeypatch.setattr(
-        cli, "redacted_configuration", lambda settings, loaded: '{"safe": true}'
+        cli, "redacted_settings", lambda settings, loaded: '{"safe": true}'
     )
     monkeypatch.setattr(
         cli, "run_daily", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no daily"))
@@ -235,10 +235,10 @@ def test_manual_tailor_uses_custom_non_telegram_output_pair(monkeypatch):
     components = SimpleNamespace(
         llm=llm,
         cv_renderer=Renderer(),
-        output_renderer=OutputRenderer(),
-        output_backend=Backend(),
+        renderer=OutputRenderer(),
+        backend=Backend(),
     )
-    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(cli, "build_runtime", lambda *_a, **_k: components)
 
     cli.run_tailor(make_args("x" * 200), cfg)
 
@@ -292,10 +292,10 @@ def test_manual_tailor_threads_custom_renderer_through_the_default_backend(monke
     components = SimpleNamespace(
         llm=llm,
         cv_renderer=Renderer(),
-        output_renderer=FitRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=FitRenderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(cli, "build_runtime", lambda *_a, **_k: components)
 
     cli.run_tailor(make_args("x" * 200), cfg)
 
@@ -342,10 +342,10 @@ def test_manual_tailor_message_names_the_job_and_why_without_a_url(monkeypatch):
     components = SimpleNamespace(
         llm=object(),
         cv_renderer=Renderer(),
-        output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(cli, "build_runtime", lambda *_a, **_k: components)
 
     cli.run_tailor(make_args("x" * 200, url=""), cfg)
 
@@ -390,10 +390,10 @@ def test_manual_tailor_renders_fatal_notice_with_composed_default_backend(monkey
                 RuntimeError("compile failed")
             )
         ),
-        output_renderer=Renderer(),
-        output_backend=DefaultOutputBackend(Telegram()),
+        renderer=Renderer(),
+        backend=DefaultOutputBackend(Telegram()),
     )
-    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(cli, "build_runtime", lambda *_a, **_k: components)
 
     with pytest.raises(RuntimeError, match="compile failed"):
         cli.run_tailor(make_args("x" * 200), make_config())
@@ -413,10 +413,10 @@ def test_manual_tailor_plain_backend_error_has_no_telegram_markup(monkeypatch):
                 RuntimeError("compile failed")
             )
         ),
-        output_renderer=PlainTextOutputRenderer(),
-        output_backend=RecordingTextBackend(messages.append),
+        renderer=PlainTextOutputRenderer(),
+        backend=RecordingTextBackend(messages.append),
     )
-    monkeypatch.setattr(cli, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(cli, "build_runtime", lambda *_a, **_k: components)
 
     with pytest.raises(RuntimeError, match="compile failed"):
         cli.run_tailor(make_args("x" * 200), make_config())

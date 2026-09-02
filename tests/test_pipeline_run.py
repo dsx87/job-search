@@ -158,8 +158,11 @@ def configured_plain_components(messages):
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
         cv_renderer=SimpleNamespace(),
-        output_renderer=PlainTextOutputRenderer(),
-        output_backend=RecordingTextBackend(messages.append),
+        renderer=PlainTextOutputRenderer(),
+        backend=RecordingTextBackend(messages.append),
+        cv_required=False,
+        needs_telegram=False,
+        telegram_markup=False,
     )
 
 
@@ -228,7 +231,7 @@ def test_configured_plain_source_outage_notice_has_no_telegram_markup(monkeypatc
         )),
     )
     monkeypatch.setattr(
-        run, "load_components", lambda *_a, **_k: configured_plain_components(messages)
+        run, "build_runtime", lambda *_a, **_k: configured_plain_components(messages)
     )
 
     assert run.run_daily(make_config()) == 1
@@ -243,7 +246,7 @@ def test_configured_plain_fatal_notice_has_no_telegram_markup(monkeypatch):
     install_daily_fakes(monkeypatch, [])
     messages = []
     monkeypatch.setattr(
-        run, "load_components", lambda *_a, **_k: configured_plain_components(messages)
+        run, "build_runtime", lambda *_a, **_k: configured_plain_components(messages)
     )
     monkeypatch.setattr(
         run,
@@ -258,9 +261,9 @@ def test_configured_plain_fatal_notice_has_no_telegram_markup(monkeypatch):
     assert "<" not in messages[0]
 
 
-def test_invalid_composition_fails_before_state_sync_or_fetch(tmp_path, monkeypatch):
+def test_invalid_escape_hatch_fails_before_state_sync_or_fetch(tmp_path, monkeypatch):
     config_file = tmp_path / "invalid.py"
-    config_file.write_text("raise RuntimeError('invalid composition')\n", encoding="utf-8")
+    config_file.write_text("raise RuntimeError('invalid escape hatch')\n", encoding="utf-8")
     monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
     monkeypatch.setattr(
         run, "pull_state", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no state pull"))
@@ -271,7 +274,9 @@ def test_invalid_composition_fails_before_state_sync_or_fetch(tmp_path, monkeypa
 
     cfg = make_config()
     cfg.state_sync = True
-    with pytest.raises(run.ConfigurationError, match="invalid composition"):
+    # Errors from the user's escape-hatch file propagate raw (no wrapping into
+    # ConfigurationError) — a real traceback beats a mangled string.
+    with pytest.raises(RuntimeError, match="invalid escape hatch"):
         run.run_daily(cfg)
 
 
@@ -352,10 +357,10 @@ def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
         llm=llm,
         prompts=object(),
         candidate_filter=reject_all,
-        output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: (_ for _ in ()).throw(
@@ -388,10 +393,10 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
         llm=configured_llm,
         prompts=object(),
         candidate_filter=lambda candidate: True,
-        output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
 
     assert run.run_daily(make_config()) == 0
@@ -435,10 +440,10 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
         llm=llm,
         prompts=DefaultPromptSet(),
         cv_renderer=Renderer(),
-        output_renderer=DigestRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=DigestRenderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: {
@@ -502,8 +507,8 @@ def test_default_backend_custom_digest_renderer_exception_records_retry(monkeypa
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=None,
-        output_renderer=Renderer(),
-        output_backend=backend,
+        renderer=Renderer(),
+        backend=backend,
     )
     run._deliver_digest(
         components,
@@ -576,10 +581,13 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
                 AssertionError("CV rendering must be skipped")
             )
         ),
-        output_renderer=Renderer(),
-        output_backend=Backend(),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=False,
+        needs_telegram=False,
+        needs_base_tex=False,
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: {
@@ -604,7 +612,6 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
     cfg = make_config(digest_delivery=True)
     cfg.telegram_bot_token = ""
     cfg.telegram_chat_id = ""
-    cfg.output_cv_mode = "disabled"
 
     assert run.run_daily(cfg) == 0
     assert deliveries == [("digest:1", ())]
@@ -679,8 +686,12 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=SimpleNamespace(revision="test"),
-        output_renderer=Renderer(),
-        output_backend=Backend(),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=cv_mode == "required",
+        # Markup now follows rt.telegram_markup rather than the renderer's
+        # kind, so a plain renderer needs the matching flag to stay markup-free.
+        telegram_markup=False,
     )
     payload = {}
     if cv_mode == "required":
@@ -689,10 +700,6 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
         )
     stats = run.RunStats(fits=1)
     cfg = make_config(digest_delivery=True)
-    cfg.output_cv_mode = cv_mode
-    # Markup now follows the configured output mode rather than the renderer's
-    # kind, so a plain renderer needs the matching setting to stay markup-free.
-    cfg.output_mode = "plain"
     completed = run._deliver_digest(
         components,
         cfg,
@@ -755,14 +762,16 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
         ),
         prompts=DefaultPromptSet(),
         cv_renderer=SimpleNamespace(),
-        output_renderer=SimpleNamespace(
+        renderer=SimpleNamespace(
             kind="plain",
             render_notice=lambda notice, **_context: str(notice),
             render_digest=lambda _context: "digest",
         ),
-        output_backend=Backend(),
+        backend=Backend(),
+        cv_required=False,
+        needs_base_tex=False,
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: {
@@ -775,7 +784,6 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
     )
 
     cfg = make_config(digest_delivery=True)
-    cfg.output_cv_mode = "disabled"
     assert run.run_daily(cfg) == 1
 
 
@@ -812,12 +820,12 @@ def test_configured_digest_cv_stats_count_fit_artifacts_not_review_artifacts(
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=SimpleNamespace(revision="test"),
-        output_renderer=SimpleNamespace(
+        renderer=SimpleNamespace(
             kind="plain",
             render_notice=lambda notice, **_context: str(notice),
             render_digest=lambda _context: "digest",
         ),
-        output_backend=Backend(),
+        backend=Backend(),
     )
     stats = run.RunStats(fits=1, uncertain=1)
 
@@ -878,13 +886,13 @@ def test_configured_empty_digest_commits_prior_deferral_without_batch_delivery(
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=SimpleNamespace(revision="test"),
-        output_renderer=Renderer(),
-        output_backend=Backend(),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=False,
+        telegram_markup=False,
     )
 
     cfg = make_config(digest_delivery=True)
-    cfg.output_mode = "plain"
-    cfg.output_cv_mode = "disabled"
     completed = run._deliver_digest(
         components,
         cfg,
@@ -955,10 +963,10 @@ def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
         cv_renderer=SimpleNamespace(),
-        output_renderer=renderer,
-        output_backend=Backend(),
+        renderer=renderer,
+        backend=Backend(),
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(EVALUATE_JOB, lambda *_a, **_k: evaluation)
 
     cfg = make_config(digest_delivery=False)
@@ -1009,10 +1017,10 @@ def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch
                 "candidate.pdf", "application/pdf", b"PDF"
             )
         ),
-        output_renderer=Renderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=Renderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: {
@@ -1043,7 +1051,7 @@ def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypat
     install_daily_fakes(monkeypatch, [job])
     messages = []
     components = configured_plain_components(messages)
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: {
@@ -1058,7 +1066,6 @@ def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypat
     cfg = make_config(digest_delivery=False)
     cfg.telegram_bot_token = ""
     cfg.telegram_chat_id = ""
-    cfg.output_cv_mode = "disabled"
     assert run.run_daily(cfg) == 0
 
     assert "iOS Engineer" in messages[0]
@@ -1502,13 +1509,13 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
                 AssertionError("text-only test mode must skip CV rendering")
             )
         ),
-        output_renderer=Renderer(),
-        output_backend=Backend(),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=False,
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
     cfg = make_config()
-    cfg.output_cv_mode = "disabled"
     assert run.run_daily(cfg, test=True) == 0
     assert calls == [
         ("filter", "Configured role"),
@@ -1540,10 +1547,10 @@ def test_mode_preserves_custom_artifact_with_default_telegram_backend(monkeypatc
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: artifact
         ),
-        output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(telegram),
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
     )
-    monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
     monkeypatch.setattr(
         EVALUATE_JOB,
         lambda *_a, **_k: {

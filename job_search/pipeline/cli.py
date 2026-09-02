@@ -3,8 +3,8 @@ import argparse
 import sys
 import urllib.parse
 
-from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
-from ..composition import ConfigurationError, load_components, redacted_configuration
+from ..config import ConfigurationError, MIN_JOB_TEXT_LEN, PipelineConfig
+from ..runtime import build_runtime, redacted_settings
 from ..models import Job
 from .run import run_daily, run_list, run_seed
 from .stages import CVDeliveryError, ensure_job_description
@@ -15,11 +15,11 @@ from .stages import CVDeliveryError, ensure_job_description
 MANUAL_TAILOR_REASON = "Manually requested — tailored CV attached."
 
 
-def _notify_composed_error(components, exc):
+def _notify_composed_error(rt, exc):
     try:
         notice = "{}: {}".format(type(exc).__name__, exc)
-        components.output_backend.deliver_notice(
-            components.output_renderer.render_notice(
+        rt.backend.deliver_notice(
+            rt.renderer.render_notice(
                 notice,
                 level="error",
                 title="Pipeline error",
@@ -35,7 +35,7 @@ def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
     if getattr(cfg, "output_cv_mode", "required") != "required":
         raise ConfigurationError("--tailor requires a CV-capable output backend")
-    components = load_components(cfg, command="tailor")
+    rt = build_runtime(cfg, command="tailor")
 
     company = (args.company or "").strip()
     if not company and args.url:
@@ -66,18 +66,18 @@ def run_tailor(args, cfg) -> None:
     try:
         # No cv_mode branch: the guard above already refuses --tailor when
         # OUTPUT_CV_MODE is not "required", so there is always a CV to render.
-        artifact = components.cv_renderer.render_tailored(components.llm, job)
-        rendered = components.output_renderer.render_fit(
+        artifact = rt.cv_renderer.render_tailored(rt.llm, job)
+        rendered = rt.renderer.render_fit(
             job, {"reason": MANUAL_TAILOR_REASON}
         )
-        outcome = components.output_backend.deliver_fit(rendered, artifact, job=job)
+        outcome = rt.backend.deliver_fit(rendered, artifact, job=job)
         if not outcome.complete:
             raise CVDeliveryError(outcome)
         print("  Verified CV delivered.", flush=True)
         print("Done.", flush=True)
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        _notify_composed_error(components, exc)
+        _notify_composed_error(rt, exc)
         raise
 
 
@@ -122,11 +122,11 @@ def main():
 
     if args.check_config:
         try:
-            components = load_components(cfg, command="check")
+            rt = build_runtime(cfg, command="check")
         except ConfigurationError as exc:
             print("Error: {}".format(exc), file=sys.stderr)
             return 2
-        print(redacted_configuration(cfg, components))
+        print(redacted_settings(cfg, rt))
         return 0
 
     try:

@@ -205,7 +205,7 @@ def test_render_base_command_writes_to_configured_output_path(monkeypatch, tmp_p
 
     llm = object()
     components = SimpleNamespace(cv_renderer=Renderer(), llm=llm)
-    monkeypatch.setattr(render_base, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(render_base, "build_runtime", lambda *_a, **_k: components)
 
     assert render_base.main(settings) == 0
     assert out.read_bytes() == b"CONFIGURED"
@@ -230,7 +230,7 @@ def test_render_base_command_output_path_overrides_default_renderers_profile(
         "ada-base.pdf", "application/pdf", b"ADA"
     )
     components = SimpleNamespace(cv_renderer=renderer, llm=object())
-    monkeypatch.setattr(render_base, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(render_base, "build_runtime", lambda *_a, **_k: components)
 
     assert render_base.main(settings) == 0
     assert out.read_bytes() == b"ADA"

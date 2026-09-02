@@ -10,6 +10,15 @@ outside its own test, so it was removed rather than left as decoration.
 import os
 from dataclasses import dataclass
 
+
+class ConfigurationError(ValueError):
+    """Raised before pipeline side effects when the runtime is unusable.
+
+    Lives here, not in runtime.py, so llm.clients can raise it (an invalid
+    auth-mode combination) without importing back up into the package.
+    """
+
+
 # ── Scraper defaults ──────────────────────────────────────────────────────────
 HTTP_TIMEOUT_SECONDS = 30
 MAX_WORKERS = 8
@@ -55,7 +64,7 @@ OUTPUT_DIR = ""
 # "required" (default) fails delivery without a verified CV artifact, same as
 # today; "disabled" skips CV work entirely — the run only ever renders
 # notices/digests. OUTPUT_MODE=telegram always requires "required": Telegram
-# delivery has no text-only path (see preflight in composition.py).
+# delivery has no text-only path (see preflight in runtime.py).
 OUTPUT_CV_MODE = "required"
 
 # ── Prompts / LaTeX engine ──────────────────────────────────────────────────────

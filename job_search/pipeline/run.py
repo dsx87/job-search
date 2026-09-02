@@ -11,14 +11,9 @@ import sys
 import os
 from dataclasses import dataclass, field
 
-from ..composition import ConfigurationError, load_components
-from ..components import (
-    CandidateProfile,
-    CVArtifact,
-    DigestOutcome,
-    default_components,
-)
+from ..components import CVArtifact, DigestOutcome
 from ..config import (
+    BASE_TEX_FILE,
     CRITERIA_FILE,
     CV_TAILORING_PROMPT_FILE,
     SEEN_JOBS_FILE,
@@ -26,6 +21,7 @@ from ..config import (
     load_criteria,
     load_tailoring_instructions,
 )
+from ..runtime import ConfigurationError, build_runtime
 from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
 from ..digest.section_config import load_sections
 from ..identity import job_identity_keys, normalize_url
@@ -241,13 +237,10 @@ def _record_fit_failure(seen, stats, job, stage, today, telegram, cfg=None):
     return state
 
 
-def _runtime_components(cfg, command):
+def _build_runtime(cfg, command):
     try:
-        defaults = default_components(
-            cfg,
-            llm=LLMClient.from_config(cfg),
-            telegram=TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id),
-        )
+        llm = LLMClient.from_config(cfg)
+        telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
     except ConfigurationError:
         raise
     except (Exception, SystemExit) as exc:
@@ -256,10 +249,7 @@ def _runtime_components(cfg, command):
                 type(exc).__name__, exc
             )
         ) from exc
-    # load_components rebinds the default evaluator to configured prompts on
-    # its own (see composition.rebind_defaults), so there is nothing to fix up
-    # here any more.
-    return load_components(cfg, command=command, defaults=defaults)
+    return build_runtime(cfg, command=command, llm=llm, telegram=telegram)
 
 
 def _evaluate_candidate(llm, criteria, job, prompts=None):
@@ -341,7 +331,7 @@ def _fetch_for_pipeline(cfg):
 
 def run_seed(cfg) -> int:
     """Mark all currently fetched jobs as seen without evaluating."""
-    _runtime_components(cfg, command="seed")
+    _build_runtime(cfg, command="seed")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
         print("No usable job source completed; seed aborted.", file=sys.stderr)
@@ -363,7 +353,7 @@ def run_seed(cfg) -> int:
 
 def run_list(cfg) -> int:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
-    _runtime_components(cfg, command="list")
+    _build_runtime(cfg, command="list")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
         print("No usable job source completed; list aborted.", file=sys.stderr)
@@ -414,16 +404,16 @@ def _commit_deferrals(seen, deferrals, today, cfg=None) -> None:
 
 
 def _digest_context(
-    components, cfg, seen, stats, today, prepared, prepared_reviews,
+    rt, cfg, seen, stats, today, prepared, prepared_reviews,
     uncertain, newly_deferred, source_warning, notifier=None,
 ):
     fit_jobs = [job for job, _payload, _retry, _evaluation in prepared]
     review_jobs = [job for job, _evaluation in uncertain]
     summaries = _summaries(
-        components.llm,
+        rt.llm,
         fit_jobs + review_jobs,
         cfg.eval_workers,
-        components.prompts,
+        rt.prompts,
     )
     fit_summaries = summaries[:len(fit_jobs)]
     review_summaries = summaries[len(fit_jobs):]
@@ -462,7 +452,7 @@ def _digest_context(
         stats=stats,
         source_warning=source_warning,
         usage_summary=" ".join(
-            (components.llm.usage_summary(), state_size_summary(seen, _seen_file(cfg)))
+            (rt.llm.usage_summary(), state_size_summary(seen, _seen_file(cfg)))
         ),
         fits=fits,
         review=review,
@@ -473,21 +463,16 @@ def _digest_context(
 
 
 def _deliver_digest(
-    components, cfg, seen, stats, today, prepared, prepared_reviews,
+    rt, cfg, seen, stats, today, prepared, prepared_reviews,
     uncertain, newly_deferred, source_warning, signature_for, deferrals,
 ):
-    notifier = _OutputNoticeAdapter(
-        components.output_renderer, components.output_backend
-    )
-    # Plain locals from cfg rather than object attributes: OUTPUT_MODE /
-    # OUTPUT_CV_MODE choose the renderer/backend pair, so this is the same
-    # answer the pair was built from. (Becomes rt.telegram_markup /
-    # rt.cv_required once Runtime exists, so a hatch-swapped pair can flip
-    # them — see C10.)
-    telegram_markup = getattr(cfg, "output_mode", "telegram") == "telegram"
-    cv_required = getattr(cfg, "output_cv_mode", "required") == "required"
+    notifier = _OutputNoticeAdapter(rt.renderer, rt.backend)
+    # Read off the runtime rather than cfg: the escape hatch may have flipped
+    # these to keep a swapped-in renderer/backend pair coherent.
+    telegram_markup = getattr(rt, "telegram_markup", True)
+    cv_required = getattr(rt, "cv_required", True)
     ctx = _digest_context(
-        components, cfg, seen, stats, today, prepared, prepared_reviews,
+        rt, cfg, seen, stats, today, prepared, prepared_reviews,
         uncertain, newly_deferred, source_warning, notifier,
     )
     if not (ctx.fits or ctx.review or ctx.deferred):
@@ -516,7 +501,7 @@ def _deliver_digest(
         for _job, payload, _retry, _evaluation in prepared
     )
     try:
-        rendered = components.output_renderer.render_digest(ctx)
+        rendered = rt.renderer.render_digest(ctx)
     except Exception as exc:
         # A renderer that blows up is a presentation problem for this run's
         # content: the fits stay unseen and the next run tries again.
@@ -525,7 +510,7 @@ def _deliver_digest(
         # A backend reports *delivery* problems as an outcome. Anything it lets
         # escape is a bug (a broken bundler, say); that stays fatal rather than
         # spending every job's retry budget on something retrying cannot fix.
-        outcome = components.output_backend.deliver_digest(
+        outcome = rt.backend.deliver_digest(
             rendered, artifacts, context=ctx, date=today
         )
     cv_complete = not cv_required or outcome.cv_sent >= len(artifacts)
@@ -607,14 +592,12 @@ def _deliver_digest(
 
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
-    components = _runtime_components(cfg, command="daily")
-    llm = components.llm
-    notifier = _OutputNoticeAdapter(
-        components.output_renderer, components.output_backend
-    )
+    rt = _build_runtime(cfg, command="daily")
+    llm = rt.llm
+    notifier = _OutputNoticeAdapter(rt.renderer, rt.backend)
     # See the matching comment in _deliver_digest.
-    telegram_markup = getattr(cfg, "output_mode", "telegram") == "telegram"
-    cv_required = getattr(cfg, "output_cv_mode", "required") == "required"
+    telegram_markup = getattr(rt, "telegram_markup", True)
+    cv_required = getattr(rt, "cv_required", True)
     state_mutation_allowed = False
     exit_code = 0
     try:
@@ -638,21 +621,19 @@ def run_daily(cfg, test: bool = False) -> int:
                 )
         criteria = load_criteria(getattr(cfg, "criteria_file", CRITERIA_FILE))
         crit_ver = criteria_fingerprint(
-            criteria, getattr(components.prompts, "revision", "")
+            criteria, getattr(rt.prompts, "revision", "")
         )
         # Preflight the files the built-in renderer opens, before state sync or
-        # fetch. validate_components already checked they exist; this reads them,
+        # fetch. runtime.preflight already checked they exist; this reads them,
         # which is what catches an unreadable or empty one. The values are
         # discarded — the renderer loads them again when it actually runs. A
-        # whole custom renderer owns its inputs, and cv_mode=disabled needs none.
-        preflight_profile = getattr(
-            getattr(components, "cv_renderer", None), "profile", None
-        )
-        if cv_required and isinstance(preflight_profile, CandidateProfile):
+        # hatch-swapped renderer owns its inputs (rt.needs_base_tex is False),
+        # and cv_mode=disabled needs none either.
+        if getattr(rt, "needs_base_tex", True):
             load_tailoring_instructions(
                 getattr(cfg, "cv_tailoring_prompt_file", CV_TAILORING_PROMPT_FILE)
             )
-            load_base_tex(preflight_profile.base_tex_path)
+            load_base_tex(getattr(cfg, "base_tex_file", BASE_TEX_FILE))
 
         if cfg.state_sync:
             # Pull only after configuration and required local files have
@@ -701,24 +682,24 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
                 print("Done.", flush=True)
                 return 0
-            candidate_filter = getattr(components, "candidate_filter", None)
+            candidate_filter = getattr(rt, "candidate_filter", None)
             if candidate_filter is not None and not candidate_filter(d):
                 print("Test job excluded by the configured candidate filter.")
                 print("Done.", flush=True)
                 return 0
             from ..llm.eval import evaluate_job
-            evaluation = evaluate_job(llm, criteria, d, prompts=components.prompts)
+            evaluation = evaluate_job(llm, criteria, d, prompts=rt.prompts)
             if not evaluation.get("fit"):
                 print("    Skip — {}".format(evaluation.get("reason", "")))
                 print("Done.", flush=True)
                 return 0
             artifact = None
             if cv_required:
-                artifact = components.cv_renderer.render_tailored(
+                artifact = rt.cv_renderer.render_tailored(
                     llm, d, evaluation
                 )
-            rendered = components.output_renderer.render_fit(d, evaluation)
-            outcome = components.output_backend.deliver_fit(
+            rendered = rt.renderer.render_fit(d, evaluation)
+            outcome = rt.backend.deliver_fit(
                 rendered, artifact, job=d
             )
             if not outcome.complete:
@@ -784,7 +765,7 @@ def run_daily(cfg, test: bool = False) -> int:
             if signature is not None:
                 record_evaluation(seen, job, signature, "deferred", today)
 
-        candidate_filter = getattr(components, "candidate_filter", None)
+        candidate_filter = getattr(rt, "candidate_filter", None)
         for value in raw_jobs:
             job = coerce_job(value)
             if candidate_filter is not None and not candidate_filter(job):
@@ -840,7 +821,7 @@ def run_daily(cfg, test: bool = False) -> int:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
                     pool.submit(
-                        _evaluate_candidate, llm, criteria, job, components.prompts
+                        _evaluate_candidate, llm, criteria, job, rt.prompts
                     ): (job, retry_state)
                     for job, retry_state in evaluation_jobs
                 }
@@ -957,7 +938,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     # tells the renderer to skip it.
                     future = pool.submit(
                         _prepare_with_renderer,
-                        components.cv_renderer,
+                        rt.cv_renderer,
                         llm,
                         job,
                         None if retry_state.notified else evaluation,
@@ -966,7 +947,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 for job, evaluation in review_to_tailor:
                     future = pool.submit(
                         _prepare_with_renderer,
-                        components.cv_renderer,
+                        rt.cv_renderer,
                         llm,
                         job,
                         evaluation,
@@ -1026,7 +1007,7 @@ def run_daily(cfg, test: bool = False) -> int:
             # reconciliation (mark seen on success, record a delivery failure on
             # send error) happens inside _deliver_digest.
             if not _deliver_digest(
-                components,
+                rt,
                 cfg,
                 seen,
                 stats,
@@ -1045,10 +1026,10 @@ def run_daily(cfg, test: bool = False) -> int:
             # job, sequentially, then a text run summary.
             for job, payload, retry_state, evaluation in prepared:
                 try:
-                    rendered = components.output_renderer.render_fit(
+                    rendered = rt.renderer.render_fit(
                         job, evaluation or {"reason": "Previously matched."}
                     )
-                    outcome = components.output_backend.deliver_fit(
+                    outcome = rt.backend.deliver_fit(
                         rendered,
                         payload.get("artifact"),
                         notification_already_sent=retry_state.notified,

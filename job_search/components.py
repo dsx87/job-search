@@ -1,9 +1,8 @@
-"""Public structural contracts for configuring the job-search pipeline.
+"""The concrete object graph the pipeline runs on: profile, prompts, CV
+rendering, and output delivery.
 
-Custom composition modules implement these protocols by shape; inheritance and
-package discovery are deliberately unnecessary.  The concrete defaults live
-here too so a configuration can selectively replace one component with
-``dataclasses.replace(defaults, ...)``.
+``job_search.runtime`` builds these into a ``Runtime`` from settings; nothing
+here is a Protocol or a swappable slot registry any more (see runtime.py).
 """
 from __future__ import annotations
 
@@ -109,26 +108,6 @@ class DigestOutcome:
     notification_sent: bool = False
     cv_sent: int = 0
     error: object = None
-
-
-@dataclass
-class Components:
-    """The pipeline's object graph.
-
-    Deliberately mutable: a ``configure`` function may either return
-    ``dataclasses.replace(defaults, ...)`` or assign fields on ``defaults`` in
-    place, and both are supported. Nothing in this package mutates a graph it
-    was handed — ``composition.rebind_defaults`` builds a new one with
-    ``replace`` — so an author's object is never modified behind their back.
-    """
-
-    prompts: object
-    llm: object
-    profile: CandidateProfile
-    cv_renderer: object
-    output_renderer: object
-    output_backend: object
-    candidate_filter: object = None  # optional callable(job) -> bool
 
 
 class DefaultPromptSet:
@@ -489,8 +468,8 @@ def _default_prompts(settings: object) -> object:
     ``prompt_revision`` (falls back to :class:`DefaultPromptSet` rather than
     raising here): the combination is a *policy* error, not a construction
     error, so it is rejected once with a named message by
-    ``composition._validate_environment`` rather than by an incidental
-    exception from this constructor.
+    ``runtime.preflight`` rather than by an incidental exception from this
+    constructor.
 
     A conventional filename absent from the directory is passed through as
     "" so :class:`FilePromptSet` applies its own per-prompt fallback, exactly
@@ -514,33 +493,9 @@ def _default_prompts(settings: object) -> object:
     )
 
 
-def default_components(
-    settings: object,
-    *,
-    prompts: object = None,
-    llm: object = None,
-    telegram: object = None,
-) -> Components:
-    """Construct the side-effect-free built-in object graph for ``settings``."""
-    from .llm.clients import LLMClient
-
-    prompts = prompts or _default_prompts(settings)
-    llm = llm or LLMClient.from_config(settings)
-    profile = CandidateProfile.from_settings(settings)
-    output_renderer, output_backend = _default_output_pair(settings, telegram)
-    return Components(
-        prompts=prompts,
-        llm=llm,
-        profile=profile,
-        cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
-        output_renderer=output_renderer,
-        output_backend=output_backend,
-    )
-
-
 __all__ = [
     "CVArtifact",
-    "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
-    "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
-    "default_components",
+    "CandidateProfile", "DefaultCVRenderer", "DefaultOutputBackend",
+    "DefaultOutputRenderer", "DefaultPromptSet", "DeliveryOutcome",
+    "DigestOutcome", "FilePromptSet", "LatexCompiler",
 ]

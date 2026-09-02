@@ -1,5 +1,5 @@
-"""Composition used by tests that do not explicitly exercise configuration."""
+"""Escape hatch used by tests that do not explicitly exercise configuration."""
 
 
-def configure(defaults, settings):
-    return defaults
+def configure(runtime, settings):
+    return runtime

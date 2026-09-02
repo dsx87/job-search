@@ -30,6 +30,7 @@ import urllib.request
 
 from ..config import (
     ANTHROPIC_MAX_TOKENS,
+    ConfigurationError,
     LLM_BREAKER_THRESHOLD,
     LLM_CIRCUIT_BREAK_STATUS,
     LLM_FALLBACK_MODEL,
@@ -502,11 +503,23 @@ class LLMClient:
 
     @classmethod
     def from_config(cls, cfg) -> "LLMClient":
-        """Build both providers from a PipelineConfig-shaped object via the factory."""
+        """Build both providers from a PipelineConfig-shaped object via the factory.
+
+        auth_mode validation lives here — fired on every build, not only at
+        ``--check-config`` — rather than in the (deleted) composition
+        validator: ``auth_mode`` was previously forwarded only when the
+        scheme resolved to ``openai``, so a ``gemini`` + ``none`` combination
+        was silently ignored instead of rejected.
+        """
         primary_scheme = str(cfg.llm_primary_scheme or "").strip().lower()
+        primary_auth_mode = getattr(cfg, "llm_primary_auth_mode", "bearer")
+        if primary_auth_mode not in ("bearer", "none"):
+            raise ConfigurationError("llm_primary_auth_mode must be 'bearer' or 'none'")
         primary_options = {}
         if _SCHEME_ALIASES.get(primary_scheme, primary_scheme) == "openai":
-            primary_options["auth_mode"] = getattr(cfg, "llm_primary_auth_mode", "bearer")
+            primary_options["auth_mode"] = primary_auth_mode
+        elif primary_auth_mode == "none":
+            raise ConfigurationError("llm_primary_auth_mode='none' requires the openai scheme")
         primary = build_provider(
             cfg.llm_primary_scheme,
             api_key=cfg.llm_primary_api_key,
@@ -516,11 +529,17 @@ class LLMClient:
         )
         fallback = None
         fallback_auth_mode = getattr(cfg, "llm_fallback_auth_mode", "bearer")
+        if fallback_auth_mode not in ("bearer", "none"):
+            raise ConfigurationError("llm_fallback_auth_mode must be 'bearer' or 'none'")
         if cfg.llm_fallback_api_key or fallback_auth_mode == "none":
             fallback_scheme = str(cfg.llm_fallback_scheme or "").strip().lower()
             fallback_options = {}
             if _SCHEME_ALIASES.get(fallback_scheme, fallback_scheme) == "openai":
                 fallback_options["auth_mode"] = fallback_auth_mode
+            elif fallback_auth_mode == "none":
+                raise ConfigurationError(
+                    "llm_fallback_auth_mode='none' requires the openai scheme"
+                )
             fallback = build_provider(
                 cfg.llm_fallback_scheme,
                 api_key=cfg.llm_fallback_api_key,
