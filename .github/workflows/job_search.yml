@@ -77,11 +77,12 @@ jobs:
         if: vars.SECTIONS_PY != ''
         env:
           SECTIONS_PY: ${{ vars.SECTIONS_PY }}
+          SECTIONS_FILE: ${{ vars.SECTIONS_FILE || 'sections.py' }}
         run: |
-          printf '%s' "$SECTIONS_PY" > sections.py
-          python3 - <<'PY'
+          printf '%s' "$SECTIONS_PY" > "$SECTIONS_FILE"
+          python3 - <<PY
           from job_search.digest.section_config import load_sections
-          sections, error = load_sections("sections.py")
+          sections, error = load_sections("$SECTIONS_FILE")
           print("Digest sections:", [s.name for s in sections] or "(none)")
           if error:
               print("::warning title=Digest sections::" + error)
