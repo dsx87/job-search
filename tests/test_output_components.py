@@ -14,7 +14,7 @@ from job_search.models import Job
 
 def test_filesystem_backend_writes_rendered_digest_and_generic_artifacts(tmp_path):
     renderer = HtmlOutputRenderer()
-    backend = FilesystemOutputBackend(tmp_path, cv_mode="required")
+    backend = FilesystemOutputBackend(tmp_path, require_artifact=True)
     context = sample_context()
     artifact = CVArtifact("candidate.txt", "text/plain", b"candidate data")
 
@@ -28,7 +28,7 @@ def test_filesystem_backend_writes_rendered_digest_and_generic_artifacts(tmp_pat
 
 
 def test_filesystem_digest_failure_keeps_previous_generation(monkeypatch, tmp_path):
-    backend = FilesystemOutputBackend(tmp_path, cv_mode="required")
+    backend = FilesystemOutputBackend(tmp_path, require_artifact=True)
     old_artifacts = [
         CVArtifact("one.txt", "text/plain", b"old one"),
         CVArtifact("two.txt", "text/plain", b"old two"),

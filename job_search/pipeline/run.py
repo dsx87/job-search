@@ -484,8 +484,13 @@ def _deliver_digest(
     notifier = _OutputNoticeAdapter(
         components.output_renderer, components.output_backend
     )
-    telegram_markup = components.output_renderer.kind == "telegram"
-    cv_required = components.output_backend.cv_mode == "required"
+    # Plain locals from cfg rather than object attributes: OUTPUT_MODE /
+    # OUTPUT_CV_MODE choose the renderer/backend pair, so this is the same
+    # answer the pair was built from. (Becomes rt.telegram_markup /
+    # rt.cv_required once Runtime exists, so a hatch-swapped pair can flip
+    # them — see C10.)
+    telegram_markup = getattr(cfg, "output_mode", "telegram") == "telegram"
+    cv_required = getattr(cfg, "output_cv_mode", "required") == "required"
     ctx = _digest_context(
         components, cfg, seen, stats, today, prepared, prepared_reviews,
         uncertain, newly_deferred, source_warning, notifier,
@@ -612,6 +617,9 @@ def run_daily(cfg, test: bool = False) -> int:
     notifier = _OutputNoticeAdapter(
         components.output_renderer, components.output_backend
     )
+    # See the matching comment in _deliver_digest.
+    telegram_markup = getattr(cfg, "output_mode", "telegram") == "telegram"
+    cv_required = getattr(cfg, "output_cv_mode", "required") == "required"
     state_mutation_allowed = False
     exit_code = 0
     try:
@@ -645,10 +653,7 @@ def run_daily(cfg, test: bool = False) -> int:
         preflight_profile = getattr(
             getattr(components, "cv_renderer", None), "profile", None
         )
-        if (
-            components.output_backend.cv_mode == "required"
-            and isinstance(preflight_profile, CandidateProfile)
-        ):
+        if cv_required and isinstance(preflight_profile, CandidateProfile):
             load_tailoring_instructions(
                 getattr(cfg, "cv_tailoring_prompt_file", CV_TAILORING_PROMPT_FILE)
             )
@@ -713,7 +718,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 print("Done.", flush=True)
                 return 0
             artifact = None
-            if components.output_backend.cv_mode == "required":
+            if cv_required:
                 artifact = components.cv_renderer.render_tailored(
                     llm, d, evaluation
                 )
@@ -914,7 +919,6 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
         # Persist the non-fits and uncertain jobs captured above in one write.
         _save_seen_for(cfg, seen)
-        cv_required = components.output_backend.cv_mode == "required"
         review_to_tailor = uncertain if cfg.digest_delivery and cv_required else []
         print(
             "{} fit(s) and {} review job(s) to tailor.".format(
@@ -1059,7 +1063,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     outcome = DeliveryOutcome(
                         error=exc,
                         notification_satisfied=retry_state.notified,
-                        cv_required=components.output_backend.cv_mode == "required",
+                        cv_required=cv_required,
                     )
                 stats.notification_sent += int(outcome.notification_sent)
                 stats.cv_sent += int(outcome.cv_sent)
@@ -1088,7 +1092,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 stats,
                 source_warning,
                 cv_required=cv_required,
-                telegram_markup=components.output_renderer.kind == "telegram",
+                telegram_markup=telegram_markup,
             )
             try:
                 notifier.send_message(summary)

@@ -41,6 +41,23 @@ OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
 # digest — the feature is opt-in and costs nothing until it exists.
 SECTIONS_FILE = "sections.py"
 
+# ── Output delivery ───────────────────────────────────────────────────────────
+# OUTPUT_MODE chooses the renderer/backend pair as a unit — "telegram" (the
+# original behavior: Telegram notifications + documents), "html" (a
+# filesystem generation with an HTML digest), or "plain" (a filesystem
+# generation with a plain-text digest, for scripts/notifications that don't
+# render markup). Replaces constructing a custom OutputRenderer/OutputBackend
+# pair in job_search_config.py for the common cases.
+OUTPUT_MODE = "telegram"
+# Directory a non-Telegram OUTPUT_MODE publishes into (FilesystemOutputBackend).
+# Unused when OUTPUT_MODE=telegram.
+OUTPUT_DIR = ""
+# "required" (default) fails delivery without a verified CV artifact, same as
+# today; "disabled" skips CV work entirely — the run only ever renders
+# notices/digests. OUTPUT_MODE=telegram always requires "required": Telegram
+# delivery has no text-only path (see preflight in composition.py).
+OUTPUT_CV_MODE = "required"
+
 # ── Candidate identity ────────────────────────────────────────────────────────
 # The name on the CV and the prefix of every tailored PDF. These were class
 # defaults on CandidateProfile, which made the one thing most obviously *not*
@@ -246,6 +263,9 @@ class PipelineConfig:
     sections_file: str = SECTIONS_FILE
     cv_display_name: str = CV_DISPLAY_NAME
     cv_filename_prefix: str = CV_FILENAME_PREFIX
+    output_mode: str = OUTPUT_MODE
+    output_dir: str = OUTPUT_DIR
+    output_cv_mode: str = OUTPUT_CV_MODE
     # Source selection: names forced ON (adds default-off sources like
     # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
     # today's default-on set, so CI with no env is unchanged. See
@@ -307,6 +327,9 @@ class PipelineConfig:
             cv_filename_prefix=_non_empty_env(
                 "CV_FILENAME_PREFIX", CV_FILENAME_PREFIX
             ),
+            output_mode=_non_empty_env("OUTPUT_MODE", OUTPUT_MODE).lower(),
+            output_dir=_non_empty_env("OUTPUT_DIR", OUTPUT_DIR),
+            output_cv_mode=_non_empty_env("OUTPUT_CV_MODE", OUTPUT_CV_MODE).lower(),
             eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
             tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),

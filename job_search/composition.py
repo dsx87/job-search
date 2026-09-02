@@ -16,8 +16,6 @@ from .components import (
     Components,
     DefaultCVRenderer,
     LLMService,
-    OutputBackend,
-    OutputRenderer,
     PromptSet,
     default_components,
 )
@@ -85,8 +83,10 @@ def _validate_shape(components: Components, problems: list) -> None:
     if not isinstance(components.profile, CandidateProfile):
         problems.append("profile must be a CandidateProfile")
     _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
-    _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
-    _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
+    # output_renderer / output_backend are no longer checked against a shared
+    # protocol: OUTPUT_MODE chooses the built-in pair as a unit, so the two
+    # can no longer disagree, and a hatch-supplied pair is the one place this
+    # refactor leaves deliberately unvalidated (see module docstring).
 
     # Duck-typed rather than keyed on DefaultCVRenderer: any renderer that
     # exposes a compiler is making the same promise about it, and a validator
@@ -98,29 +98,6 @@ def _validate_shape(components: Components, problems: list) -> None:
             problems.append("CV renderer compiler does not implement CVCompiler")
         elif not str(getattr(compiler, "executable", "") or "").strip():
             problems.append("CV renderer compiler executable must be nonempty")
-
-    renderer_kind = getattr(components.output_renderer, "kind", "")
-    accepted_kinds = tuple(getattr(components.output_backend, "accepted_renderer_kinds", ()))
-    if renderer_kind not in accepted_kinds:
-        problems.append(
-            "output renderer kind {!r} is not accepted by backend ({})".format(
-                renderer_kind, ", ".join(accepted_kinds) or "none"
-            )
-        )
-
-    cv_mode = getattr(components.output_backend, "cv_mode", "")
-    if cv_mode not in ("required", "disabled"):
-        problems.append("output backend cv_mode must be 'required' or 'disabled'")
-    if cv_mode == "required":
-        produced = set(getattr(components.cv_renderer, "media_types", ()))
-        accepted = set(getattr(components.output_backend, "accepted_media_types", ()))
-        if not produced.intersection(accepted):
-            problems.append(
-                "CV artifact media types ({}) are not accepted by the output backend ({})".format(
-                    ", ".join(sorted(produced)) or "none",
-                    ", ".join(sorted(accepted)) or "none",
-                )
-            )
 
 
 def _validate_environment(
@@ -148,16 +125,23 @@ def _validate_environment(
         if getattr(fallback, "scheme", "") != "openai":
             problems.append("llm_fallback_auth_mode='none' requires the openai scheme")
 
-    cv_mode = getattr(components.output_backend, "cv_mode", "")
-    if command == "tailor" and cv_mode != "required":
-        problems.append("--tailor requires a CV-capable output backend")
+    # OUTPUT_MODE/OUTPUT_CV_MODE are settings, not object attributes: the
+    # built-in output_backend no longer carries a cv_mode of its own (see
+    # FilesystemOutputBackend.require_artifact), and a hatch-supplied backend
+    # is trusted to match whatever it was configured to match.
+    output_mode = getattr(settings, "output_mode", "telegram")
+    cv_mode = getattr(settings, "output_cv_mode", "required")
+    # TODO(C10): move into runtime.preflight, keyed on rt.cv_required /
+    # rt.needs_telegram, once those exist — see runtime.py design notes.
+    if output_mode == "telegram" and cv_mode != "required":
+        problems.append("OUTPUT_MODE=telegram requires OUTPUT_CV_MODE=required")
 
     if command in ("daily", "tailor"):
         if getattr(components.llm, "requires_api_key", False) and not getattr(
             settings, "llm_primary_api_key", ""
         ):
             problems.append("the configured primary LLM requires an API key")
-        if getattr(components.output_backend, "requires_telegram_credentials", False):
+        if output_mode == "telegram":
             if not getattr(settings, "telegram_bot_token", "") or not getattr(
                 settings, "telegram_chat_id", ""
             ):
@@ -308,12 +292,9 @@ def redacted_configuration(settings: object, components: Components) -> str:
         name: type(getattr(components, name)).__name__
         for name in Components.__dataclass_fields__
     }
-    values["components"]["output_renderer"] += " ({})".format(
-        getattr(components.output_renderer, "kind", "unknown")
-    )
-    values["components"]["output_backend"] += " (cv_mode={})".format(
-        getattr(components.output_backend, "cv_mode", "unknown")
-    )
+    # output_mode / output_cv_mode already surface as top-level settings
+    # (asdict(settings) above) — the pair is chosen by OUTPUT_MODE now, so
+    # there is nothing left on the components themselves worth annotating.
     return json.dumps(values, indent=2, sort_keys=True)
 
 

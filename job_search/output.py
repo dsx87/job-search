@@ -15,8 +15,6 @@ from .models import coerce_job
 class HtmlOutputRenderer:
     """Pure HTML presentation suitable for files, sites, or custom adapters."""
 
-    kind = "html"
-
     def render_notice(self, notice, **context):
         if context.get("level") == "error":
             return "<p><strong>{}:</strong> {}</p>".format(
@@ -40,8 +38,6 @@ class HtmlOutputRenderer:
 
 class PlainTextOutputRenderer:
     """Pure portable text presentation for message-oriented adapters."""
-
-    kind = "plain"
 
     def render_notice(self, notice, **context):
         if context.get("level") == "error":
@@ -102,18 +98,9 @@ def _atomic_write(path, content):
 class FilesystemOutputBackend:
     """Publish renderer output and artifacts as one filesystem generation."""
 
-    accepted_renderer_kinds = ("html", "plain")
-    accepted_media_types = (
-        "application/pdf", "application/zip", "application/octet-stream",
-        "text/plain", "text/html",
-    )
-    requires_telegram_credentials = False
-
-    def __init__(self, directory, cv_mode="required"):
-        if cv_mode not in ("required", "disabled"):
-            raise ValueError("cv_mode must be 'required' or 'disabled'")
+    def __init__(self, directory, require_artifact=True):
         self.directory = os.path.abspath(os.fspath(directory))
-        self.cv_mode = cv_mode
+        self.require_artifact = bool(require_artifact)
         self._lock = threading.Lock()
 
     @property
@@ -254,7 +241,7 @@ class FilesystemOutputBackend:
 
     def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
         try:
-            if self.cv_mode == "required" and artifact is None:
+            if self.require_artifact and artifact is None:
                 raise ValueError("a CV artifact is required for filesystem delivery")
             content = rendered if isinstance(rendered, bytes) else str(rendered).encode("utf-8")
             writes = [("latest-fit.html", content)]
@@ -267,12 +254,12 @@ class FilesystemOutputBackend:
                 )
             self._publish(writes)
         except Exception as exc:
-            return DeliveryOutcome(error=exc, cv_required=self.cv_mode == "required")
+            return DeliveryOutcome(error=exc, cv_required=self.require_artifact)
         return DeliveryOutcome(
             notification_sent=not notification_already_sent,
             notification_satisfied=True,
             cv_sent=artifact is not None,
-            cv_required=self.cv_mode == "required",
+            cv_required=self.require_artifact,
         )
 
     def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):

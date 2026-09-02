@@ -128,23 +128,14 @@ class CVRenderer(Protocol):
     def render_base(self, llm: LLMService = None) -> CVArtifact: ...
 
 
-@runtime_checkable
-class OutputRenderer(Protocol):
-    kind: str
-
-    def render_notice(self, notice: object, **context: object) -> object: ...
-    def render_fit(self, job: object, evaluation: object) -> object: ...
-    def render_digest(self, context: object) -> object: ...
-
-
 @dataclass(frozen=True)
 class DeliveryOutcome:
     """Completion receipt for one delivered fit.
 
-    Lives here, beside DigestOutcome, because it is half of the OutputBackend
-    contract: a third-party backend has to return one, and reaching into
-    ``pipeline.stages`` for it made a public contract depend on an internal
-    module. ``pipeline.stages`` re-exports it for existing callers.
+    Lives here, beside DigestOutcome, because it is half of the output
+    backend's duck-typed contract: an adapter has to return one, and reaching
+    into ``pipeline.stages`` for it made a public contract depend on an
+    internal module. ``pipeline.stages`` re-exports it for existing callers.
     """
 
     notification_sent: bool = False
@@ -172,23 +163,6 @@ class DigestOutcome:
     error: object = None
 
 
-@runtime_checkable
-class OutputBackend(Protocol):
-    accepted_renderer_kinds: Sequence[str]
-    accepted_media_types: Sequence[str]
-    cv_mode: str
-
-    def deliver_notice(self, rendered: object) -> object: ...
-    def deliver_fit(
-        self, rendered: object, artifact: CVArtifact = None,
-        notification_already_sent: bool = False, *, job: object = None,
-    ) -> DeliveryOutcome: ...
-    def deliver_digest(
-        self, rendered: object, artifacts: Sequence[CVArtifact] = (),
-        *, context: object = None, date: object = None,
-    ) -> DigestOutcome: ...
-
-
 @dataclass
 class Components:
     """The pipeline's object graph.
@@ -204,8 +178,8 @@ class Components:
     llm: LLMService
     profile: CandidateProfile
     cv_renderer: CVRenderer
-    output_renderer: OutputRenderer
-    output_backend: OutputBackend
+    output_renderer: object
+    output_backend: object
     candidate_filter: object = None  # optional callable(job) -> bool
 
 
@@ -369,8 +343,6 @@ class FilePromptSet:
 
 
 class DefaultOutputRenderer:
-    kind = "telegram"
-
     def render_notice(self, notice: object, **context: object) -> str:
         if context.get("level") == "error":
             import html
@@ -474,11 +446,6 @@ class DefaultCVRenderer:
 
 
 class DefaultOutputBackend:
-    accepted_renderer_kinds = ("telegram",)
-    accepted_media_types = ("application/pdf", "application/zip")
-    cv_mode = "required"
-    requires_telegram_credentials = True
-
     def __init__(self, telegram: object, telegraph_token: str = ""):
         self.telegram = telegram
         self.telegraph_token = str(telegraph_token or "")
@@ -535,6 +502,40 @@ class DefaultOutputBackend:
         )
 
 
+def _default_output_pair(settings: object, telegram: object):
+    """Choose the built-in renderer/backend pair for ``settings.output_mode``.
+
+    The pair is chosen together rather than as two independently swappable
+    slots, so the kind-compatibility question ("does this renderer's output
+    make sense to this backend?") is structurally impossible to get wrong for
+    the built-in graph — there is no seam left where the two could disagree.
+    """
+    from .notify.telegram import TelegramClient
+
+    mode = getattr(settings, "output_mode", "telegram")
+    if mode == "telegram":
+        telegram = telegram or TelegramClient(
+            settings.telegram_bot_token, settings.telegram_chat_id
+        )
+        return DefaultOutputRenderer(), DefaultOutputBackend(
+            telegram, getattr(settings, "telegraph_access_token", "")
+        )
+
+    from .output import FilesystemOutputBackend, HtmlOutputRenderer, PlainTextOutputRenderer
+
+    if mode == "html":
+        renderer = HtmlOutputRenderer()
+    elif mode == "plain":
+        renderer = PlainTextOutputRenderer()
+    else:
+        raise ValueError("Unknown OUTPUT_MODE: {!r}".format(mode))
+    backend = FilesystemOutputBackend(
+        getattr(settings, "output_dir", "") or ".",
+        require_artifact=getattr(settings, "output_cv_mode", "required") == "required",
+    )
+    return renderer, backend
+
+
 def default_components(
     settings: object,
     *,
@@ -544,23 +545,18 @@ def default_components(
 ) -> Components:
     """Construct the side-effect-free built-in object graph for ``settings``."""
     from .llm.clients import LLMClient
-    from .notify.telegram import TelegramClient
 
     prompts = prompts or DefaultPromptSet()
     llm = llm or LLMClient.from_config(settings)
-    telegram = telegram or TelegramClient(
-        settings.telegram_bot_token, settings.telegram_chat_id
-    )
     profile = CandidateProfile.from_settings(settings)
+    output_renderer, output_backend = _default_output_pair(settings, telegram)
     return Components(
         prompts=prompts,
         llm=llm,
         profile=profile,
         cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
-        output_renderer=DefaultOutputRenderer(),
-        output_backend=DefaultOutputBackend(
-            telegram, getattr(settings, "telegraph_access_token", "")
-        ),
+        output_renderer=output_renderer,
+        output_backend=output_backend,
     )
 
 
@@ -568,6 +564,6 @@ __all__ = [
     "CVArtifact", "CVCompiler", "CVRenderer",
     "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
     "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
-    "LLMProvider", "LLMService", "OutputBackend",
-    "OutputRenderer", "PromptSet", "default_components",
+    "LLMProvider", "LLMService",
+    "PromptSet", "default_components",
 ]

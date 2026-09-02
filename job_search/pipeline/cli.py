@@ -33,6 +33,8 @@ def _notify_composed_error(components, exc):
 
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
+    if getattr(cfg, "output_cv_mode", "required") != "required":
+        raise ConfigurationError("--tailor requires a CV-capable output backend")
     components = load_components(cfg, command="tailor")
 
     company = (args.company or "").strip()
@@ -62,8 +64,8 @@ def run_tailor(args, cfg) -> None:
     # hand both to the backend. The built-in Telegram backend turns that into
     # the message-plus-document pair it always sent.
     try:
-        # No cv_mode branch: validate_components already refuses --tailor on a
-        # backend that cannot carry a CV, so there is always one to render.
+        # No cv_mode branch: the guard above already refuses --tailor when
+        # OUTPUT_CV_MODE is not "required", so there is always a CV to render.
         artifact = components.cv_renderer.render_tailored(components.llm, job)
         rendered = components.output_renderer.render_fit(
             job, {"reason": MANUAL_TAILOR_REASON}

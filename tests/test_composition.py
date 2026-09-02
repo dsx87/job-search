@@ -9,7 +9,11 @@ from job_search.composition import (
     load_components,
     redacted_configuration,
 )
-from job_search.components import default_components
+from job_search.components import (
+    DefaultOutputBackend,
+    DefaultOutputRenderer,
+    default_components,
+)
 from job_search.config import PipelineConfig
 
 
@@ -24,8 +28,8 @@ def test_missing_optional_default_uses_builtin_components(tmp_path, monkeypatch)
     components = load_components(PipelineConfig(), command="list")
 
     assert isinstance(components, Components)
-    assert components.output_renderer.kind == "telegram"
-    assert components.output_backend.cv_mode == "required"
+    assert isinstance(components.output_renderer, DefaultOutputRenderer)
+    assert isinstance(components.output_backend, DefaultOutputBackend)
 
 
 def test_explicit_missing_config_is_an_error(tmp_path, monkeypatch):
@@ -148,25 +152,6 @@ def test_invalid_config_modules_fail_with_context(tmp_path, monkeypatch, source,
         load_components(PipelineConfig(), command="check")
 
 
-def test_renderer_backend_kind_mismatch_fails_validation(tmp_path, monkeypatch):
-    config_file = tmp_path / "mismatch.py"
-    config_file.write_text(
-        "from dataclasses import replace\n"
-        "class Renderer:\n"
-        "    kind = 'html'\n"
-        "    def render_notice(self, *a, **k): return ''\n"
-        "    def render_fit(self, *a, **k): return ''\n"
-        "    def render_digest(self, *a, **k): return ''\n"
-        "def configure(defaults, settings):\n"
-        "    return replace(defaults, output_renderer=Renderer())\n",
-        encoding="utf-8",
-    )
-    _configured_env(monkeypatch, config_file)
-
-    with pytest.raises(ConfigurationError, match="renderer kind"):
-        load_components(PipelineConfig(), command="check")
-
-
 def test_profile_must_be_a_candidate_profile(tmp_path, monkeypatch):
     config_file = tmp_path / "bad_profile.py"
     config_file.write_text(
@@ -179,28 +164,6 @@ def test_profile_must_be_a_candidate_profile(tmp_path, monkeypatch):
 
     with pytest.raises(ConfigurationError, match="CandidateProfile"):
         load_components(PipelineConfig(), command="check")
-
-
-def test_tailor_rejects_text_only_backend_during_validation(tmp_path, monkeypatch):
-    config_file = tmp_path / "text_only.py"
-    config_file.write_text(
-        "from dataclasses import replace\n"
-        "class Backend:\n"
-        "    accepted_renderer_kinds = ('telegram',)\n"
-        "    accepted_media_types = ()\n"
-        "    cv_mode = 'disabled'\n"
-        "    requires_telegram_credentials = False\n"
-        "    def deliver_notice(self, *a, **k): pass\n"
-        "    def deliver_fit(self, *a, **k): pass\n"
-        "    def deliver_digest(self, *a, **k): pass\n"
-        "def configure(defaults, settings):\n"
-        "    return replace(defaults, output_backend=Backend())\n",
-        encoding="utf-8",
-    )
-    _configured_env(monkeypatch, config_file)
-
-    with pytest.raises(ConfigurationError, match="--tailor requires"):
-        load_components(PipelineConfig(), command="tailor")
 
 
 def test_redacted_configuration_hides_all_secret_values(monkeypatch):
@@ -230,12 +193,16 @@ def test_custom_text_backend_needs_no_llm_key_or_telegram_credentials(tmp_path, 
         "from job_search.output import FilesystemOutputBackend, PlainTextOutputRenderer\n"
         "def configure(defaults, settings):\n"
         "    return replace(defaults, output_renderer=PlainTextOutputRenderer(), "
-        "output_backend=FilesystemOutputBackend({!r}, cv_mode='disabled'))\n".format(
+        "output_backend=FilesystemOutputBackend({!r}, require_artifact=False))\n".format(
             str(tmp_path / "out")
         ),
         encoding="utf-8",
     )
     _configured_env(monkeypatch, config_file)
+    # OUTPUT_MODE/OUTPUT_CV_MODE must agree with what the hatch built above —
+    # the telegram-credentials and OUTPUT_MODE=telegram+disabled checks are
+    # keyed on these settings, not on the swapped-in objects, until the
+    # escape hatch gets a way to flip them itself (Runtime, C10).
     settings = PipelineConfig(
         llm_primary_scheme="openai",
         llm_primary_model="local-model",
@@ -244,11 +211,13 @@ def test_custom_text_backend_needs_no_llm_key_or_telegram_credentials(tmp_path, 
         llm_primary_api_key="",
         telegram_bot_token="",
         telegram_chat_id="",
+        output_mode="plain",
+        output_cv_mode="disabled",
     )
 
     components = load_components(settings, command="daily")
 
-    assert components.output_backend.cv_mode == "disabled"
+    assert components.output_backend.require_artifact is False
 
 
 def test_no_auth_mode_is_rejected_for_non_openai_fallback(tmp_path, monkeypatch):

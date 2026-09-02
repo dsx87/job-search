@@ -604,6 +604,7 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
     cfg = make_config(digest_delivery=True)
     cfg.telegram_bot_token = ""
     cfg.telegram_chat_id = ""
+    cfg.output_cv_mode = "disabled"
 
     assert run.run_daily(cfg) == 0
     assert deliveries == [("digest:1", ())]
@@ -681,16 +682,20 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
         output_renderer=Renderer(),
         output_backend=Backend(),
     )
-    components.output_backend.cv_mode = cv_mode
     payload = {}
     if cv_mode == "required":
         payload["artifact"] = CVArtifact(
             "candidate.pdf", "application/pdf", b"PDF"
         )
     stats = run.RunStats(fits=1)
+    cfg = make_config(digest_delivery=True)
+    cfg.output_cv_mode = cv_mode
+    # Markup now follows the configured output mode rather than the renderer's
+    # kind, so a plain renderer needs the matching setting to stay markup-free.
+    cfg.output_mode = "plain"
     completed = run._deliver_digest(
         components,
-        make_config(digest_delivery=True),
+        cfg,
         seen,
         stats,
         datetime.date(2026, 8, 20),
@@ -769,7 +774,9 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
         },
     )
 
-    assert run.run_daily(make_config(digest_delivery=True)) == 1
+    cfg = make_config(digest_delivery=True)
+    cfg.output_cv_mode = "disabled"
+    assert run.run_daily(cfg) == 1
 
 
 def test_configured_digest_cv_stats_count_fit_artifacts_not_review_artifacts(
@@ -875,9 +882,12 @@ def test_configured_empty_digest_commits_prior_deferral_without_batch_delivery(
         output_backend=Backend(),
     )
 
+    cfg = make_config(digest_delivery=True)
+    cfg.output_mode = "plain"
+    cfg.output_cv_mode = "disabled"
     completed = run._deliver_digest(
         components,
-        make_config(digest_delivery=True),
+        cfg,
         seen,
         run.RunStats(),
         datetime.date(2026, 8, 20),
@@ -1048,6 +1058,7 @@ def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypat
     cfg = make_config(digest_delivery=False)
     cfg.telegram_bot_token = ""
     cfg.telegram_chat_id = ""
+    cfg.output_cv_mode = "disabled"
     assert run.run_daily(cfg) == 0
 
     assert "iOS Engineer" in messages[0]
@@ -1496,7 +1507,9 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
     monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
-    assert run.run_daily(make_config(), test=True) == 0
+    cfg = make_config()
+    cfg.output_cv_mode = "disabled"
+    assert run.run_daily(cfg, test=True) == 0
     assert calls == [
         ("filter", "Configured role"),
         ("evaluate", "Configured role"),
