@@ -13,7 +13,6 @@ from dataclasses import asdict, replace
 from .components import (
     CVCompiler,
     CVRenderer,
-    CandidateFilter,
     CandidateProfile,
     Components,
     DefaultCVRenderer,
@@ -96,7 +95,8 @@ def _validate_shape(components: Components, problems: list) -> None:
     """
     _require_protocol("prompts", components.prompts, PromptSet, problems)
     _require_protocol("llm", components.llm, LLMService, problems)
-    _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
+    if components.candidate_filter is not None and not callable(components.candidate_filter):
+        problems.append("candidate_filter must be None or a callable(job) -> bool")
     if not isinstance(components.profile, CandidateProfile):
         problems.append("profile must be a CandidateProfile")
     _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)

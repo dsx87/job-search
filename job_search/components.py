@@ -50,13 +50,6 @@ class LLMService(Protocol):
     def usage_summary(self) -> str: ...
 
 
-@runtime_checkable
-class CandidateFilter(Protocol):
-    revision: str
-
-    def include(self, job: object) -> bool: ...
-
-
 @dataclass(frozen=True)
 class CandidateProfile:
     """Public candidate identity and CV-policy configuration."""
@@ -199,18 +192,11 @@ class Components:
 
     prompts: PromptSet
     llm: LLMService
-    candidate_filter: CandidateFilter
     profile: CandidateProfile
     cv_renderer: CVRenderer
     output_renderer: OutputRenderer
     output_backend: OutputBackend
-
-
-class AllowAllCandidates:
-    revision = "allow-all-v1"
-
-    def include(self, job: object) -> bool:
-        return True
+    candidate_filter: object = None  # optional callable(job) -> bool
 
 
 class DefaultPromptSet:
@@ -574,7 +560,6 @@ def default_components(
     return Components(
         prompts=prompts,
         llm=llm,
-        candidate_filter=AllowAllCandidates(),
         profile=profile,
         cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
         output_renderer=DefaultOutputRenderer(),
@@ -585,7 +570,7 @@ def default_components(
 
 
 __all__ = [
-    "CVArtifact", "CVCompiler", "CVRenderer", "CandidateFilter",
+    "CVArtifact", "CVCompiler", "CVRenderer",
     "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
     "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
     "LLMProvider", "LLMService", "OutputBackend",

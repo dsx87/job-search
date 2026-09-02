@@ -41,17 +41,17 @@ def test_present_default_config_is_loaded_by_path(tmp_path, monkeypatch):
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
     Path("job_search_config.py").write_text(
         "from dataclasses import replace\n"
+        "def allow_all(job):\n"
+        "    return True\n"
         "def configure(defaults, settings):\n"
-        "    return replace(defaults, candidate_filter=AllowAll())\n"
-        "class AllowAll:\n"
-        "    revision = 'custom-filter-v1'\n"
-        "    def include(self, job): return True\n",
+        "    return replace(defaults, candidate_filter=allow_all)\n",
         encoding="utf-8",
     )
 
     components = load_components(PipelineConfig(), command="list")
 
-    assert components.candidate_filter.revision == "custom-filter-v1"
+    assert components.candidate_filter.__name__ == "allow_all"
+    assert components.candidate_filter(object()) is True
 
 
 def test_direct_module_loading_registers_module_for_dataclasses(tmp_path, monkeypatch):
@@ -62,7 +62,7 @@ def test_direct_module_loading_registers_module_for_dataclasses(tmp_path, monkey
         "@dataclass\n"
         "class Filter:\n"
         "    revision: str = 'dataclass-filter-v1'\n"
-        "    def include(self, job): return True\n"
+        "    def __call__(self, job): return True\n"
         "def configure(defaults, settings):\n"
         "    return replace(defaults, candidate_filter=Filter())\n",
         encoding="utf-8",
@@ -72,6 +72,7 @@ def test_direct_module_loading_registers_module_for_dataclasses(tmp_path, monkey
     components = load_components(PipelineConfig(), command="check")
 
     assert components.candidate_filter.revision == "dataclass-filter-v1"
+    assert components.candidate_filter(object()) is True
 
 
 def test_configure_receives_defaults_and_exact_settings(tmp_path, monkeypatch):

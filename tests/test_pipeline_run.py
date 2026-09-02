@@ -157,7 +157,6 @@ def configured_plain_components(messages):
     return SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
         cv_renderer=SimpleNamespace(),
         output_renderer=PlainTextOutputRenderer(),
         output_backend=RecordingTextBackend(messages.append),
@@ -344,18 +343,15 @@ def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
     telegram, _saved = install_daily_fakes(monkeypatch, [job])
     calls = []
 
-    class RejectAll:
-        revision = "reject-all-v1"
-
-        def include(self, candidate):
-            calls.append(("filter", candidate.title))
-            return False
+    def reject_all(candidate):
+        calls.append(("filter", candidate.title))
+        return False
 
     llm = SimpleNamespace(usage_summary=lambda: "usage")
     components = SimpleNamespace(
         llm=llm,
         prompts=object(),
-        candidate_filter=RejectAll(),
+        candidate_filter=reject_all,
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
@@ -381,12 +377,6 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
     configured_llm = SimpleNamespace(usage_summary=lambda: "usage")
     observed = []
 
-    class IncludeAll:
-        revision = "include-all-v1"
-
-        def include(self, candidate):
-            return True
-
     def fake_evaluate_job(llm, criteria, candidate, prompts=None):
         observed.append((llm, criteria, candidate.title))
         return {
@@ -397,7 +387,7 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
     components = SimpleNamespace(
         llm=configured_llm,
         prompts=object(),
-        candidate_filter=IncludeAll(),
+        candidate_filter=lambda candidate: True,
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
@@ -444,7 +434,6 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
     components = SimpleNamespace(
         llm=llm,
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
         cv_renderer=Renderer(),
         output_renderer=DigestRenderer(),
         output_backend=DefaultOutputBackend(telegram),
@@ -582,7 +571,6 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
             generate=lambda *_a, **_k: "summary",
         ),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
                 AssertionError("CV rendering must be skipped")
@@ -761,7 +749,6 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
             generate=lambda *_a, **_k: "summary",
         ),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
         cv_renderer=SimpleNamespace(),
         output_renderer=SimpleNamespace(
             kind="plain",
@@ -957,7 +944,6 @@ def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
         cv_renderer=SimpleNamespace(),
         output_renderer=renderer,
         output_backend=Backend(),
@@ -1008,7 +994,6 @@ def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _job: True),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: CVArtifact(
                 "candidate.pdf", "application/pdf", b"PDF"
@@ -1498,8 +1483,8 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(
-            include=lambda candidate: calls.append(("filter", candidate.title)) or True
+        candidate_filter=(
+            lambda candidate: calls.append(("filter", candidate.title)) or True
         ),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
@@ -1539,7 +1524,6 @@ def test_mode_preserves_custom_artifact_with_default_telegram_backend(monkeypatc
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
-        candidate_filter=SimpleNamespace(include=lambda _candidate: True),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: artifact
         ),

@@ -715,7 +715,8 @@ def run_daily(cfg, test: bool = False) -> int:
                     )
                 print("Done.", flush=True)
                 return 0
-            if not components.candidate_filter.include(d):
+            candidate_filter = getattr(components, "candidate_filter", None)
+            if candidate_filter is not None and not candidate_filter(d):
                 print("Test job excluded by the configured candidate filter.")
                 print("Done.", flush=True)
                 return 0
@@ -797,9 +798,10 @@ def run_daily(cfg, test: bool = False) -> int:
             if signature is not None:
                 record_evaluation(seen, job, signature, "deferred", today)
 
+        candidate_filter = getattr(components, "candidate_filter", None)
         for value in raw_jobs:
             job = coerce_job(value)
-            if not components.candidate_filter.include(job):
+            if candidate_filter is not None and not candidate_filter(job):
                 continue
             keys = job_identity_keys(job)
             signature = evaluation_signature(clean_job_description(job.description), crit_ver)
