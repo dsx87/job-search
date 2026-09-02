@@ -89,18 +89,6 @@ def test_file_prompt_set_rejects_invalid_placeholders_at_load(
         FilePromptSet(revision="bad-v1", fact_extraction_file=str(path))
 
 
-def test_file_prompt_set_accepts_legacy_two_argument_cv_fallback():
-    class LegacyFallback(DefaultPromptSet):
-        def cv_bullet_selection(self, base_tex, job):
-            return "legacy:{}:{}".format(base_tex, job.title)
-
-    prompts = FilePromptSet(revision="wrapper-v1", fallback=LegacyFallback())
-
-    assert prompts.cv_bullet_selection("BASE", _job(), CandidateProfile()) == (
-        "legacy:BASE:Senior iOS Engineer"
-    )
-
-
 def test_criteria_fingerprint_is_legacy_compatible_until_prompts_change():
     criteria = "Senior native Apple roles"
 

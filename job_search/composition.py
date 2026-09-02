@@ -10,13 +10,9 @@ from collections.abc import Mapping
 from dataclasses import asdict, replace
 
 from .components import (
-    CVCompiler,
-    CVRenderer,
     CandidateProfile,
     Components,
     DefaultCVRenderer,
-    LLMService,
-    PromptSet,
     default_components,
 )
 
@@ -63,26 +59,38 @@ def _load_module(path: str):
         ) from exc
 
 
-def _require_protocol(name: str, value: object, protocol: object, problems: list) -> None:
-    if not isinstance(value, protocol):
-        problems.append("{} does not implement {}".format(name, protocol.__name__))
+def _require_shape(name: str, value: object, attributes: tuple, problems: list) -> None:
+    """Check that ``value`` exposes each of ``attributes`` by name.
+
+    This is what ``isinstance`` against a ``runtime_checkable`` Protocol used
+    to do here: check that the named *methods and attributes exist*, never
+    their signatures or return types. This catches a typo'd method name and a
+    missing attribute; it does not prove a component behaves.
+    """
+    missing = [attribute for attribute in attributes if not hasattr(value, attribute)]
+    if missing:
+        problems.append(
+            "{} is missing required attribute(s): {}".format(name, ", ".join(missing))
+        )
 
 
 def _validate_shape(components: Components, problems: list) -> None:
-    """Check the object graph against the component contracts.
-
-    Note what ``isinstance`` against a ``runtime_checkable`` Protocol actually
-    does: it checks that the named *methods and attributes exist*, never their
-    signatures or return types. This catches a typo'd method name and a missing
-    attribute; it does not prove a component behaves.
-    """
-    _require_protocol("prompts", components.prompts, PromptSet, problems)
-    _require_protocol("llm", components.llm, LLMService, problems)
+    """Check the object graph against the component contracts."""
+    _require_shape(
+        "prompts", components.prompts,
+        ("fact_extraction", "job_summary", "cv_bullet_selection", "compiler_repair"),
+        problems,
+    )
+    _require_shape("llm", components.llm, ("generate", "usage_summary"), problems)
     if components.candidate_filter is not None and not callable(components.candidate_filter):
         problems.append("candidate_filter must be None or a callable(job) -> bool")
     if not isinstance(components.profile, CandidateProfile):
         problems.append("profile must be a CandidateProfile")
-    _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
+    _require_shape(
+        "cv_renderer", components.cv_renderer,
+        ("media_types", "render_tailored", "render_base"),
+        problems,
+    )
     # output_renderer / output_backend are no longer checked against a shared
     # protocol: OUTPUT_MODE chooses the built-in pair as a unit, so the two
     # can no longer disagree, and a hatch-supplied pair is the one place this
@@ -94,8 +102,8 @@ def _validate_shape(components: Components, problems: list) -> None:
     # weight.
     compiler = getattr(getattr(components, "cv_renderer", None), "compiler", None)
     if compiler is not None:
-        if not isinstance(compiler, CVCompiler):
-            problems.append("CV renderer compiler does not implement CVCompiler")
+        if not hasattr(compiler, "compile"):
+            problems.append("CV renderer compiler is missing required attribute(s): compile")
         elif not str(getattr(compiler, "executable", "") or "").strip():
             problems.append("CV renderer compiler executable must be nonempty")
 
@@ -135,6 +143,15 @@ def _validate_environment(
     # rt.needs_telegram, once those exist — see runtime.py design notes.
     if output_mode == "telegram" and cv_mode != "required":
         problems.append("OUTPUT_MODE=telegram requires OUTPUT_CV_MODE=required")
+
+    # PROMPT_REVISION is required whenever PROMPT_DIR is set: prompt wording
+    # participates in evaluation reopening (criteria_fingerprint), so a
+    # missing revision would silently reuse the wrong reopen fingerprint
+    # across a prompt change rather than fail loudly here.
+    # TODO(C10): move into runtime.preflight alongside the OUTPUT_MODE check
+    # above, once it exists — see runtime.py design notes.
+    if getattr(settings, "prompt_dir", "") and not getattr(settings, "prompt_revision", ""):
+        problems.append("PROMPT_DIR is set but PROMPT_REVISION is empty")
 
     if command in ("daily", "tailor"):
         if getattr(components.llm, "requires_api_key", False) and not getattr(

@@ -10,44 +10,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from string import Template
-from typing import Mapping, Protocol, Sequence, Tuple, runtime_checkable
+from typing import Mapping, Sequence, Tuple
 
 from .config import BASE_TEX_FILE, CV_DISPLAY_NAME, CV_FILENAME_PREFIX, OUT_PDF_FILE
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
 from .latex.compile import LatexCompiler
-
-
-@runtime_checkable
-class PromptSet(Protocol):
-    revision: str
-
-    def fact_extraction(self, job: object) -> str: ...
-    def job_summary(self, job: object) -> str: ...
-    def cv_bullet_selection(
-        self, base_tex: str, job: object, profile: object = None
-    ) -> str: ...
-    def compiler_repair(self, tex_source: str, error_excerpt: str) -> str: ...
-
-
-@runtime_checkable
-class LLMProvider(Protocol):
-    scheme: str
-    model: str
-
-    def generate(
-        self, prompt: str, temperature: float = 0.0, json_mode: bool = False,
-        response_schema: object = None,
-    ) -> str: ...
-
-
-@runtime_checkable
-class LLMService(Protocol):
-    def generate(
-        self, prompt: str, temperature: float = 0.0, json_mode: bool = False,
-        response_schema: object = None,
-    ) -> str: ...
-
-    def usage_summary(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -109,25 +76,6 @@ class CVArtifact:
         return self.content
 
 
-@runtime_checkable
-class CVCompiler(Protocol):
-    executable: str
-
-    def compile(
-        self, llm: LLMService, tex_source: str, max_attempts: int = 3
-    ) -> object: ...
-
-
-@runtime_checkable
-class CVRenderer(Protocol):
-    media_types: Sequence[str]
-
-    def render_tailored(
-        self, llm: LLMService, job: object, evaluation: object = None
-    ) -> CVArtifact: ...
-    def render_base(self, llm: LLMService = None) -> CVArtifact: ...
-
-
 @dataclass(frozen=True)
 class DeliveryOutcome:
     """Completion receipt for one delivered fit.
@@ -174,10 +122,10 @@ class Components:
     ``replace`` — so an author's object is never modified behind their back.
     """
 
-    prompts: PromptSet
-    llm: LLMService
+    prompts: object
+    llm: object
     profile: CandidateProfile
-    cv_renderer: CVRenderer
+    cv_renderer: object
     output_renderer: object
     output_backend: object
     candidate_filter: object = None  # optional callable(job) -> bool
@@ -241,7 +189,7 @@ class FilePromptSet:
         job_summary_file: str = "",
         cv_bullet_selection_file: str = "",
         compiler_repair_file: str = "",
-        fallback: PromptSet = None,
+        fallback: object = None,
     ):
         revision = str(revision or "").strip()
         if not revision:
@@ -315,7 +263,6 @@ class FilePromptSet:
         self, base_tex: str, job: object, profile: object
     ) -> str:
         from .latex.tailor_render import extract_job_bullets
-        from .llm.cv_edits import _configured_selection_prompt
 
         lines = []
         for entry in extract_job_bullets(base_tex, profile.employer_order):
@@ -329,9 +276,7 @@ class FilePromptSet:
         values["candidate_name"] = profile.display_name
         return self._render(
             "cv_bullet_selection", values,
-            lambda: _configured_selection_prompt(
-                self.fallback, base_tex, job, profile
-            ),
+            lambda: self.fallback.cv_bullet_selection(base_tex, job, profile),
         )
 
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
@@ -373,16 +318,17 @@ class DefaultCVRenderer:
 
     def __init__(
         self, settings: object, profile: CandidateProfile,
-        *, prompts: PromptSet = None, compiler: CVCompiler = None,
+        *, prompts: object = None, compiler: object = None,
     ):
         self.settings = settings
         self.profile = profile
         self.prompts = prompts or DefaultPromptSet()
         self.compiler = compiler or LatexCompiler(
-            prompts=self.prompts, profile=self.profile
+            getattr(settings, "latex_engine", "pdflatex") or "pdflatex",
+            prompts=self.prompts, profile=self.profile,
         )
 
-    def render_tailored(self, llm: LLMService, job: object, evaluation: object = None) -> CVArtifact:
+    def render_tailored(self, llm: object, job: object, evaluation: object = None) -> CVArtifact:
         from .config import load_base_tex, load_tailoring_instructions
         from .llm.tailor import tailor_resume
         from .pipeline.stages import CVPreparationError, _company_slug
@@ -536,17 +482,49 @@ def _default_output_pair(settings: object, telegram: object):
     return renderer, backend
 
 
+def _default_prompts(settings: object) -> object:
+    """Choose the built-in prompt set for ``settings.prompt_dir``.
+
+    Deliberately tolerant of a set ``prompt_dir`` with an empty
+    ``prompt_revision`` (falls back to :class:`DefaultPromptSet` rather than
+    raising here): the combination is a *policy* error, not a construction
+    error, so it is rejected once with a named message by
+    ``composition._validate_environment`` rather than by an incidental
+    exception from this constructor.
+
+    A conventional filename absent from the directory is passed through as
+    "" so :class:`FilePromptSet` applies its own per-prompt fallback, exactly
+    as if that one file had never been named at all.
+    """
+    prompt_dir = str(getattr(settings, "prompt_dir", "") or "").strip()
+    revision = str(getattr(settings, "prompt_revision", "") or "").strip()
+    if not prompt_dir or not revision:
+        return DefaultPromptSet()
+
+    def _conventional_file(name):
+        path = os.path.join(prompt_dir, name)
+        return path if os.path.isfile(path) else ""
+
+    return FilePromptSet(
+        revision=revision,
+        fact_extraction_file=_conventional_file("fact_extraction.txt"),
+        job_summary_file=_conventional_file("job_summary.txt"),
+        cv_bullet_selection_file=_conventional_file("cv_bullet_selection.txt"),
+        compiler_repair_file=_conventional_file("compiler_repair.txt"),
+    )
+
+
 def default_components(
     settings: object,
     *,
-    prompts: PromptSet = None,
-    llm: LLMService = None,
+    prompts: object = None,
+    llm: object = None,
     telegram: object = None,
 ) -> Components:
     """Construct the side-effect-free built-in object graph for ``settings``."""
     from .llm.clients import LLMClient
 
-    prompts = prompts or DefaultPromptSet()
+    prompts = prompts or _default_prompts(settings)
     llm = llm or LLMClient.from_config(settings)
     profile = CandidateProfile.from_settings(settings)
     output_renderer, output_backend = _default_output_pair(settings, telegram)
@@ -561,9 +539,8 @@ def default_components(
 
 
 __all__ = [
-    "CVArtifact", "CVCompiler", "CVRenderer",
+    "CVArtifact",
     "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
     "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
-    "LLMProvider", "LLMService",
-    "PromptSet", "default_components",
+    "default_components",
 ]

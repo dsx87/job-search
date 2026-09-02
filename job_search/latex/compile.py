@@ -1,9 +1,10 @@
 """pdflatex compilation with self-healing fix attempts.
 
 pdf_pages_from_log is the single consolidated page-count parser (previously
-duplicated between the pipeline and the base-CV renderer). _compile_latex grows
-an explicit cv_phone seam: when cv_phone is None (the default) it reads CV_PHONE
-from the environment exactly as before, so production behavior is unchanged.
+duplicated between the pipeline and the base-CV renderer). ((PHONE)) and the
+rest of a candidate's private placeholders are resolved exactly once, by
+``profile.resolve_private_placeholders`` — there is no second, parallel path
+that reads CV_PHONE from the environment.
 """
 import os
 import re
@@ -100,7 +101,7 @@ def _compiler_error_excerpt(log_path: str, completed) -> str:
 
 
 def _compile_latex(
-    tex_source: str, cv_phone=None, executable: str = "pdflatex", profile=None
+    tex_source: str, executable: str = "pdflatex", profile=None
 ) -> CompileResult:
     """
     Compile tex_source with pdflatex.
@@ -108,9 +109,9 @@ def _compile_latex(
     passes exit cleanly and produce a nonempty PDF with a known positive page
     count.
 
-    cv_phone=None (default) reads the real number from the CV_PHONE environment
-    variable, kept out of the repo and the LLM prompt; pass a string to inject
-    one explicitly. When empty the ((PHONE)) token collapses to nothing.
+    ``profile`` (a CandidateProfile) resolves ((PHONE)) and any other private
+    placeholder at compile time, kept out of the repo and the LLM prompt; pass
+    None to leave the tex source's placeholders untouched.
     """
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -118,15 +119,8 @@ def _compile_latex(
             pdf_path = os.path.join(tmpdir, "cv.pdf")
             log_path = os.path.join(tmpdir, "cv.log")
 
-            # Inject the real phone number (kept out of the repo and out of the
-            # LLM prompt) only at compile time. When CV_PHONE is unset the token
-            # collapses to nothing, leaving no dangling separator.
             if profile is not None:
                 tex_source = profile.resolve_private_placeholders(tex_source)
-            else:
-                phone = (os.environ.get("CV_PHONE", "") if cv_phone is None else cv_phone).strip()
-                phone_tex = f"\\enspace\\textbar\\enspace {phone}" if phone else ""
-                tex_source = tex_source.replace("((PHONE))", phone_tex)
 
             with open(tex_path, "w", encoding="utf-8") as f:
                 f.write(tex_source)
@@ -208,29 +202,19 @@ def compile_with_fixes(
     from .onepage import _shrink_to_one_page
 
     for attempt in range(1, max_attempts + 1):
-        if executable == "pdflatex" and profile is None:
-            result = _compile_latex(tex_source)
-        else:
-            result = _compile_latex(
-                tex_source, executable=executable, profile=profile
-            )
+        result = _compile_latex(tex_source, executable=executable, profile=profile)
         if result.ok:
             if result.page_count == 1 and result.pdf_bytes:
                 return True, result.pdf_bytes, tex_source
             if result.page_count and result.page_count > 1:
-                if executable == "pdflatex" and profile is None:
-                    pdf_bytes, tex_source, pages = _shrink_to_one_page(
-                        tex_source, result.pdf_bytes, result.page_count
-                    )
-                else:
-                    pdf_bytes, tex_source, pages = _shrink_to_one_page(
-                        tex_source,
-                        result.pdf_bytes,
-                        result.page_count,
-                        compile_fn=lambda source: _compile_latex(
-                            source, executable=executable, profile=profile
-                        ),
-                    )
+                pdf_bytes, tex_source, pages = _shrink_to_one_page(
+                    tex_source,
+                    result.pdf_bytes,
+                    result.page_count,
+                    compile_fn=lambda source: _compile_latex(
+                        source, executable=executable, profile=profile
+                    ),
+                )
                 if pages == 1 and pdf_bytes:
                     return True, pdf_bytes, tex_source
             return False, None, tex_source

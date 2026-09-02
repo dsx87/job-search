@@ -58,6 +58,24 @@ OUTPUT_DIR = ""
 # delivery has no text-only path (see preflight in composition.py).
 OUTPUT_CV_MODE = "required"
 
+# ── Prompts / LaTeX engine ──────────────────────────────────────────────────────
+# Directory of file-backed prompt overrides (components.FilePromptSet), read
+# using the four conventional filenames: fact_extraction.txt, job_summary.txt,
+# cv_bullet_selection.txt, compiler_repair.txt. A file missing from the
+# directory falls back to the built-in prompt. Empty (the default) uses the
+# built-in prompts unmodified. Replaces constructing a FilePromptSet by hand in
+# job_search_config.py for the common case.
+PROMPT_DIR = ""
+# Required whenever PROMPT_DIR is set. Prompt wording participates in
+# evaluation reopening (state.seen_jobs.criteria_fingerprint), so an unnamed
+# revision would silently reuse the wrong reopen fingerprint across a prompt
+# change; preflight rejects PROMPT_DIR set without this.
+PROMPT_REVISION = ""
+# LaTeX engine invoked to compile the CV. "pdflatex" (default) is the
+# lightweight, tracked toolchain; any other executable on PATH (e.g. "xelatex")
+# is also supported for a CV that needs its font/typesetting features.
+LATEX_ENGINE = "pdflatex"
+
 # ── Candidate identity ────────────────────────────────────────────────────────
 # The name on the CV and the prefix of every tailored PDF. These were class
 # defaults on CandidateProfile, which made the one thing most obviously *not*
@@ -266,6 +284,9 @@ class PipelineConfig:
     output_mode: str = OUTPUT_MODE
     output_dir: str = OUTPUT_DIR
     output_cv_mode: str = OUTPUT_CV_MODE
+    prompt_dir: str = PROMPT_DIR
+    prompt_revision: str = PROMPT_REVISION
+    latex_engine: str = LATEX_ENGINE
     # Source selection: names forced ON (adds default-off sources like
     # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
     # today's default-on set, so CI with no env is unchanged. See
@@ -330,6 +351,9 @@ class PipelineConfig:
             output_mode=_non_empty_env("OUTPUT_MODE", OUTPUT_MODE).lower(),
             output_dir=_non_empty_env("OUTPUT_DIR", OUTPUT_DIR),
             output_cv_mode=_non_empty_env("OUTPUT_CV_MODE", OUTPUT_CV_MODE).lower(),
+            prompt_dir=_non_empty_env("PROMPT_DIR", PROMPT_DIR),
+            prompt_revision=_non_empty_env("PROMPT_REVISION", PROMPT_REVISION),
+            latex_engine=_non_empty_env("LATEX_ENGINE", LATEX_ENGINE),
             eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
             tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),

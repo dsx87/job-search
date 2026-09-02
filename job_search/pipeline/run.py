@@ -15,7 +15,6 @@ from ..composition import ConfigurationError, load_components
 from ..components import (
     CandidateProfile,
     CVArtifact,
-    DefaultPromptSet,
     DigestOutcome,
     default_components,
 )
@@ -243,11 +242,9 @@ def _record_fit_failure(seen, stats, job, stage, today, telegram, cfg=None):
 
 
 def _runtime_components(cfg, command):
-    prompts = DefaultPromptSet()
     try:
         defaults = default_components(
             cfg,
-            prompts=prompts,
             llm=LLMClient.from_config(cfg),
             telegram=TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id),
         )
@@ -390,8 +387,6 @@ def _summaries(llm, jobs, workers, prompts=None):
     if not jobs:
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        if prompts is None or getattr(prompts, "revision", "") == DefaultPromptSet.revision:
-            return list(pool.map(lambda job: summarize_job(llm, job), jobs))
         return list(pool.map(lambda job: summarize_job(llm, job, prompts=prompts), jobs))
 
 

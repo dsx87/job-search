@@ -1934,7 +1934,7 @@ def _install_digest_fit(monkeypatch, pdf=b"PDFDATA", summary="One-line summary."
         lambda *_a, **_kwargs: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(pdf))
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: summary)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: summary)
 
 
 def test_digest_delivery_sends_one_zip_and_marks_fit_seen(monkeypatch):
@@ -1995,7 +1995,7 @@ def test_digest_folds_uncertain_and_deferred_into_zip_not_messages(monkeypatch):
 
     monkeypatch.setattr(EVALUATE_JOB, evaluate)
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "sum")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "sum")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -2017,7 +2017,7 @@ def test_digest_success_marks_uncertain_seen(monkeypatch):
         lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"REVIEW-PDF"))
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -2042,7 +2042,7 @@ def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
         EVALUATE_JOB,
         lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -2070,7 +2070,7 @@ def test_digest_caption_counts_delivered_fits_not_found_fits(monkeypatch):
         return real(renderer, llm, job, evaluation)
 
     monkeypatch.setattr(run, "_prepare_with_renderer", prepare)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -2088,7 +2088,7 @@ def test_digest_success_commits_deferral_markers(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [sparse])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -2112,7 +2112,7 @@ def test_digest_failure_does_not_commit_deferral_markers(monkeypatch):
     _t, saved = install_daily_fakes(monkeypatch, [sparse], telegram=telegram)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -2151,7 +2151,7 @@ def test_digest_does_not_recount_a_notification_for_a_retried_fit(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     contexts = _capture_digest_contexts(monkeypatch)
 
@@ -2210,7 +2210,7 @@ def test_digest_reopened_defer_is_recorded_even_with_nothing_to_bundle(monkeypat
     monkeypatch.setattr(
         EVALUATE_JOB, lambda *_a, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None}
     )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
     cfg = make_config(digest_delivery=True)
 
     run.run_daily(cfg)  # run 1: evaluated, non-fit
@@ -2520,7 +2520,7 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
         return real(renderer, llm, candidate, evaluation)
 
     monkeypatch.setattr(run, "_prepare_with_renderer", prepare)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "summary")
     _install_telegraph(monkeypatch)
     host = _install_x0(monkeypatch)
 
@@ -2609,7 +2609,7 @@ def test_a_run_with_no_fits_still_publishes_a_page(monkeypatch):
         lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "unclear",
                      "timezone_note": None, "facts": {}},
     )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
     client = _install_telegraph(monkeypatch)
     host = _install_x0(monkeypatch)
 
@@ -2673,7 +2673,7 @@ def test_every_fit_commits_when_the_page_is_delivered(monkeypatch):
         lambda *_a, **_kwargs: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDFDATA"))
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "summary")
     _install_telegraph(monkeypatch)
     host = _install_x0(monkeypatch)
 

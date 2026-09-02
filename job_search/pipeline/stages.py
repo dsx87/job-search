@@ -2,7 +2,7 @@
 
 Telegram I/O goes through an injected TelegramClient (the `telegram` param)
 rather than module globals, so a single client is built once and threaded
-through. Tailoring and compilation live behind ``components.CVRenderer``; what
+through. Tailoring and compilation live behind ``components.DefaultCVRenderer``; what
 remains here is the presentation and the one Telegram send (``send_fit``) that
 ``DefaultOutputBackend`` delegates to.
 """

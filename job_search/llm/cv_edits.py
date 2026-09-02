@@ -6,7 +6,6 @@ loop, since a deterministic renderer builds the CV from the trusted base (audit
 Finding 19).
 """
 import json
-import inspect
 
 from ..latex.tailor_render import extract_job_bullets
 from ..models import coerce_job
@@ -106,27 +105,12 @@ def build_cv_bullet_selection_prompt(
     return "\n".join(lines)
 
 
-def _configured_selection_prompt(prompts, base_tex, job, profile):
-    """Pass the profile to prompt sets that expose the optional extension."""
-    builder = prompts.cv_bullet_selection
-    try:
-        parameters = inspect.signature(builder).parameters.values()
-    except (TypeError, ValueError):
-        parameters = ()
-    if any(
-        parameter.name == "profile" or parameter.kind == parameter.VAR_KEYWORD
-        for parameter in parameters
-    ):
-        return builder(base_tex, job, profile=profile)
-    return builder(base_tex, job)
-
-
 def select_cv_bullets(client, base_tex, job, profile, prompts=None) -> dict:
     """Ask the model which base bullets to keep per job; return {company: [idx]}."""
     employer_order = profile.employer_order
     candidate_name = profile.display_name
     prompt = (
-        _configured_selection_prompt(prompts, base_tex, job, profile)
+        prompts.cv_bullet_selection(base_tex, job, profile)
         if prompts is not None
         else build_cv_bullet_selection_prompt(
             base_tex,
