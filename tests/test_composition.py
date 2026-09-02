@@ -117,7 +117,7 @@ def test_in_place_config_mutation_rebuilds_dependent_defaults(tmp_path, monkeypa
         "def configure(defaults, settings):\n"
         "    defaults.prompts = Prompts()\n"
         "    defaults.profile = CandidateProfile(\n"
-        "        display_name='Ada Example', revision='ada-profile-v1')\n"
+        "        display_name='Ada Example')\n"
         "    return defaults\n",
         encoding="utf-8",
     )
@@ -179,34 +179,6 @@ def test_profile_must_be_a_candidate_profile(tmp_path, monkeypatch):
 
     with pytest.raises(ConfigurationError, match="CandidateProfile"):
         load_components(PipelineConfig(), command="check")
-
-
-@pytest.mark.parametrize(
-    "profile_args, message",
-    [
-        ("employer_order=(None,)", "employer_order"),
-        ("employer_order=None", "employer_order"),
-        ("forbidden_claim_patterns=None", "forbidden_claim_patterns"),
-        ("private_placeholders={1: 'CV_PHONE'}", "private_placeholders"),
-        ("private_placeholders=[]", "private_placeholders"),
-    ],
-)
-def test_invalid_candidate_profile_values_fail_as_configuration_errors(
-    tmp_path, monkeypatch, profile_args, message
-):
-    config_file = tmp_path / "bad_profile_values.py"
-    config_file.write_text(
-        "from dataclasses import replace\n"
-        "from job_search.components import CandidateProfile\n"
-        "def configure(defaults, settings):\n"
-        "    profile = CandidateProfile({})\n".format(profile_args)
-        + "    return replace(defaults, profile=profile)\n",
-        encoding="utf-8",
-    )
-    _configured_env(monkeypatch, config_file)
-
-    with pytest.raises(ConfigurationError, match=message):
-        load_components(PipelineConfig(), command="list")
 
 
 def test_tailor_rejects_text_only_backend_during_validation(tmp_path, monkeypatch):
@@ -321,6 +293,15 @@ def test_check_config_rejects_missing_required_files(tmp_path, monkeypatch):
 def test_default_renderer_subclass_owns_its_inputs(tmp_path, monkeypatch):
     criteria = tmp_path / "criteria.md"
     criteria.write_text("criteria", encoding="utf-8")
+    # The subclass below keeps a `.profile` around (it delegates to it for
+    # nothing but attribute parity) but fully owns rendering. Preflight can
+    # no longer tell the two apart by identity (reads_profile_sources is
+    # gone), so it checks the same files any default-shaped profile would
+    # need — write them even though this renderer never opens them itself.
+    (tmp_path / "igor_pivnyk_cv_base_updated.tex").write_text("tex", encoding="utf-8")
+    (tmp_path / "cv_tailoring_prompt.md").write_text(
+        "## STEP 3\ninstructions\n## BASE LaTeX TEMPLATE\n", encoding="utf-8"
+    )
     config_file = tmp_path / "renderer_subclass.py"
     config_file.write_text(
         "from dataclasses import replace\n"

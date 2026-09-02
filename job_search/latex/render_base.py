@@ -10,7 +10,6 @@ Run with: python -m job_search.latex.render_base
 import os
 import sys
 
-from ..components import DefaultCVRenderer
 from ..composition import load_components
 from ..config import PipelineConfig
 
@@ -23,10 +22,7 @@ def main(cfg=None) -> int:
     except Exception as exc:
         print("ERROR: base CV rendering failed: {}".format(exc), file=sys.stderr)
         return 1
-    if type(components.cv_renderer) is DefaultCVRenderer:
-        output_path = components.cv_renderer.profile.rendered_base_path
-    else:
-        output_path = os.path.basename(artifact.filename)
+    output_path = cfg.rendered_base_file
     with open(output_path, "wb") as handle:
         handle.write(artifact.content)
     manifest = os.environ.get("JOB_SEARCH_RENDER_BASE_MANIFEST", "").strip()

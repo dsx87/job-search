@@ -5,9 +5,8 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 
 from .components import (
@@ -71,20 +70,6 @@ def _require_protocol(name: str, value: object, protocol: object, problems: list
         problems.append("{} does not implement {}".format(name, protocol.__name__))
 
 
-def reads_profile_sources(renderer: object) -> bool:
-    """True when ``renderer`` will run the built-in code that opens the .tex.
-
-    This asks which implementation is about to run, not what class the object
-    is: a subclass that overrides both render methods owns its own inputs, so
-    preflighting it would demand a file it never opens.
-    """
-    kind = type(renderer)
-    return any(
-        getattr(kind, name, None) is getattr(DefaultCVRenderer, name)
-        for name in ("render_tailored", "render_base")
-    )
-
-
 def _validate_shape(components: Components, problems: list) -> None:
     """Check the object graph against the component contracts.
 
@@ -103,65 +88,6 @@ def _validate_shape(components: Components, problems: list) -> None:
     _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
     _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
 
-    profile = getattr(components, "profile", None)
-    if isinstance(profile, CandidateProfile):
-        for label, value in (
-            ("profile.display_name", profile.display_name),
-            ("profile.base_tex_path", profile.base_tex_path),
-            ("profile.rendered_base_path", profile.rendered_base_path),
-            ("profile.cv_filename_prefix", profile.cv_filename_prefix),
-            ("profile.revision", profile.revision),
-        ):
-            if not isinstance(value, str) or not value.strip():
-                problems.append("{} must be a nonempty string".format(label))
-
-        employer_order = profile.employer_order
-        if (
-            not isinstance(employer_order, Sequence)
-            or isinstance(employer_order, (str, bytes))
-            or not employer_order
-            or any(
-                not isinstance(employer, str) or not employer.strip()
-                for employer in employer_order
-            )
-        ):
-            problems.append(
-                "profile.employer_order must be a nonempty sequence of nonempty strings"
-            )
-
-        patterns = profile.forbidden_claim_patterns
-        if not isinstance(patterns, Sequence) or isinstance(patterns, (str, bytes)):
-            problems.append(
-                "profile.forbidden_claim_patterns must be a sequence of strings"
-            )
-        else:
-            for pattern in patterns:
-                if not isinstance(pattern, str):
-                    problems.append(
-                        "profile.forbidden_claim_patterns must contain only strings"
-                    )
-                    continue
-                try:
-                    re.compile(pattern)
-                except re.error as exc:
-                    problems.append(
-                        "invalid profile forbidden-claim pattern: {}".format(exc)
-                    )
-
-        placeholders = profile.private_placeholders
-        if not isinstance(placeholders, Mapping):
-            problems.append("profile.private_placeholders must be a string mapping")
-        else:
-            for placeholder, env_name in placeholders.items():
-                if (
-                    not isinstance(placeholder, str)
-                    or not placeholder
-                    or not isinstance(env_name, str)
-                    or not env_name.strip()
-                ):
-                    problems.append(
-                        "profile.private_placeholders must map nonempty strings"
-                    )
     # Duck-typed rather than keyed on DefaultCVRenderer: any renderer that
     # exposes a compiler is making the same promise about it, and a validator
     # that names concrete classes is a sign the contract is not carrying its
@@ -254,7 +180,6 @@ def _validate_environment(
         command in ("daily", "tailor", "base", "check")
         and cv_mode == "required"
         and isinstance(renderer_profile, CandidateProfile)
-        and reads_profile_sources(renderer)
     ):
         required_files.append(("base_tex_path", renderer_profile.base_tex_path))
         if command in ("daily", "tailor", "check"):
@@ -393,6 +318,6 @@ def redacted_configuration(settings: object, components: Components) -> str:
 
 
 __all__ = [
-    "Components", "ConfigurationError", "load_components", "reads_profile_sources",
+    "Components", "ConfigurationError", "load_components",
     "rebind_defaults", "redacted_configuration", "validate_components",
 ]

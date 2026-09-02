@@ -168,7 +168,7 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
     state = set(initial_seen or ())
     saved = []
 
-    def save(seen):
+    def save(seen, *_a):
         state.clear()
         state.update(seen)
         saved.append(set(state))
@@ -183,9 +183,9 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
             return FakeLLM()
 
     monkeypatch.setattr(run, "LLMClient", FakeLLMClient)
-    monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
-    monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
-    monkeypatch.setattr(run, "load_base_tex", lambda: "base")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "criteria")
+    monkeypatch.setattr(run, "load_tailoring_instructions", lambda *_a: "instructions")
+    monkeypatch.setattr(run, "load_base_tex", lambda *_a: "base")
     monkeypatch.setattr(
         run,
         "fetch_jobs_with_health",
@@ -193,7 +193,7 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
             tuple(jobs), (SourceHealth("fake", SourceStatus.SUCCESS, len(jobs), 1),),
         ),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: set(state))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: set(state))
     monkeypatch.setattr(run, "save_seen_jobs", save)
     return telegram, saved
 
@@ -207,7 +207,7 @@ def test_total_source_outage_aborts_without_evaluation_or_state_save(monkeypatch
             SourceHealth("down", SourceStatus.FAILED, failure_detail="offline"),
         )),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: (_ for _ in ()).throw(AssertionError("no state load")))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: (_ for _ in ()).throw(AssertionError("no state load")))
 
     assert run.run_daily(make_config()) == 1
     assert saved == []
@@ -248,7 +248,7 @@ def test_configured_plain_fatal_notice_has_no_telegram_markup(monkeypatch):
     monkeypatch.setattr(
         run,
         "load_seen_jobs",
-        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -1097,8 +1097,8 @@ def test_run_seed_does_not_persist_empty_identity_keys(monkeypatch):
             (SourceHealth("fake", SourceStatus.SUCCESS, 2, 1),),
         ),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: set())
-    monkeypatch.setattr(run, "save_seen_jobs", lambda seen: saved.append(set(seen)))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: set())
+    monkeypatch.setattr(run, "save_seen_jobs", lambda seen, *_a: saved.append(set(seen)))
 
     run.run_seed(make_config())
 
@@ -1416,8 +1416,8 @@ def test_mode_defers_before_tailoring_without_seen_state(monkeypatch):
         "_prepare_with_renderer",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no processing")),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: (_ for _ in ()).throw(AssertionError("no load")))
-    monkeypatch.setattr(run, "save_seen_jobs", lambda _seen: (_ for _ in ()).throw(AssertionError("no save")))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: (_ for _ in ()).throw(AssertionError("no load")))
+    monkeypatch.setattr(run, "save_seen_jobs", lambda _seen, *_a: (_ for _ in ()).throw(AssertionError("no save")))
 
     run.run_daily(make_config(), test=True)
 
@@ -1822,7 +1822,7 @@ def test_criteria_change_reopens_prior_nonfit(monkeypatch):
     monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())  # criteria == "criteria" (harness default)
-    monkeypatch.setattr(run, "load_criteria", lambda: "totally different criteria")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "totally different criteria")
     run.run_daily(make_config())
 
     assert len(evaluations) == 2  # a criteria change reopens the prior non-fit
@@ -1850,7 +1850,7 @@ def test_reopened_job_that_defers_records_signature_and_stops_reopening(monkeypa
     )
 
     run.run_daily(make_config())  # run 1: evaluated, non-fit
-    monkeypatch.setattr(run, "load_criteria", lambda: "different criteria")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "different criteria")
     run.run_daily(make_config())  # run 2: reopened, description now insufficient -> deferred
     run.run_daily(make_config())  # run 3: same content+criteria -> must NOT reopen
 
@@ -2201,9 +2201,9 @@ def test_digest_reopened_defer_is_recorded_even_with_nothing_to_bundle(monkeypat
     cfg = make_config(digest_delivery=True)
 
     run.run_daily(cfg)  # run 1: evaluated, non-fit
-    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v2")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "criteria v2")
     run.run_daily(cfg)  # run 2: reopened, description-poor -> FIRST deferral, so it bundles
-    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v3")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "criteria v3")
     run.run_daily(cfg)  # run 3: reopened again, markers already seen -> nothing to bundle
     run.run_daily(cfg)  # run 4: unchanged since run 3 -> must NOT reopen
 

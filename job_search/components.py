@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Mapping, Protocol, Sequence, Tuple, runtime_checkable
 
-from .config import CV_DISPLAY_NAME, CV_FILENAME_PREFIX
+from .config import BASE_TEX_FILE, CV_DISPLAY_NAME, CV_FILENAME_PREFIX, OUT_PDF_FILE
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
 from .latex.compile import LatexCompiler
 
@@ -55,15 +55,25 @@ class CandidateProfile:
     """Public candidate identity and CV-policy configuration."""
 
     display_name: str = CV_DISPLAY_NAME
-    base_tex_path: str = "igor_pivnyk_cv_base_updated.tex"
-    rendered_base_path: str = "igor_pivnyk_cv_base_updated.pdf"
+    base_tex_path: str = BASE_TEX_FILE
+    rendered_base_path: str = OUT_PDF_FILE
     cv_filename_prefix: str = CV_FILENAME_PREFIX
     employer_order: Tuple[str, ...] = tuple(EXPECTED_JOB_ORDER)
     forbidden_claim_patterns: Tuple[str, ...] = tuple(FORBIDDEN_TERM_PATTERNS)
     private_placeholders: Mapping[str, str] = field(
         default_factory=lambda: {"((PHONE))": "CV_PHONE"}
     )
-    revision: str = "igor-profile-v1"
+
+    @classmethod
+    def from_settings(cls, settings: object) -> "CandidateProfile":
+        return cls(
+            display_name=getattr(settings, "cv_display_name", CV_DISPLAY_NAME),
+            base_tex_path=getattr(settings, "base_tex_file", BASE_TEX_FILE),
+            rendered_base_path=getattr(settings, "rendered_base_file", OUT_PDF_FILE),
+            cv_filename_prefix=getattr(
+                settings, "cv_filename_prefix", CV_FILENAME_PREFIX
+            ),
+        )
 
     def resolve_private_placeholders(
         self, text: str, environ: Mapping[str, str] = None
@@ -547,16 +557,7 @@ def default_components(
     telegram = telegram or TelegramClient(
         settings.telegram_bot_token, settings.telegram_chat_id
     )
-    profile = CandidateProfile(
-        display_name=getattr(settings, "cv_display_name", CV_DISPLAY_NAME),
-        cv_filename_prefix=getattr(
-            settings, "cv_filename_prefix", CV_FILENAME_PREFIX
-        ),
-        base_tex_path=getattr(settings, "base_tex_file", "igor_pivnyk_cv_base_updated.tex"),
-        rendered_base_path=getattr(
-            settings, "rendered_base_file", "igor_pivnyk_cv_base_updated.pdf"
-        ),
-    )
+    profile = CandidateProfile.from_settings(settings)
     return Components(
         prompts=prompts,
         llm=llm,

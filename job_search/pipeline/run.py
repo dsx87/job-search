@@ -11,15 +11,15 @@ import sys
 import os
 from dataclasses import dataclass, field
 
-from ..composition import ConfigurationError, load_components, reads_profile_sources
+from ..composition import ConfigurationError, load_components
 from ..components import (
+    CandidateProfile,
     CVArtifact,
     DefaultPromptSet,
     DigestOutcome,
     default_components,
 )
 from ..config import (
-    BASE_TEX_FILE,
     CRITERIA_FILE,
     CV_TAILORING_PROMPT_FILE,
     SEEN_JOBS_FILE,
@@ -212,20 +212,11 @@ def _seen_file(cfg):
 
 
 def _load_seen_for(cfg):
-    path = _seen_file(cfg)
-    return load_seen_jobs() if path == SEEN_JOBS_FILE else load_seen_jobs(path)
+    return load_seen_jobs(_seen_file(cfg))
 
 
 def _save_seen_for(cfg, seen):
-    path = _seen_file(cfg)
-    if path == SEEN_JOBS_FILE:
-        return save_seen_jobs(seen)
-    return save_seen_jobs(seen, path)
-
-
-def _load_file_for(cfg, attribute, default, loader):
-    path = getattr(cfg, attribute, default)
-    return loader() if path == default else loader(path)
+    return save_seen_jobs(seen, _seen_file(cfg))
 
 
 def _drain_block_alerts(seen, telegram, cfg=None):
@@ -642,7 +633,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
                     flush=True,
                 )
-        criteria = _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
+        criteria = load_criteria(getattr(cfg, "criteria_file", CRITERIA_FILE))
         crit_ver = criteria_fingerprint(
             criteria, getattr(components.prompts, "revision", "")
         )
@@ -651,22 +642,17 @@ def run_daily(cfg, test: bool = False) -> int:
         # which is what catches an unreadable or empty one. The values are
         # discarded — the renderer loads them again when it actually runs. A
         # whole custom renderer owns its inputs, and cv_mode=disabled needs none.
+        preflight_profile = getattr(
+            getattr(components, "cv_renderer", None), "profile", None
+        )
         if (
             components.output_backend.cv_mode == "required"
-            and reads_profile_sources(getattr(components, "cv_renderer", None))
+            and isinstance(preflight_profile, CandidateProfile)
         ):
-            _load_file_for(
-                cfg,
-                "cv_tailoring_prompt_file",
-                CV_TAILORING_PROMPT_FILE,
-                load_tailoring_instructions,
+            load_tailoring_instructions(
+                getattr(cfg, "cv_tailoring_prompt_file", CV_TAILORING_PROMPT_FILE)
             )
-            profile_base_path = components.cv_renderer.profile.base_tex_path
-            (
-                load_base_tex()
-                if profile_base_path == BASE_TEX_FILE
-                else load_base_tex(profile_base_path)
-            )
+            load_base_tex(preflight_profile.base_tex_path)
 
         if cfg.state_sync:
             # Pull only after configuration and required local files have

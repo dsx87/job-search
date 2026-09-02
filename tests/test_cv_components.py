@@ -60,7 +60,6 @@ def test_candidate_profile_drives_validation_and_private_placeholders():
         employer_order=("First Co", "Second Co"),
         forbidden_claim_patterns=(r"forbidden claim",),
         private_placeholders={"((EMAIL))": "PRIVATE_EMAIL"},
-        revision="ada-v1",
     )
     tex = (
         "\\jobheader{First Co}\\jobheader{Second Co} "
@@ -81,7 +80,6 @@ def test_candidate_profile_employers_drive_deterministic_bullet_selection():
         display_name="Ada Example",
         employer_order=("Example Labs",),
         forbidden_claim_patterns=(),
-        revision="ada-v1",
     )
     base_tex = r"""\documentclass{article}
 \newcommand{\jobheader}[4]{#1 #2 #3 #4}
@@ -186,14 +184,18 @@ def test_digest_entries_accept_generic_artifacts_and_keep_pdf_compatibility():
     assert legacy.artifact == CVArtifact("legacy.pdf", "application/pdf", b"PDF")
 
 
-def test_render_base_command_uses_configured_renderer(monkeypatch, tmp_path):
+def test_render_base_command_writes_to_configured_output_path(monkeypatch, tmp_path):
+    # Bug #4/#5 regression guard: OUT_PDF_FILE / rendered_base_file must be
+    # honored regardless of the cv_renderer's type — the old code forked on
+    # `type(...) is DefaultCVRenderer` and silently ignored the setting for
+    # any other renderer, including this fully custom one.
     from job_search.latex import render_base
 
     monkeypatch.chdir(tmp_path)
-    out = tmp_path / "renderer-base.txt"
+    out = tmp_path / "configured-base.pdf"
     manifest = tmp_path / "rendered-path.txt"
     monkeypatch.setenv("JOB_SEARCH_RENDER_BASE_MANIFEST", str(manifest))
-    settings = PipelineConfig(rendered_base_file=str(tmp_path / "ignored.pdf"))
+    settings = PipelineConfig(rendered_base_file=str(out))
     calls = []
 
     class Renderer:
@@ -211,12 +213,18 @@ def test_render_base_command_uses_configured_renderer(monkeypatch, tmp_path):
     assert calls == [llm]
 
 
-def test_render_base_command_uses_default_profile_output_path(monkeypatch, tmp_path):
+def test_render_base_command_output_path_overrides_default_renderers_profile(
+    monkeypatch, tmp_path
+):
+    # Same regression guard, for the built-in DefaultCVRenderer: the settings
+    # value wins even when the profile's own rendered_base_path disagrees.
     from job_search.latex import render_base
 
     out = tmp_path / "ada-base.pdf"
-    settings = PipelineConfig(rendered_base_file="ignored-default.pdf")
-    profile = CandidateProfile(rendered_base_path=str(out))
+    settings = PipelineConfig(rendered_base_file=str(out))
+    profile = CandidateProfile(
+        rendered_base_path=str(tmp_path / "ignored-profile-path.pdf")
+    )
     renderer = DefaultCVRenderer(settings, profile, compiler=SuccessfulCompiler())
     renderer.render_base = lambda llm=None: CVArtifact(
         "ada-base.pdf", "application/pdf", b"ADA"
