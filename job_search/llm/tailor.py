@@ -9,7 +9,6 @@ the previous full-LaTeX generation, its fabrication guard, and its repair retry
 """
 from ..latex.tailor_render import render_tailored
 from ..models import coerce_job
-from ..profile import validate_tailored_cv
 from .cv_edits import select_cv_bullets
 
 
@@ -22,23 +21,26 @@ class CVValidationError(ValueError):
 
 
 def tailor_resume(
-    client, tailoring_instructions: str, base_tex: str, job: dict,
-    prompts=None, profile=None,
+    client, tailoring_instructions: str, base_tex: str, job: dict, profile,
+    prompts=None,
 ) -> str:
     """Select relevant base bullets via the model, then render deterministically.
 
     `tailoring_instructions` is retained for call-site compatibility; the
     structured selection prompt no longer needs the large static instruction
     block. A subset render should always pass the content guard; the full-base
-    fallback is defensive.
+    fallback is defensive. `profile` is required — it is the only source of
+    CV_DISPLAY_NAME / CV_FILENAME_PREFIX / employer_order once configured, and
+    a caller that forgets to thread it should fail loudly here rather than
+    silently render with the wrong identity (see bug #1).
     """
     job = coerce_job(job)
-    employer_order = getattr(profile, "employer_order", None)
+    employer_order = profile.employer_order
     selection = select_cv_bullets(
-        client, base_tex, job, prompts=prompts, profile=profile
+        client, base_tex, job, profile, prompts=prompts
     )
     tex = render_tailored(base_tex, selection, employer_order)
-    validate = profile.validate_tex if profile is not None else validate_tailored_cv
+    validate = profile.validate_tex
     if not validate(tex):
         return tex
 

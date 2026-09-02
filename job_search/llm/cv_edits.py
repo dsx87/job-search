@@ -9,7 +9,6 @@ import json
 import inspect
 
 from ..latex.tailor_render import extract_job_bullets
-from ..config import CV_DISPLAY_NAME
 from ..models import coerce_job
 from ..profile import EXPECTED_JOB_ORDER
 from ..text import section_aware_excerpt
@@ -72,7 +71,7 @@ def _parse_selection(raw, employer_order=None) -> dict:
 
 
 def build_cv_bullet_selection_prompt(
-    base_tex, job, employer_order=None, candidate_name=CV_DISPLAY_NAME
+    base_tex, job, candidate_name, employer_order=None
 ) -> str:
     """Build the legacy deterministic-bullet selection prompt byte-for-byte."""
     job = coerce_job(job)
@@ -122,10 +121,10 @@ def _configured_selection_prompt(prompts, base_tex, job, profile):
     return builder(base_tex, job)
 
 
-def select_cv_bullets(client, base_tex, job, prompts=None, profile=None) -> dict:
+def select_cv_bullets(client, base_tex, job, profile, prompts=None) -> dict:
     """Ask the model which base bullets to keep per job; return {company: [idx]}."""
-    employer_order = getattr(profile, "employer_order", None)
-    candidate_name = getattr(profile, "display_name", CV_DISPLAY_NAME)
+    employer_order = profile.employer_order
+    candidate_name = profile.display_name
     prompt = (
         _configured_selection_prompt(prompts, base_tex, job, profile)
         if prompts is not None

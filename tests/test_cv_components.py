@@ -332,12 +332,13 @@ def test_tailor_resume_canonicalizes_its_job_argument(monkeypatch):
     received = []
     monkeypatch.setattr(
         "job_search.llm.tailor.select_cv_bullets",
-        lambda llm, base, job, prompts=None, profile=None: received.append(job) or {},
+        lambda llm, base, job, profile, prompts=None: received.append(job) or {},
     )
 
     tailor_resume(
         SelectingLLM(), "instr", load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "Swift role. " * 40},
+        CandidateProfile(),
     )
 
     assert isinstance(received[0], Job)

@@ -9,6 +9,7 @@ import pytest
 
 # --- modules under test (repoint on migration) ---
 import job_search.llm.clients as clients_module
+from job_search.components import CandidateProfile
 from job_search.config import load_base_tex
 from job_search.latex.tailor_render import extract_job_bullets
 from job_search.llm.clients import (
@@ -1217,6 +1218,7 @@ def test_select_cv_bullets_request_contract_and_selection():
         client,
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "We build iOS apps."},
+        CandidateProfile(),
     )
 
     # the CV-edit schema is threaded through to the model
@@ -1235,6 +1237,7 @@ def test_select_cv_bullets_non_json_returns_empty_selection():
         client,
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "desc"},
+        CandidateProfile(),
     )
 
     assert selection == {}
@@ -1255,6 +1258,7 @@ def test_select_cv_bullets_prompt_surfaces_late_restriction():
         client,
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": long_desc},
+        CandidateProfile(),
     )
 
     assert "US residents only" in client.prompts[0]
@@ -1268,6 +1272,7 @@ def test_tailor_resume_renders_selected_bullets():
         "instr",
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "d"},
+        CandidateProfile(),
     )
 
     assert validate_tailored_cv(out) == []
@@ -1286,6 +1291,7 @@ def test_tailor_resume_falls_back_on_bad_selection():
         "instr",
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "d"},
+        CandidateProfile(),
     )
 
     assert validate_tailored_cv(out) == []
@@ -1304,5 +1310,8 @@ def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
         "Check Point": []
     }
     client = _RecordingClient(['{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}'])
-    out = tailor_resume(client, "instr", load_base_tex(), {"title": "iOS", "company": "Acme", "description": "d"})
+    out = tailor_resume(
+        client, "instr", load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "d"}, CandidateProfile(),
+    )
     assert validate_tailored_cv(out) == []

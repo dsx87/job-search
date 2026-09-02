@@ -223,16 +223,14 @@ class DefaultPromptSet:
         return build_job_summary_prompt(job)
 
     def cv_bullet_selection(
-        self, base_tex: str, job: object, profile: object = None
+        self, base_tex: str, job: object, profile: object
     ) -> str:
         from .llm.cv_edits import build_cv_bullet_selection_prompt
         return build_cv_bullet_selection_prompt(
             base_tex,
             job,
-            employer_order=getattr(profile, "employer_order", None),
-            candidate_name=getattr(
-                profile, "display_name", CandidateProfile.display_name
-            ),
+            employer_order=profile.employer_order,
+            candidate_name=profile.display_name,
         )
 
     def compiler_repair(self, tex_source: str, error_excerpt: str) -> str:
@@ -340,15 +338,13 @@ class FilePromptSet:
         )
 
     def cv_bullet_selection(
-        self, base_tex: str, job: object, profile: object = None
+        self, base_tex: str, job: object, profile: object
     ) -> str:
         from .latex.tailor_render import extract_job_bullets
         from .llm.cv_edits import _configured_selection_prompt
 
         lines = []
-        for entry in extract_job_bullets(
-            base_tex, getattr(profile, "employer_order", None)
-        ):
+        for entry in extract_job_bullets(base_tex, profile.employer_order):
             lines.append("{}:".format(entry["company"]))
             lines.extend(
                 "  [{}] {}".format(index, " ".join(str(bullet).split()))
@@ -356,9 +352,7 @@ class FilePromptSet:
             )
         values = self._job_values(job, 7000)
         values["resume_bullets"] = "\n".join(lines)
-        values["candidate_name"] = getattr(
-            profile, "display_name", CandidateProfile.display_name
-        )
+        values["candidate_name"] = profile.display_name
         return self._render(
             "cv_bullet_selection", values,
             lambda: _configured_selection_prompt(

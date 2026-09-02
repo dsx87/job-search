@@ -36,7 +36,7 @@ def test_default_prompt_text_is_byte_compatible_with_the_legacy_builders():
     assert _sha(prompts.job_summary(job)) == (
         "d3a245365e747e426b44859319052e519abcd48b17dd9f6199825df506b45236"
     )
-    assert _sha(prompts.cv_bullet_selection(load_base_tex(), job)) == (
+    assert _sha(prompts.cv_bullet_selection(load_base_tex(), job, CandidateProfile())) == (
         "d4fd277bb774b637c91dc8339bbbaa5f00392890f909ff3fa66ad8b05b5e14fe"
     )
     assert _sha(prompts.compiler_repair("\\documentclass{article}", "! Error")) == (
@@ -60,7 +60,9 @@ def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
 
     assert prompts.fact_extraction(_job()).startswith("Senior iOS Engineer|Acme|Berlin|True|")
     assert prompts.job_summary(_job()).startswith("Senior iOS Engineer|")
-    assert "Check Point" in prompts.cv_bullet_selection(load_base_tex(), _job())
+    assert "Check Point" in prompts.cv_bullet_selection(
+        load_base_tex(), _job(), CandidateProfile()
+    )
     assert prompts.compiler_repair("TEX", "ERROR") == "ERROR|TEX"
     assert prompts.revision == "my-prompts-v2"
 

@@ -6,6 +6,7 @@ TelegramClient-shaped object instead of reading module globals.
 import pytest
 
 # --- modules under test (repoint on migration) ---
+from job_search.components import CVArtifact
 from job_search.models import Job
 from job_search.pipeline import stages
 from job_search.pipeline.stages import (
@@ -41,7 +42,12 @@ class FakeTelegram:
 
 
 def _payload(pdf_bytes=b"PDF"):
-    return {"title": "iOS", "company": "Acme", "message": "hi", "pdf_bytes": pdf_bytes}
+    artifact = (
+        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", pdf_bytes)
+        if pdf_bytes
+        else None
+    )
+    return {"title": "iOS", "company": "Acme", "message": "hi", "artifact": artifact}
 
 
 def test_description_enrichment_updates_legacy_mapping():
