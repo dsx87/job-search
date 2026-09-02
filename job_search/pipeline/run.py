@@ -28,6 +28,7 @@ from ..config import (
     load_tailoring_instructions,
 )
 from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
+from ..digest.section_config import load_sections
 from ..identity import job_identity_keys, normalize_url
 from ..llm.clients import LLMClient, model_shutdown_warning
 from ..llm.summarize import summarize_job
@@ -455,7 +456,7 @@ def _digest_context(
             artifact = _unique_artifact(artifact, taken)
             taken.add(artifact.filename)
         review.append(ReviewEntry(job, evaluation, summary, artifact=artifact))
-    sections, sections_error = components.section_provider.load()
+    sections, sections_error = load_sections(cfg.sections_file)
     if sections_error:
         # Announced here rather than at load time so a config problem surfaces
         # only on a run that actually had something to group, and exactly once

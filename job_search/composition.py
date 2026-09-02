@@ -23,7 +23,6 @@ from .components import (
     OutputBackend,
     OutputRenderer,
     PromptSet,
-    SectionProvider,
     default_components,
 )
 
@@ -104,7 +103,6 @@ def _validate_shape(components: Components, problems: list) -> None:
     if not isinstance(components.profile, CandidateProfile):
         problems.append("profile must be a CandidateProfile")
     _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
-    _require_protocol("section_provider", components.section_provider, SectionProvider, problems)
     _require_protocol("output_renderer", components.output_renderer, OutputRenderer, problems)
     _require_protocol("output_backend", components.output_backend, OutputBackend, problems)
 

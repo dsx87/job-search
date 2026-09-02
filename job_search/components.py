@@ -134,11 +134,6 @@ class CVRenderer(Protocol):
 
 
 @runtime_checkable
-class SectionProvider(Protocol):
-    def load(self) -> tuple: ...
-
-
-@runtime_checkable
 class OutputRenderer(Protocol):
     kind: str
 
@@ -216,7 +211,6 @@ class Components:
     evaluator: JobEvaluator
     profile: CandidateProfile
     cv_renderer: CVRenderer
-    section_provider: SectionProvider
     output_renderer: OutputRenderer
     output_backend: OutputBackend
 
@@ -414,15 +408,6 @@ class FilePromptSet:
             {"tex_source": tex_source, "compiler_errors": error_excerpt},
             lambda: self.fallback.compiler_repair(tex_source, error_excerpt),
         )
-
-
-class DefaultSectionProvider:
-    def __init__(self, path: str):
-        self.path = path
-
-    def load(self) -> tuple:
-        from .digest.section_config import load_sections
-        return load_sections(self.path)
 
 
 class DefaultOutputRenderer:
@@ -626,7 +611,6 @@ def default_components(
         evaluator=evaluator or DefaultJobEvaluator(prompts),
         profile=profile,
         cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
-        section_provider=DefaultSectionProvider(getattr(settings, "sections_file", "sections.py")),
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(
             telegram, getattr(settings, "telegraph_access_token", "")
@@ -639,5 +623,5 @@ __all__ = [
     "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
     "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
     "JobEvaluator", "LLMProvider", "LLMService", "OutputBackend",
-    "OutputRenderer", "PromptSet", "SectionProvider", "default_components",
+    "OutputRenderer", "PromptSet", "default_components",
 ]

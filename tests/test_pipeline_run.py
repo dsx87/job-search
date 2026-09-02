@@ -171,7 +171,6 @@ def configured_plain_components(messages):
             fingerprint=lambda _criteria: "fit-v1",
         ),
         cv_renderer=SimpleNamespace(),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=PlainTextOutputRenderer(),
         output_backend=RecordingTextBackend(messages.append),
     )
@@ -482,13 +481,15 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
         candidate_filter=SimpleNamespace(include=lambda _job: True),
         evaluator=Evaluator(),
         cv_renderer=Renderer(),
-        section_provider=SimpleNamespace(
-            load=lambda: (section_calls.append("load") or ((), ""))
-        ),
         output_renderer=DigestRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        run,
+        "load_sections",
+        lambda path: (section_calls.append(path) or ((), "")),
+    )
     monkeypatch.setattr(
         delivery,
         "publish_cvs",
@@ -497,11 +498,10 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
         ),
     )
 
-    assert run.run_daily(
-        make_config(digest_delivery=True, telegraph_access_token="configured")
-    ) == 0
+    cfg = make_config(digest_delivery=True, telegraph_access_token="configured")
+    assert run.run_daily(cfg) == 0
     assert calls == [(llm, "iOS Engineer", "custom fit")]
-    assert section_calls == ["load"]
+    assert section_calls == [cfg.sections_file]
     assert render_calls == [1]
     assert telegram.documents[0][0].startswith("job-digest-")
     with zipfile.ZipFile(io.BytesIO(telegram.documents[0][1])) as archive:
@@ -541,7 +541,6 @@ def test_default_backend_custom_digest_renderer_exception_records_retry(monkeypa
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=None,
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=Renderer(),
         output_backend=backend,
     )
@@ -631,7 +630,6 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
                 AssertionError("CV rendering must be skipped")
             )
         ),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=Renderer(),
         output_backend=Backend(),
     )
@@ -734,7 +732,6 @@ def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=SimpleNamespace(revision="test"),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=Renderer(),
         output_backend=Backend(),
     )
@@ -818,7 +815,6 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
             },
         ),
         cv_renderer=SimpleNamespace(),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=SimpleNamespace(
             kind="plain",
             render_notice=lambda notice, **_context: str(notice),
@@ -864,7 +860,6 @@ def test_configured_digest_cv_stats_count_fit_artifacts_not_review_artifacts(
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=SimpleNamespace(revision="test"),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=SimpleNamespace(
             kind="plain",
             render_notice=lambda notice, **_context: str(notice),
@@ -931,7 +926,6 @@ def test_configured_empty_digest_commits_prior_deferral_without_batch_delivery(
     components = SimpleNamespace(
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=SimpleNamespace(revision="test"),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=Renderer(),
         output_backend=Backend(),
     )
@@ -1012,7 +1006,6 @@ def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
             fingerprint=lambda _criteria: "fit-v1",
         ),
         cv_renderer=SimpleNamespace(),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=renderer,
         output_backend=Backend(),
     )
@@ -1078,7 +1071,6 @@ def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch
                 "candidate.pdf", "application/pdf", b"PDF"
             )
         ),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=Renderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
@@ -1558,7 +1550,6 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
                 AssertionError("text-only test mode must skip CV rendering")
             )
         ),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=Renderer(),
         output_backend=Backend(),
     )
@@ -1606,7 +1597,6 @@ def test_mode_preserves_custom_artifact_with_default_telegram_backend(monkeypatc
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: artifact
         ),
-        section_provider=SimpleNamespace(load=lambda: ((), "")),
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
