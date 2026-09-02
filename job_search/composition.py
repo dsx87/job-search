@@ -17,8 +17,6 @@ from .components import (
     CandidateProfile,
     Components,
     DefaultCVRenderer,
-    DefaultJobEvaluator,
-    JobEvaluator,
     LLMService,
     OutputBackend,
     OutputRenderer,
@@ -99,7 +97,6 @@ def _validate_shape(components: Components, problems: list) -> None:
     _require_protocol("prompts", components.prompts, PromptSet, problems)
     _require_protocol("llm", components.llm, LLMService, problems)
     _require_protocol("candidate_filter", components.candidate_filter, CandidateFilter, problems)
-    _require_protocol("evaluator", components.evaluator, JobEvaluator, problems)
     if not isinstance(components.profile, CandidateProfile):
         problems.append("profile must be a CandidateProfile")
     _require_protocol("cv_renderer", components.cv_renderer, CVRenderer, problems)
@@ -247,9 +244,7 @@ def _validate_environment(
     # remain a soft presentation fallback and seen-state may be absent on a
     # first run, so neither belongs here.
     required_files = []
-    if command in ("daily", "check") and getattr(
-        components.evaluator, "requires_criteria", True
-    ):
+    if command in ("daily", "check"):
         required_files.append(
             ("criteria_file", getattr(settings, "criteria_file", "criteria.md"))
         )
@@ -300,19 +295,11 @@ def rebind_defaults(baseline: Mapping, configured: Components) -> Components:
     """Re-wire built-in components a configuration left alone but invalidated.
 
     Replacing only ``prompts`` (or only ``profile``) is the common override, and
-    the built-in evaluator and CV renderer were constructed against the old
-    ones. A component the configuration replaced outright is never touched —
-    that object is the author's, and its wiring is their business.
+    the built-in CV renderer was constructed against the old ones. A component
+    the configuration replaced outright is never touched — that object is the
+    author's, and its wiring is their business.
     """
     changes = {}
-    evaluator = configured.evaluator
-    if (
-        evaluator is baseline["evaluator"]
-        and configured.prompts is not baseline["prompts"]
-        and isinstance(evaluator, DefaultJobEvaluator)
-    ):
-        changes["evaluator"] = type(evaluator)(configured.prompts)
-
     renderer = configured.cv_renderer
     if (
         renderer is baseline["cv_renderer"]

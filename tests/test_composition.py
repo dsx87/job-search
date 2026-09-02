@@ -124,7 +124,6 @@ def test_in_place_config_mutation_rebuilds_dependent_defaults(tmp_path, monkeypa
 
     components = load_components(PipelineConfig(), command="list")
 
-    assert components.evaluator.prompts is components.prompts
     assert components.cv_renderer.prompts is components.prompts
     assert components.cv_renderer.profile is components.profile
     assert components.cv_renderer.compiler.prompts is components.prompts
@@ -316,29 +315,6 @@ def test_check_config_rejects_missing_required_files(tmp_path, monkeypatch):
 
     with pytest.raises(ConfigurationError, match="criteria_file"):
         load_components(settings, command="check")
-
-
-def test_criteria_free_evaluator_does_not_preflight_criteria_file(
-    tmp_path, monkeypatch
-):
-    config_file = tmp_path / "criteria_free.py"
-    config_file.write_text(
-        "from dataclasses import replace\n"
-        "class Evaluator:\n"
-        "    revision = 'criteria-free-v1'\n"
-        "    requires_criteria = False\n"
-        "    def evaluate(self, llm, criteria, job): return {'fit': False}\n"
-        "    def fingerprint(self, criteria): return self.revision\n"
-        "def configure(defaults, settings):\n"
-        "    return replace(defaults, evaluator=Evaluator())\n",
-        encoding="utf-8",
-    )
-    _configured_env(monkeypatch, config_file)
-    settings = PipelineConfig(criteria_file=str(tmp_path / "absent.md"))
-
-    components = load_components(settings, command="check")
-
-    assert components.evaluator.requires_criteria is False
 
 
 def test_default_renderer_subclass_owns_its_inputs(tmp_path, monkeypatch):

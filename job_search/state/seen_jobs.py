@@ -401,6 +401,20 @@ def criteria_version(criteria: str) -> str:
     return _short_hash(collapse_ws(criteria), POLICY_VERSION)
 
 
+DEFAULT_PROMPT_REVISION = "default-prompts-v1"   # DefaultPromptSet.revision
+LEGACY_POLICY_MARKER = "default-policy-v1"       # frozen: the evaluator object is gone,
+                                                 # but this string is part of stored state
+
+
+def criteria_fingerprint(criteria: str, prompt_revision: str = "") -> str:
+    revision = prompt_revision or DEFAULT_PROMPT_REVISION
+    if revision == DEFAULT_PROMPT_REVISION:
+        return criteria_version(criteria)
+    return criteria_version(
+        "{}\n[evaluator:{}]\n[prompts:{}]".format(criteria, LEGACY_POLICY_MARKER, revision)
+    )
+
+
 def evaluation_signature(content: str, criteria_version: str = "") -> str:
     """Return a short signature of a posting's content under a criteria version."""
     return _short_hash(_normalize_content(content), str(criteria_version or ""))

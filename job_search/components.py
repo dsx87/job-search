@@ -57,14 +57,6 @@ class CandidateFilter(Protocol):
     def include(self, job: object) -> bool: ...
 
 
-@runtime_checkable
-class JobEvaluator(Protocol):
-    revision: str
-
-    def evaluate(self, llm: LLMService, criteria: str, job: object) -> dict: ...
-    def fingerprint(self, criteria: str) -> str: ...
-
-
 @dataclass(frozen=True)
 class CandidateProfile:
     """Public candidate identity and CV-policy configuration."""
@@ -208,7 +200,6 @@ class Components:
     prompts: PromptSet
     llm: LLMService
     candidate_filter: CandidateFilter
-    evaluator: JobEvaluator
     profile: CandidateProfile
     cv_renderer: CVRenderer
     output_renderer: OutputRenderer
@@ -220,29 +211,6 @@ class AllowAllCandidates:
 
     def include(self, job: object) -> bool:
         return True
-
-
-class DefaultJobEvaluator:
-    revision = "default-policy-v1"
-    requires_criteria = True
-
-    def __init__(self, prompts: PromptSet = None):
-        self.prompts = prompts
-
-    def evaluate(self, llm: LLMService, criteria: str, job: object) -> dict:
-        from .llm.eval import evaluate_job
-        return evaluate_job(llm, criteria, job, prompts=self.prompts)
-
-    def fingerprint(self, criteria: str) -> str:
-        from .state.seen_jobs import criteria_version
-        prompt_revision = getattr(self.prompts, "revision", DefaultPromptSet.revision)
-        if self.revision == "default-policy-v1" and prompt_revision == DefaultPromptSet.revision:
-            return criteria_version(criteria)
-        return criteria_version(
-            "{}\n[evaluator:{}]\n[prompts:{}]".format(
-                criteria, self.revision, prompt_revision
-            )
-        )
 
 
 class DefaultPromptSet:
@@ -582,7 +550,6 @@ def default_components(
     *,
     prompts: PromptSet = None,
     llm: LLMService = None,
-    evaluator: JobEvaluator = None,
     telegram: object = None,
 ) -> Components:
     """Construct the side-effect-free built-in object graph for ``settings``."""
@@ -608,7 +575,6 @@ def default_components(
         prompts=prompts,
         llm=llm,
         candidate_filter=AllowAllCandidates(),
-        evaluator=evaluator or DefaultJobEvaluator(prompts),
         profile=profile,
         cv_renderer=DefaultCVRenderer(settings, profile, prompts=prompts),
         output_renderer=DefaultOutputRenderer(),
@@ -622,6 +588,6 @@ __all__ = [
     "CVArtifact", "CVCompiler", "CVRenderer", "CandidateFilter",
     "CandidateProfile", "Components", "DefaultCVRenderer", "DefaultPromptSet",
     "DeliveryOutcome", "DigestOutcome", "FilePromptSet", "LatexCompiler",
-    "JobEvaluator", "LLMProvider", "LLMService", "OutputBackend",
+    "LLMProvider", "LLMService", "OutputBackend",
     "OutputRenderer", "PromptSet", "default_components",
 ]

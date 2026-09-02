@@ -158,18 +158,6 @@ def configured_plain_components(messages):
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=SimpleNamespace(
-            revision="fit-v1",
-            requires_criteria=False,
-            evaluate=lambda _llm, _criteria, _job: {
-                "fit": True,
-                "verdict": "fit",
-                "reason": "custom fit",
-                "timezone_note": None,
-                "facts": {},
-            },
-            fingerprint=lambda _criteria: "fit-v1",
-        ),
         cv_renderer=SimpleNamespace(),
         output_renderer=PlainTextOutputRenderer(),
         output_backend=RecordingTextBackend(messages.append),
@@ -363,25 +351,21 @@ def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
             calls.append(("filter", candidate.title))
             return False
 
-    class NeverEvaluate:
-        revision = "custom-evaluator-v1"
-
-        def evaluate(self, llm, criteria, candidate):
-            raise AssertionError("filtered jobs must not reach the evaluator")
-
-        def fingerprint(self, criteria):
-            return "custom-fingerprint"
-
     llm = SimpleNamespace(usage_summary=lambda: "usage")
     components = SimpleNamespace(
         llm=llm,
         prompts=object(),
         candidate_filter=RejectAll(),
-        evaluator=NeverEvaluate(),
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("filtered jobs must not reach the evaluator")
+        ),
+    )
 
     assert run.run_daily(make_config()) == 0
     assert calls == [("filter", "iOS Engineer")]
@@ -403,28 +387,22 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
         def include(self, candidate):
             return True
 
-    class Evaluator:
-        revision = "policy-v7"
-
-        def evaluate(self, llm, criteria, candidate):
-            observed.append((llm, criteria, candidate.title))
-            return {
-                "fit": False, "verdict": "nonfit", "reason": "custom policy",
-                "timezone_note": None, "facts": {},
-            }
-
-        def fingerprint(self, criteria):
-            return "policy-v7-fingerprint"
+    def fake_evaluate_job(llm, criteria, candidate, prompts=None):
+        observed.append((llm, criteria, candidate.title))
+        return {
+            "fit": False, "verdict": "nonfit", "reason": "custom policy",
+            "timezone_note": None, "facts": {},
+        }
 
     components = SimpleNamespace(
         llm=configured_llm,
         prompts=object(),
         candidate_filter=IncludeAll(),
-        evaluator=Evaluator(),
         output_renderer=DefaultOutputRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
 
     assert run.run_daily(make_config()) == 0
     assert observed == [(configured_llm, "criteria", "iOS Engineer")]
@@ -443,18 +421,6 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
     calls = []
     section_calls = []
     render_calls = []
-
-    class Evaluator:
-        revision = "fit-v1"
-
-        def evaluate(self, llm, criteria, candidate):
-            return {
-                "fit": True, "verdict": "fit", "reason": "custom fit",
-                "timezone_note": None, "facts": {},
-            }
-
-        def fingerprint(self, criteria):
-            return "fit-v1"
 
     class Renderer:
         media_types = ("application/pdf",)
@@ -479,12 +445,18 @@ def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
         llm=llm,
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=Evaluator(),
         cv_renderer=Renderer(),
         output_renderer=DigestRenderer(),
         output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True, "verdict": "fit", "reason": "custom fit",
+            "timezone_note": None, "facts": {},
+        },
+    )
     monkeypatch.setattr(
         run,
         "load_sections",
@@ -576,19 +548,6 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
     _telegram, saved = install_daily_fakes(monkeypatch, [job])
     deliveries = []
 
-    class Evaluator:
-        revision = "fit-v1"
-        requires_criteria = False
-
-        def evaluate(self, llm, criteria, candidate):
-            return {
-                "fit": True, "verdict": "fit", "reason": "custom fit",
-                "timezone_note": None, "facts": {},
-            }
-
-        def fingerprint(self, criteria):
-            return "fit-v1"
-
     class Renderer:
         kind = "plain"
 
@@ -624,7 +583,6 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
         ),
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=Evaluator(),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
                 AssertionError("CV rendering must be skipped")
@@ -635,11 +593,11 @@ def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
     monkeypatch.setattr(
-        run,
-        "load_criteria",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("criteria-free evaluator must not load criteria")
-        ),
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True, "verdict": "fit", "reason": "custom fit",
+            "timezone_note": None, "facts": {},
+        },
     )
     monkeypatch.setattr(
         run,
@@ -804,16 +762,6 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
         ),
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=SimpleNamespace(
-            fingerprint=lambda _criteria: "signature",
-            evaluate=lambda *_args, **_kwargs: {
-                "fit": True,
-                "verdict": "fit",
-                "reason": "custom fit",
-                "timezone_note": None,
-                "facts": {},
-            },
-        ),
         cv_renderer=SimpleNamespace(),
         output_renderer=SimpleNamespace(
             kind="plain",
@@ -823,6 +771,16 @@ def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
         output_backend=Backend(),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "custom fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
 
     assert run.run_daily(make_config(digest_delivery=True)) == 1
 
@@ -1000,16 +958,12 @@ def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=SimpleNamespace(
-            revision="fit-v1",
-            evaluate=lambda _llm, _criteria, _job: evaluation,
-            fingerprint=lambda _criteria: "fit-v1",
-        ),
         cv_renderer=SimpleNamespace(),
         output_renderer=renderer,
         output_backend=Backend(),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_a, **_k: evaluation)
 
     cfg = make_config(digest_delivery=False)
     cfg.telegram_bot_token = ""
@@ -1055,17 +1009,6 @@ def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _job: True),
-        evaluator=SimpleNamespace(
-            revision="fit-v1",
-            evaluate=lambda _llm, _criteria, _job: {
-                "fit": True,
-                "verdict": "fit",
-                "reason": "custom fit",
-                "timezone_note": None,
-                "facts": {},
-            },
-            fingerprint=lambda _criteria: "fit-v1",
-        ),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: CVArtifact(
                 "candidate.pdf", "application/pdf", b"PDF"
@@ -1075,6 +1018,16 @@ def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch
         output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "custom fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
 
     assert run.run_daily(make_config(digest_delivery=False)) == 0
 
@@ -1096,6 +1049,16 @@ def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypat
     messages = []
     components = configured_plain_components(messages)
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "custom fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
 
     cfg = make_config(digest_delivery=False)
     cfg.telegram_bot_token = ""
@@ -1489,21 +1452,15 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
     _telegram, _saved = install_daily_fakes(monkeypatch, [job])
     calls = []
 
-    class Evaluator:
-        revision = "test-evaluator-v1"
-
-        def fingerprint(self, criteria):
-            return "test-evaluator-v1"
-
-        def evaluate(self, llm, criteria, candidate):
-            calls.append(("evaluate", candidate.title))
-            return {
-                "fit": True,
-                "verdict": "fit",
-                "reason": "configured fit",
-                "timezone_note": None,
-                "facts": {},
-            }
+    def fake_evaluate_job(llm, criteria, candidate, prompts=None):
+        calls.append(("evaluate", candidate.title))
+        return {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "configured fit",
+            "timezone_note": None,
+            "facts": {},
+        }
 
     class Renderer:
         kind = "plain"
@@ -1544,7 +1501,6 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
         candidate_filter=SimpleNamespace(
             include=lambda candidate: calls.append(("filter", candidate.title)) or True
         ),
-        evaluator=Evaluator(),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
                 AssertionError("text-only test mode must skip CV rendering")
@@ -1554,6 +1510,7 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
         output_backend=Backend(),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
     assert run.run_daily(make_config(), test=True) == 0
     assert calls == [
         ("filter", "Configured role"),
@@ -1583,17 +1540,6 @@ def test_mode_preserves_custom_artifact_with_default_telegram_backend(monkeypatc
         llm=SimpleNamespace(usage_summary=lambda: "usage"),
         prompts=DefaultPromptSet(),
         candidate_filter=SimpleNamespace(include=lambda _candidate: True),
-        evaluator=SimpleNamespace(
-            revision="test-evaluator-v1",
-            fingerprint=lambda _criteria: "test-evaluator-v1",
-            evaluate=lambda _llm, _criteria, _candidate: {
-                "fit": True,
-                "verdict": "fit",
-                "reason": "configured fit",
-                "timezone_note": None,
-                "facts": {},
-            },
-        ),
         cv_renderer=SimpleNamespace(
             render_tailored=lambda *_a, **_k: artifact
         ),
@@ -1601,6 +1547,16 @@ def test_mode_preserves_custom_artifact_with_default_telegram_backend(monkeypatc
         output_backend=DefaultOutputBackend(telegram),
     )
     monkeypatch.setattr(run, "load_components", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "configured fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
 
     assert run.run_daily(make_config(), test=True) == 0
 

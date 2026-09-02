@@ -40,6 +40,7 @@ from ..state.git_sync import pull_state, push_state
 from ..state.seen_jobs import (
     SeenSet,
     acknowledge_block_alert,
+    criteria_fingerprint,
     delivery_retry_state,
     evaluation_signature,
     load_seen_jobs,
@@ -273,11 +274,12 @@ def _runtime_components(cfg, command):
     return load_components(cfg, command=command, defaults=defaults)
 
 
-def _evaluate_candidate(llm, criteria, job, evaluator):
+def _evaluate_candidate(llm, criteria, job, prompts=None):
     """Evaluate a candidate only when its cleaned description is sufficient."""
     if not ensure_job_description(job):
         return None
-    return evaluator.evaluate(llm, criteria, job)
+    from ..llm.eval import evaluate_job
+    return evaluate_job(llm, criteria, job, prompts=prompts)
 
 
 def _prepare_with_renderer(renderer, llm, job, evaluation=None):
@@ -640,12 +642,10 @@ def run_daily(cfg, test: bool = False) -> int:
                     "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
                     flush=True,
                 )
-        criteria = (
-            _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
-            if getattr(components.evaluator, "requires_criteria", True)
-            else ""
+        criteria = _load_file_for(cfg, "criteria_file", CRITERIA_FILE, load_criteria)
+        crit_ver = criteria_fingerprint(
+            criteria, getattr(components.prompts, "revision", "")
         )
-        crit_ver = components.evaluator.fingerprint(criteria)
         # Preflight the files the built-in renderer opens, before state sync or
         # fetch. validate_components already checked they exist; this reads them,
         # which is what catches an unreadable or empty one. The values are
@@ -719,7 +719,8 @@ def run_daily(cfg, test: bool = False) -> int:
                 print("Test job excluded by the configured candidate filter.")
                 print("Done.", flush=True)
                 return 0
-            evaluation = components.evaluator.evaluate(llm, criteria, d)
+            from ..llm.eval import evaluate_job
+            evaluation = evaluate_job(llm, criteria, d, prompts=components.prompts)
             if not evaluation.get("fit"):
                 print("    Skip — {}".format(evaluation.get("reason", "")))
                 print("Done.", flush=True)
@@ -851,7 +852,7 @@ def run_daily(cfg, test: bool = False) -> int:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
                     pool.submit(
-                        _evaluate_candidate, llm, criteria, job, components.evaluator
+                        _evaluate_candidate, llm, criteria, job, components.prompts
                     ): (job, retry_state)
                     for job, retry_state in evaluation_jobs
                 }

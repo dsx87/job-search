@@ -4,13 +4,12 @@ import pytest
 
 from job_search.components import (
     CandidateProfile,
-    DefaultJobEvaluator,
     DefaultPromptSet,
     FilePromptSet,
 )
 from job_search.config import load_base_tex
 from job_search.models import Job
-from job_search.state.seen_jobs import criteria_version
+from job_search.state.seen_jobs import criteria_fingerprint, criteria_version
 
 
 def _job():
@@ -100,10 +99,12 @@ def test_file_prompt_set_accepts_legacy_two_argument_cv_fallback():
     )
 
 
-def test_default_evaluator_fingerprint_is_legacy_compatible_until_prompts_change():
+def test_criteria_fingerprint_is_legacy_compatible_until_prompts_change():
     criteria = "Senior native Apple roles"
 
-    assert DefaultJobEvaluator(DefaultPromptSet()).fingerprint(criteria) == criteria_version(criteria)
+    assert criteria_fingerprint(criteria) == criteria_version(criteria)
+    # Pinning the default prompt revision explicitly must take the same
+    # no-marker branch as leaving it unset.
+    assert criteria_fingerprint(criteria, "default-prompts-v1") == criteria_version(criteria)
 
-    custom = type("Prompts", (DefaultPromptSet,), {"revision": "prompts-v2"})()
-    assert DefaultJobEvaluator(custom).fingerprint(criteria) != criteria_version(criteria)
+    assert criteria_fingerprint(criteria, "prompts-v2") != criteria_version(criteria)
