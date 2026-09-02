@@ -1,0 +1,11 @@
+{
+  "name": "job-searcher",
+  "description": "Configure, deploy, and understand the AI Job Hunter pipeline in this repository",
+  "version": "1.0.0",
+  "author": {
+    "name": "dsx87"
+  },
+  "homepage": "https://github.com/dsx87/job-search",
+  "repository": "https://github.com/dsx87/job-search",
+  "license": "MIT"
+}
