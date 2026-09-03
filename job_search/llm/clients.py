@@ -25,10 +25,12 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from ..config import (
     ANTHROPIC_MAX_TOKENS,
+    ConfigurationError,
     LLM_BREAKER_THRESHOLD,
     LLM_CIRCUIT_BREAK_STATUS,
     LLM_FALLBACK_MODEL,
@@ -60,6 +62,18 @@ def _int(value):
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _canonical_http_hostname(url: str) -> str:
+    """Return a DNS-comparable host for an absolute HTTP(S) URL, or ``""``."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return ""
+        parsed.port  # validates numeric range before configuration is accepted
+        return parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except (UnicodeError, ValueError):
+        return ""
 
 
 def model_shutdown_warning(model: str, today=None) -> str:
@@ -311,11 +325,28 @@ class OpenAIProvider:
         model: str = LLM_FALLBACK_MODEL,
         api_base: str = "",
         send_temperature: bool = False,
+        auth_mode: str = "bearer",
     ):
+        if auth_mode not in ("bearer", "none"):
+            raise ValueError("OpenAI auth_mode must be 'bearer' or 'none'")
+        explicit_api_base = str(api_base or "").strip().rstrip("/")
+        default_api_base = SCHEME_DEFAULT_BASE["openai"].rstrip("/")
+        if auth_mode == "none":
+            hostname = _canonical_http_hostname(explicit_api_base)
+            if not hostname or hostname == "api.openai.com":
+                raise ValueError(
+                    "OpenAI auth_mode='none' requires an explicit non-default api_base"
+                )
         self.api_key = api_key
         self.model = model
-        self.api_base = (api_base or SCHEME_DEFAULT_BASE["openai"]).rstrip("/")
+        self.api_base = (
+            explicit_api_base
+            if auth_mode == "none"
+            else (api_base or default_api_base).rstrip("/")
+        )
         self.send_temperature = send_temperature
+        self.auth_mode = auth_mode
+        self.requires_api_key = auth_mode == "bearer"
         self.last_usage = dict(_ZERO_USAGE)
 
     def generate(self, prompt: str, temperature: float = 0.0, json_mode: bool = False, response_schema=None) -> str:
@@ -344,7 +375,9 @@ class OpenAIProvider:
             messages.insert(0, {"role": "system", "content": _JSON_SYSTEM_MESSAGE})
 
         url = f"{self.api_base}/chat/completions"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+        headers = {"Content-Type": "application/json"}
+        if self.auth_mode == "bearer":
+            headers["Authorization"] = f"Bearer {self.api_key}"
         result = _post_json_with_retry(url, payload, headers, label=f"openai ({self.model})")
 
         self.last_usage = _openai_usage(result)
@@ -470,22 +503,55 @@ class LLMClient:
 
     @classmethod
     def from_config(cls, cfg) -> "LLMClient":
-        """Build both providers from a PipelineConfig-shaped object via the factory."""
+        """Build both providers from a PipelineConfig-shaped object via the factory.
+
+        auth_mode validation lives here — fired on every build, not only at
+        ``--check-config`` — rather than in the (deleted) composition
+        validator: ``auth_mode`` was previously forwarded only when the
+        scheme resolved to ``openai``, so a ``gemini`` + ``none`` combination
+        was silently ignored instead of rejected.
+        """
+        primary_scheme = str(cfg.llm_primary_scheme or "").strip().lower()
+        primary_auth_mode = getattr(cfg, "llm_primary_auth_mode", "bearer")
+        if primary_auth_mode not in ("bearer", "none"):
+            raise ConfigurationError("llm_primary_auth_mode must be 'bearer' or 'none'")
+        primary_options = {}
+        if _SCHEME_ALIASES.get(primary_scheme, primary_scheme) == "openai":
+            primary_options["auth_mode"] = primary_auth_mode
+        elif primary_auth_mode == "none":
+            raise ConfigurationError("llm_primary_auth_mode='none' requires the openai scheme")
         primary = build_provider(
             cfg.llm_primary_scheme,
             api_key=cfg.llm_primary_api_key,
             model=cfg.llm_primary_model,
             api_base=cfg.llm_primary_api_base,
+            **primary_options,
         )
         fallback = None
-        if cfg.llm_fallback_api_key:
+        fallback_auth_mode = getattr(cfg, "llm_fallback_auth_mode", "bearer")
+        if fallback_auth_mode not in ("bearer", "none"):
+            raise ConfigurationError("llm_fallback_auth_mode must be 'bearer' or 'none'")
+        if cfg.llm_fallback_api_key or fallback_auth_mode == "none":
+            fallback_scheme = str(cfg.llm_fallback_scheme or "").strip().lower()
+            fallback_options = {}
+            if _SCHEME_ALIASES.get(fallback_scheme, fallback_scheme) == "openai":
+                fallback_options["auth_mode"] = fallback_auth_mode
+            elif fallback_auth_mode == "none":
+                raise ConfigurationError(
+                    "llm_fallback_auth_mode='none' requires the openai scheme"
+                )
             fallback = build_provider(
                 cfg.llm_fallback_scheme,
                 api_key=cfg.llm_fallback_api_key,
                 model=cfg.llm_fallback_model,
                 api_base=cfg.llm_fallback_api_base,
+                **fallback_options,
             )
         return cls(primary, fallback)
+
+    @property
+    def requires_api_key(self) -> bool:
+        return bool(getattr(self.primary, "requires_api_key", True))
 
     @staticmethod
     def _label(provider) -> str:

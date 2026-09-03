@@ -9,7 +9,8 @@ import pytest
 
 # --- modules under test (repoint on migration) ---
 import job_search.llm.clients as clients_module
-from job_search.config import load_base_tex
+from job_search.components import CandidateProfile
+from job_search.config import ConfigurationError, load_base_tex
 from job_search.latex.tailor_render import extract_job_bullets
 from job_search.llm.clients import (
     SCHEME_DEFAULT_BASE,
@@ -168,6 +169,53 @@ def test_openai_request_omits_temperature_and_uses_json_object(monkeypatch):
     # gpt-5.4-mini rejects a non-default temperature — omitted by default.
     assert "temperature" not in payload
     assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_openai_no_auth_mode_omits_authorization_and_keeps_structured_output(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        return _Response({"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    client = OpenAIProvider(
+        "", model="local-model", api_base="http://127.0.0.1:1234/v1", auth_mode="none"
+    )
+
+    assert client.generate("prompt", response_schema=FACT_SCHEMA) == "{}"
+
+    request = captured["request"]
+    payload = json.loads(request.data)
+    assert request.get_header("Authorization") is None
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"]["strict"] is True
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    (
+        "",
+        SCHEME_DEFAULT_BASE["openai"],
+        SCHEME_DEFAULT_BASE["openai"] + "/",
+        "https://api.openai.com",
+        "http://api.openai.com/v1",
+        "https://API.openai.com/v1/custom",
+        "https://api.openai.com./v1",
+        "https://API.OPENAI.COM./v1",
+        "https://api。openai。com/v1",
+        "not-a-url",
+        "localhost:1234/v1",
+        "//localhost:1234/v1",
+        "ftp://localhost/v1",
+        "http://localhost:not-a-port/v1",
+        "http://localhost:70000/v1",
+        "http://[::1/v1",
+    ),
+)
+def test_openai_no_auth_mode_rejects_the_default_public_endpoint(api_base):
+    with pytest.raises(ValueError, match="explicit non-default api_base"):
+        OpenAIProvider("", model="local-model", api_base=api_base, auth_mode="none")
 
 
 def test_http_error_carries_the_provider_explanation(monkeypatch):
@@ -455,6 +503,47 @@ def test_llm_client_from_config_omits_fallback_without_key():
         llm_fallback_scheme="openai", llm_fallback_model="m", llm_fallback_api_key="", llm_fallback_api_base="",
     )
     assert LLMClient.from_config(cfg).fallback is None
+
+
+def test_llm_client_from_config_rejects_no_auth_mode_for_non_openai_fallback():
+    cfg = SimpleNamespace(
+        llm_primary_scheme="gemini", llm_primary_model="m", llm_primary_api_key="pk",
+        llm_primary_api_base="",
+        llm_fallback_scheme="gemini", llm_fallback_model="m", llm_fallback_api_key="",
+        llm_fallback_api_base="", llm_fallback_auth_mode="none",
+    )
+
+    with pytest.raises(ConfigurationError, match="fallback.*openai"):
+        LLMClient.from_config(cfg)
+
+
+def test_llm_client_from_config_rejects_invalid_auth_mode_value():
+    cfg = SimpleNamespace(
+        llm_primary_scheme="gemini", llm_primary_model="m", llm_primary_api_key="pk",
+        llm_primary_api_base="", llm_primary_auth_mode="basic",
+        llm_fallback_scheme="openai", llm_fallback_model="m", llm_fallback_api_key="fk",
+        llm_fallback_api_base="",
+    )
+
+    with pytest.raises(ConfigurationError, match="bearer.*none"):
+        LLMClient.from_config(cfg)
+
+
+def test_llm_client_from_config_builds_no_auth_local_primary_without_a_key():
+    cfg = SimpleNamespace(
+        llm_primary_scheme="openai", llm_primary_model="local-model",
+        llm_primary_api_key="", llm_primary_api_base="http://127.0.0.1:1234/v1",
+        llm_primary_auth_mode="none",
+        llm_fallback_scheme="openai", llm_fallback_model="fallback",
+        llm_fallback_api_key="", llm_fallback_api_base="",
+        llm_fallback_auth_mode="bearer",
+    )
+
+    client = LLMClient.from_config(cfg)
+
+    assert isinstance(client.primary, OpenAIProvider)
+    assert client.primary.auth_mode == "none"
+    assert client.fallback is None
 
 
 # =====================================================================
@@ -1153,6 +1242,7 @@ def test_select_cv_bullets_request_contract_and_selection():
         client,
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "We build iOS apps."},
+        CandidateProfile(),
     )
 
     # the CV-edit schema is threaded through to the model
@@ -1171,6 +1261,7 @@ def test_select_cv_bullets_non_json_returns_empty_selection():
         client,
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "desc"},
+        CandidateProfile(),
     )
 
     assert selection == {}
@@ -1191,6 +1282,7 @@ def test_select_cv_bullets_prompt_surfaces_late_restriction():
         client,
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": long_desc},
+        CandidateProfile(),
     )
 
     assert "US residents only" in client.prompts[0]
@@ -1204,6 +1296,7 @@ def test_tailor_resume_renders_selected_bullets():
         "instr",
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "d"},
+        CandidateProfile(),
     )
 
     assert validate_tailored_cv(out) == []
@@ -1222,6 +1315,7 @@ def test_tailor_resume_falls_back_on_bad_selection():
         "instr",
         load_base_tex(),
         {"title": "iOS", "company": "Acme", "description": "d"},
+        CandidateProfile(),
     )
 
     assert validate_tailored_cv(out) == []
@@ -1240,5 +1334,8 @@ def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
         "Check Point": []
     }
     client = _RecordingClient(['{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}'])
-    out = tailor_resume(client, "instr", load_base_tex(), {"title": "iOS", "company": "Acme", "description": "d"})
+    out = tailor_resume(
+        client, "instr", load_base_tex(),
+        {"title": "iOS", "company": "Acme", "description": "d"}, CandidateProfile(),
+    )
     assert validate_tailored_cv(out) == []

@@ -123,6 +123,58 @@ So the core has **none of them**:
   injected from a `CV_PHONE` secret only at compile time (see [Privacy](#privacy)).
 - **Pluggable sources** — every board is a small `BaseSource` subclass behind a
   `@register` decorator, so adding a provider is one class.
+- **Configured by environment, not by code** — every realistic knob (output
+  mode, prompts, candidate identity, sources, LaTeX engine, ...) is an
+  environment variable read once at startup. One optional trusted
+  `job_search_config.py` survives as a deliberately unvalidated escape hatch
+  for the rare thing that genuinely needs code, such as a pre-LLM candidate
+  filter.
+
+## Customize the runtime
+
+Start with `python -m job_search.pipeline --check-config` to see every
+effective setting and validate your environment. Most deployments only need
+environment variables — see [`docs/configuration.md`](docs/configuration.md)
+for the full settings table.
+
+For the rare thing that genuinely needs code, copy the tested example and
+validate it before running:
+
+```bash
+cp job_search_config.example.py job_search_config.py
+python -m job_search.pipeline --check-config
+```
+
+The default file is optional, so existing users need no migration. Set
+`JOB_SEARCH_CONFIG_FILE` for another path. The module is trusted executable
+code, deliberately unvalidated — a mistake in it surfaces as that file's own
+traceback — and must not contain secrets; continue to provide credentials and
+private CV placeholders through the environment.
+
+[`docs/configuration.md`](docs/configuration.md) documents every setting plus
+`--check-config`, output modes, custom prompts, the `criteria.md` reopen
+lifecycle, LM Studio local inference, and the escape hatch.
+
+## Claude Code skills
+
+The repo ships its own [Claude Code](https://claude.com/claude-code) skills in
+[`.claude/skills/job-searcher/`](.claude/skills/job-searcher/), so an agent
+working in a fresh clone already knows how this system is wired:
+
+| Skill | Purpose |
+|---|---|
+| `/job-searcher:configure` | environment variables, LLM providers, `criteria.md`, source selection, digest sections, and the trusted `job_search_config.py` escape hatch |
+| `/job-searcher:deploy` | the Actions cron and Raspberry Pi installs, dedup-state seeding and sync, operating a host, and run triage |
+| `/job-searcher:explain` | how the pipeline works — stages, sources, provider fallback and circuit breaker, CV guards, delivery, and the local CLI/TUI |
+
+They are a checked-in *skills-directory plugin* (`.claude-plugin/plugin.json`
+next to a `skills/` directory), so they load as `job-searcher@skills-dir` with
+no marketplace and no install step — start Claude Code at the repository root
+and trust the workspace. `configure` and `explain` also load on their own when a
+request matches; `deploy` is manual-only because it acts on live runners. The
+skills are a map into `docs/configuration.md`, `docs/deploy-rpi.md`, and this
+README rather than a second copy of them. See
+[`.claude/skills/job-searcher/README.md`](.claude/skills/job-searcher/README.md).
 
 ## ☁️ Deploy on GitHub Actions
 
@@ -138,12 +190,20 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 | `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it uploads one AES-256 protected CV archive to [x0.at](https://x0.at); its password is sent in the Telegram message. Without ZIP-encryption support, the run safely sends the Telegram ZIP instead |
+| `JOB_SEARCH_CONFIG_PY` | optional | multiline trusted escape-hatch source materialized as `job_search_config.py`; deliberately unvalidated, so keep credentials in the other secrets, not in this code |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
 scheme at `gemini-2.5-flash`; the default fallback is the `openai` scheme at
 `gpt-5.4-mini` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
 include API access).
+
+A tracked `job_search_config.py` is loaded automatically. If the
+`JOB_SEARCH_CONFIG_PY` secret is present it is materialized after checkout and
+takes precedence over the tracked file. The daily, manual-tailor, and
+base-render workflows all use the same convention. Install imports needed by a
+custom module in the workflow yourself. A GitHub-hosted runner cannot connect
+to an LLM server bound only to your laptop's loopback interface.
 
 > ⚠️ **`gemini-2.5-flash` is scheduled for shutdown on 2026-10-16.** It is kept
 > as the default deliberately (2.5 proved steadier than the 3.x lineage on this
@@ -158,9 +218,10 @@ A provider is a **scheme** + model + key (+ optional base), so switching
 providers is config only — no code change. Override any of these optional
 **Actions repository variables** (Settings → Secrets and variables → Actions →
 Variables): `LLM_PRIMARY_SCHEME`, `LLM_PRIMARY_MODEL`, `LLM_PRIMARY_API_BASE`,
-`LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_BASE`. Unset or
-blank variables use the application defaults. `SECTIONS_PY` is a variable too —
-see [digest sections](#group-the-digest-into-your-own-sections). Worked examples
+`LLM_PRIMARY_AUTH_MODE`, `LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`,
+`LLM_FALLBACK_API_BASE`, `LLM_FALLBACK_AUTH_MODE`. Unset or blank variables use
+the application defaults. `SECTIONS_PY` is a variable too — see
+[digest sections](#group-the-digest-into-your-own-sections). Worked examples
 (the `openai` scheme covers any OpenAI-compatible endpoint via `api_base`):
 
 | Provider | Scheme | `…_API_BASE` | Example model |
@@ -223,6 +284,7 @@ Run the full pipeline or tailor a single CV directly (needs the env vars above +
 a TeX install for the PDF):
 
 ```bash
+python3 -m job_search.pipeline --check-config                 # validate + redact
 python3 -m job_search.pipeline                           # the daily pipeline
 python3 -m job_search.pipeline --tailor --url "https://…"          # auto-fetch a posting
 python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
@@ -373,14 +435,18 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `job_search/bot/` | The Telegram control bot (`/run`, `/status`, `/tailor`) |
 | `job_search/latex/` | Base-CV render, `pdflatex` compile, one-page guard |
 | `job_search/llm/` | scheme-based LLM providers, criteria evaluation, résumé tailoring |
+| `job_search/components.py` | the concrete object graph: profile, prompts, CV rendering, output delivery |
+| `job_search/runtime.py` | builds the `Runtime` from settings, applies the escape hatch, preflights the host |
 | `scripts/setup-rpi.sh` | One-shot Raspberry Pi provisioning |
 | `scripts/run_pipeline.sh` | The single `flock`'d entry point every run goes through |
 | `tests/` | Offline characterization suite (`pytest`) |
-| `criteria.md` | Human-readable job-fit rules the LLM filters against |
-| `cv_tailoring_prompt.md` | Master profile + instructions for résumé tailoring |
+| `criteria.md` | Human-readable rules and built-in evaluation fingerprint input; executable defaults live in `job_search/policy.py` |
+| `cv_tailoring_prompt.md` | Compatibility artifact; deterministic bullet selection no longer consumes its instruction block |
+| `job_search_config.example.py` | no-op template for the `job_search_config.py` escape hatch |
 | `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
 | `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
+| `.claude/skills/job-searcher/` | Checked-in Claude Code skills: `/job-searcher:configure`, `:deploy`, `:explain` |
 
 > Dedup state (`seen_jobs.json`) is **not** on `main` — the GitHub Actions run
 > reads it from and commits it back to an orphan **`state`** branch, so the bot's

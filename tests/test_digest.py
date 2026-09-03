@@ -14,7 +14,6 @@ from job_search.digest import (
     ReviewEntry,
     build_digest_zip,
     build_encrypted_cv_zip,
-    cv_filename_for,
     digest_filename,
     render_digest_html,
 )
@@ -159,6 +158,15 @@ def test_fit_cv_is_a_prominent_download_button():
     assert 'class="btn cv" href="cvs/{}"'.format(entry.cv_filename) in html
 
 
+def test_text_only_fit_omits_dead_cv_download_button():
+    entry = _fit(pdf=b"", cv="")
+
+    html = render_digest_html(_context(fits=[entry]))
+
+    assert "Download CV" not in html
+    assert 'href="cvs/"' not in html
+
+
 def test_review_renders_as_a_card():
     review = [ReviewEntry(
         job=Job(title="Maybe iOS", company="Beta", url="https://x/2", description="d"),
@@ -233,37 +241,35 @@ def test_digest_filename_uses_iso_date():
     assert digest_filename(datetime.date(2026, 7, 21)) == "job-digest-2026-07-21.zip"
 
 
-def test_cv_filename_has_no_random_suffix():
-    # The name is downloaded by a human and mailed to a recruiter; a six-hex
-    # SHA-256 prefix reads as noise on it. The company alone is enough, and it
-    # matches what the legacy per-job path has always sent.
-    assert cv_filename_for(Job(title="iOS", company="Acme", url="https://x/1"), set()) == (
-        "igor_pivnyk_cv_acme.pdf"
-    )
+# The CV filename is the renderer's (see tests/test_cv_components.py) and its
+# in-archive uniqueness is pipeline.run._unique_artifact's; both moved out of
+# this module when cv_filename_for became unreachable.
+def test_archive_names_stay_unique_for_two_fits_at_one_company():
+    from job_search.components import CVArtifact
+    from job_search.pipeline.run import _unique_artifact
 
-
-def test_cv_filenames_are_unique_even_for_same_company():
     taken = set()
-    job = Job(title="iOS", company="Acme", url="https://x/1")
-    job2 = Job(title="iOS Senior", company="Acme", url="https://x/2")
-    n1 = cv_filename_for(job, taken); taken.add(n1)
-    n2 = cv_filename_for(job2, taken); taken.add(n2)
-    # The numeric loop, not a hash, is what keeps two Acme fits apart now.
-    assert (n1, n2) == ("igor_pivnyk_cv_acme.pdf", "igor_pivnyk_cv_acme_2.pdf")
-
-
-def test_cv_filename_is_stable_across_runs():
-    # The URL used to feed a hash into the name, so the same job could be
-    # downloaded twice under two names. It cannot now.
-    first = cv_filename_for(Job(title="iOS", company="Acme", url="https://x/1"), set())
-    later = cv_filename_for(Job(title="iOS", company="Acme", url="https://x/1?ref=2"), set())
-    assert first == later == "igor_pivnyk_cv_acme.pdf"
-
-
-def test_cv_filename_falls_back_when_the_company_is_missing():
-    assert cv_filename_for(Job(title="iOS", company="", url="https://x/1"), set()) == (
-        "igor_pivnyk_cv_unknown.pdf"
+    first = _unique_artifact(
+        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", b"A"), taken
     )
+    taken.add(first.filename)
+    second = _unique_artifact(
+        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", b"B"), taken
+    )
+    taken.add(second.filename)
+    third = _unique_artifact(
+        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", b"C"), taken
+    )
+
+    # A numeric suffix, not a hash: the name is downloaded by a human and
+    # forwarded to a recruiter.
+    assert [first.filename, second.filename, third.filename] == [
+        "igor_pivnyk_cv_acme.pdf",
+        "igor_pivnyk_cv_acme_2.pdf",
+        "igor_pivnyk_cv_acme_3.pdf",
+    ]
+    # Renaming must not disturb the bytes.
+    assert [first.content, second.content, third.content] == [b"A", b"B", b"C"]
 
 
 # ── user-defined sections ─────────────────────────────────────────────────────

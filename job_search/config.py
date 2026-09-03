@@ -10,6 +10,15 @@ outside its own test, so it was removed rather than left as decoration.
 import os
 from dataclasses import dataclass
 
+
+class ConfigurationError(ValueError):
+    """Raised before pipeline side effects when the runtime is unusable.
+
+    Lives here, not in runtime.py, so llm.clients can raise it (an invalid
+    auth-mode combination) without importing back up into the package.
+    """
+
+
 # ── Scraper defaults ──────────────────────────────────────────────────────────
 HTTP_TIMEOUT_SECONDS = 30
 MAX_WORKERS = 8
@@ -40,6 +49,51 @@ OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
 # file is absent by default, and an absent file renders today's ungrouped
 # digest — the feature is opt-in and costs nothing until it exists.
 SECTIONS_FILE = "sections.py"
+
+# ── Output delivery ───────────────────────────────────────────────────────────
+# OUTPUT_MODE chooses the renderer/backend pair as a unit — "telegram" (the
+# original behavior: Telegram notifications + documents), "html" (a
+# filesystem generation with an HTML digest), or "plain" (a filesystem
+# generation with a plain-text digest, for scripts/notifications that don't
+# render markup). Replaces constructing a custom OutputRenderer/OutputBackend
+# pair in job_search_config.py for the common cases.
+OUTPUT_MODE = "telegram"
+# Directory a non-Telegram OUTPUT_MODE publishes into (FilesystemOutputBackend).
+# Unused when OUTPUT_MODE=telegram.
+OUTPUT_DIR = ""
+# "required" (default) fails delivery without a verified CV artifact, same as
+# today; "disabled" skips CV work entirely — the run only ever renders
+# notices/digests. OUTPUT_MODE=telegram always requires "required": Telegram
+# delivery has no text-only path (see preflight in runtime.py).
+OUTPUT_CV_MODE = "required"
+
+# ── Prompts / LaTeX engine ──────────────────────────────────────────────────────
+# Directory of file-backed prompt overrides (components.FilePromptSet), read
+# using the four conventional filenames: fact_extraction.txt, job_summary.txt,
+# cv_bullet_selection.txt, compiler_repair.txt. A file missing from the
+# directory falls back to the built-in prompt. Empty (the default) uses the
+# built-in prompts unmodified. Replaces constructing a FilePromptSet by hand in
+# job_search_config.py for the common case.
+PROMPT_DIR = ""
+# Required whenever PROMPT_DIR is set. Prompt wording participates in
+# evaluation reopening (state.seen_jobs.criteria_fingerprint), so an unnamed
+# revision would silently reuse the wrong reopen fingerprint across a prompt
+# change; preflight rejects PROMPT_DIR set without this.
+PROMPT_REVISION = ""
+# LaTeX engine invoked to compile the CV. "pdflatex" (default) is the
+# lightweight, tracked toolchain; any other executable on PATH (e.g. "xelatex")
+# is also supported for a CV that needs its font/typesetting features.
+LATEX_ENGINE = "pdflatex"
+
+# ── Candidate identity ────────────────────────────────────────────────────────
+# The name on the CV and the prefix of every tailored PDF. These were class
+# defaults on CandidateProfile, which made the one thing most obviously *not*
+# reusable a property of the library rather than of the configuration. They are
+# still defaulted to this repository's owner so nothing changes without an env
+# var; the job_search_config.py escape hatch can also set them on the profile
+# directly.
+CV_DISPLAY_NAME = "Igor Pivnyk"
+CV_FILENAME_PREFIX = "igor_pivnyk_cv"
 
 # ── LLM defaults (generic, scheme-based providers) ─────────────────────────────
 # A provider is a wire-protocol *scheme* (gemini | openai | anthropic) + model +
@@ -216,10 +270,15 @@ class PipelineConfig:
     llm_primary_model: str = LLM_PRIMARY_MODEL
     llm_primary_api_key: str = ""
     llm_primary_api_base: str = ""
+    # ``none`` is an explicit opt-in for trusted local OpenAI-compatible
+    # servers (for example LM Studio) and requires a non-default API base. The
+    # default keeps today's Bearer auth.
+    llm_primary_auth_mode: str = "bearer"
     llm_fallback_scheme: str = LLM_FALLBACK_SCHEME
     llm_fallback_model: str = LLM_FALLBACK_MODEL
     llm_fallback_api_key: str = ""
     llm_fallback_api_base: str = ""
+    llm_fallback_auth_mode: str = "bearer"
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     eval_workers: int = EVAL_WORKERS
@@ -228,7 +287,16 @@ class PipelineConfig:
     criteria_file: str = CRITERIA_FILE
     cv_tailoring_prompt_file: str = CV_TAILORING_PROMPT_FILE
     base_tex_file: str = BASE_TEX_FILE
+    rendered_base_file: str = OUT_PDF_FILE
     sections_file: str = SECTIONS_FILE
+    cv_display_name: str = CV_DISPLAY_NAME
+    cv_filename_prefix: str = CV_FILENAME_PREFIX
+    output_mode: str = OUTPUT_MODE
+    output_dir: str = OUTPUT_DIR
+    output_cv_mode: str = OUTPUT_CV_MODE
+    prompt_dir: str = PROMPT_DIR
+    prompt_revision: str = PROMPT_REVISION
+    latex_engine: str = LATEX_ENGINE
     # Source selection: names forced ON (adds default-off sources like
     # linkedin-guest) / forced OFF (removes default-on sources). Empty tuples →
     # today's default-on set, so CI with no env is unchanged. See
@@ -268,15 +336,34 @@ class PipelineConfig:
             llm_primary_api_base=_non_empty_env(
                 "LLM_PRIMARY_API_BASE", _non_empty_env("GEMINI_API_BASE", "")
             ),
+            llm_primary_auth_mode=_non_empty_env("LLM_PRIMARY_AUTH_MODE", "bearer").lower(),
             llm_fallback_scheme=_non_empty_env("LLM_FALLBACK_SCHEME", LLM_FALLBACK_SCHEME),
             llm_fallback_model=_non_empty_env("LLM_FALLBACK_MODEL", LLM_FALLBACK_MODEL),
             llm_fallback_api_key=_non_empty_env(
                 "LLM_FALLBACK_API_KEY", os.environ.get("OPENAI_API_KEY", "")
             ),
             llm_fallback_api_base=_non_empty_env("LLM_FALLBACK_API_BASE", ""),
+            llm_fallback_auth_mode=_non_empty_env("LLM_FALLBACK_AUTH_MODE", "bearer").lower(),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+            seen_jobs_file=_non_empty_env("SEEN_JOBS_FILE", SEEN_JOBS_FILE),
+            criteria_file=_non_empty_env("CRITERIA_FILE", CRITERIA_FILE),
+            cv_tailoring_prompt_file=_non_empty_env(
+                "CV_TAILORING_PROMPT_FILE", CV_TAILORING_PROMPT_FILE
+            ),
+            base_tex_file=_non_empty_env("BASE_TEX_FILE", BASE_TEX_FILE),
+            rendered_base_file=_non_empty_env("OUT_PDF_FILE", OUT_PDF_FILE),
             sections_file=_non_empty_env("SECTIONS_FILE", SECTIONS_FILE),
+            cv_display_name=_non_empty_env("CV_DISPLAY_NAME", CV_DISPLAY_NAME),
+            cv_filename_prefix=_non_empty_env(
+                "CV_FILENAME_PREFIX", CV_FILENAME_PREFIX
+            ),
+            output_mode=_non_empty_env("OUTPUT_MODE", OUTPUT_MODE).lower(),
+            output_dir=_non_empty_env("OUTPUT_DIR", OUTPUT_DIR),
+            output_cv_mode=_non_empty_env("OUTPUT_CV_MODE", OUTPUT_CV_MODE).lower(),
+            prompt_dir=_non_empty_env("PROMPT_DIR", PROMPT_DIR),
+            prompt_revision=_non_empty_env("PROMPT_REVISION", PROMPT_REVISION),
+            latex_engine=_non_empty_env("LATEX_ENGINE", LATEX_ENGINE),
             eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
             tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
             sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
@@ -288,20 +375,20 @@ class PipelineConfig:
 
 
 # ── Prompt / file loaders ──────────────────────────────────────────────────────
-def load_criteria() -> str:
-    with open(CRITERIA_FILE) as f:
+def load_criteria(path: str = CRITERIA_FILE) -> str:
+    with open(path) as f:
         return f.read()
 
 
-def load_tailoring_instructions() -> str:
+def load_tailoring_instructions(path: str = CV_TAILORING_PROMPT_FILE) -> str:
     """Extract STEP 3 through (not including) BASE LaTeX TEMPLATE."""
-    with open(CV_TAILORING_PROMPT_FILE) as f:
+    with open(path) as f:
         content = f.read()
     start = content.index("## STEP 3")
     end = content.index("## BASE LaTeX TEMPLATE")
     return content[start:end].strip()
 
 
-def load_base_tex() -> str:
-    with open(BASE_TEX_FILE) as f:
+def load_base_tex(path: str = BASE_TEX_FILE) -> str:
+    with open(path) as f:
         return f.read()

@@ -10,6 +10,8 @@ on:
     paths:
       - job_search/**
       - tests/**
+      - job_search_config.py
+      - job_search_config.example.py
       # scripts/ is part of the shipped runtime (run_pipeline.sh, the Pi setup
       # scripts) and was missing from this filter, so changes there ran no tests.
       - scripts/**

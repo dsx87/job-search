@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh run *)",
+      "Bash(gh api *)",
+      "Bash(gh auth *)",
+      "Bash(gh workflow *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(fc-list *)",
+      "Bash(mv seen_jobs.json seen_jobs.json.local)",
+      "Bash(mv seen_jobs.json.local seen_jobs.json)",
+      "Read(//tmp/**)",
+      "WebSearch",
+      "WebFetch(domain:ai.google.dev)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs"
+    ]
+  }
+}

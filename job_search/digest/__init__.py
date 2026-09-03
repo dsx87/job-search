@@ -1,5 +1,5 @@
 """Run digest: a single ZIP (HTML dashboard + tailored CVs) per pipeline run."""
-from .bundle import build_digest_zip, build_encrypted_cv_zip, cv_filename_for, digest_filename
+from .bundle import build_digest_zip, build_encrypted_cv_zip, digest_filename
 from .fixtures import oversized_context, sample_context
 from .model import DeferredEntry, DigestContext, FitEntry, ReviewEntry
 from .publish import publish_digest, retract_digest
@@ -20,7 +20,6 @@ __all__ = [
     "build_digest_zip",
     "build_encrypted_cv_zip",
     "content_size",
-    "cv_filename_for",
     "digest_filename",
     "digest_page_title",
     "group_entries",

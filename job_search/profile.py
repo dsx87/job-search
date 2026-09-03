@@ -22,7 +22,9 @@ FORBIDDEN_TERM_PATTERNS = [
 ]
 
 
-def validate_tailored_cv(tex: str) -> list:
+def validate_tailored_cv(
+    tex: str, expected_job_order=None, forbidden_term_patterns=None
+) -> list:
     """Return a list of human-readable constraint violations (empty == clean).
 
     Catches the two failure modes the prompt alone can't guarantee: jobs
@@ -34,24 +36,32 @@ def validate_tailored_cv(tex: str) -> list:
     # 1. Job order — extract \jobheader company fields in document order, keep
     #    only the four work entries (the Education jobheader matches none), and
     #    verify their relative order matches EXPECTED_JOB_ORDER.
+    expected_job_order = list(
+        EXPECTED_JOB_ORDER if expected_job_order is None else expected_job_order
+    )
+    forbidden_term_patterns = list(
+        FORBIDDEN_TERM_PATTERNS
+        if forbidden_term_patterns is None
+        else forbidden_term_patterns
+    )
     headers = re.findall(r"\\jobheader\{([^}]*)\}", tex)
     seen_order = []
     for company in headers:
-        for key in EXPECTED_JOB_ORDER:
+        for key in expected_job_order:
             if key.lower() in company.lower():
                 seen_order.append(key)
                 break
-    missing = [k for k in EXPECTED_JOB_ORDER if k not in seen_order]
+    missing = [k for k in expected_job_order if k not in seen_order]
     if missing:
         violations.append(f"missing job(s) from timeline: {', '.join(missing)}")
-    elif seen_order != EXPECTED_JOB_ORDER:
+    elif seen_order != expected_job_order:
         violations.append(
             f"jobs out of order: got {' → '.join(seen_order)}, "
-            f"expected {' → '.join(EXPECTED_JOB_ORDER)}"
+            f"expected {' → '.join(expected_job_order)}"
         )
 
     # 2. Forbidden domains / never-claim skills.
-    for pattern in FORBIDDEN_TERM_PATTERNS:
+    for pattern in forbidden_term_patterns:
         m = re.search(pattern, tex, re.IGNORECASE)
         if m:
             violations.append(f"forbidden term present: '{m.group(0)}'")

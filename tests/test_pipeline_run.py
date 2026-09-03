@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pyzipper
 import pytest
 
+from job_search.components import CVArtifact
+from job_search.digest import delivery
 from job_search.models import Job
 from job_search.pipeline import run
 from job_search.pipeline import stages
@@ -19,7 +21,19 @@ from job_search.state.seen_jobs import (
 )
 
 
+# The built-in evaluator calls llm.eval.evaluate_job (with prompts=), so tests
+# patch it where it is defined rather than through a pipeline-local alias.
+EVALUATE_JOB = "job_search.llm.eval.evaluate_job"
+
+
 class FakeLLM:
+    """Shaped like LLMService: the daily run now validates its components even
+    when nothing is customized, so a fake that only reported usage no longer
+    satisfies the contract."""
+
+    def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+        raise AssertionError("tests stub the evaluation and tailoring stages")
+
     def usage_summary(self):
         return "usage"
 
@@ -43,6 +57,38 @@ class FakeTelegram:
 
     def send_document(self, filename, content, caption):
         self.documents.append((filename, content, caption))
+
+
+def fake_prepare(pdf=b"PDFDATA"):
+    """Stand-in for run._prepare_with_renderer: the payload a CV renderer yields.
+
+    Mirrors the real helper, including the rule that matters to the retry
+    ladder — no evaluation means no fit message, because the job was already
+    announced in an earlier run.
+    """
+    from job_search.models import coerce_job
+    from job_search.pipeline.stages import _company_slug, _format_notification
+
+    def _prepare(_renderer, _llm, job, evaluation=None):
+        described = coerce_job(job)
+        artifact = CVArtifact(
+            "igor_pivnyk_cv_{}.pdf".format(_company_slug(described.get("company", ""))),
+            "application/pdf",
+            pdf,
+        )
+        payload = {
+            "title": described.get("title", "?"),
+            "company": described.get("company", "?"),
+            "artifact": artifact,
+            "pdf_bytes": artifact.content,
+            "cv_filename": artifact.filename,
+            "media_type": artifact.media_type,
+        }
+        if evaluation is not None:
+            payload["message"] = _format_notification(described, evaluation)
+        return payload
+
+    return _prepare
 
 
 def make_config(digest_delivery=False, telegraph_access_token=""):
@@ -71,17 +117,66 @@ def make_config(digest_delivery=False, telegraph_access_token=""):
     )
 
 
+class RecordingTextBackend:
+    """A text-only sink: no markup, no CV, no credentials.
+
+    Stands in for whatever message-oriented adapter a user writes; the point of
+    the tests using it is that the *renderer* decides the markup.
+    """
+
+    accepted_renderer_kinds = ("plain",)
+    accepted_media_types = ()
+    cv_mode = "disabled"
+    requires_telegram_credentials = False
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    def deliver_notice(self, rendered):
+        self.sink(str(rendered))
+
+    def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
+        from job_search.components import DeliveryOutcome
+
+        self.sink(str(rendered))
+        return DeliveryOutcome(
+            notification_sent=True, notification_satisfied=True, cv_required=False
+        )
+
+    def deliver_digest(self, rendered, artifacts=(), *, context=None, date=None):
+        from job_search.components import DigestOutcome
+
+        self.sink(str(rendered))
+        return DigestOutcome(True, notification_sent=True)
+
+
+def configured_plain_components(messages):
+    from job_search.components import DefaultPromptSet
+    from job_search.output import PlainTextOutputRenderer
+
+    return SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=DefaultPromptSet(),
+        cv_renderer=SimpleNamespace(),
+        renderer=PlainTextOutputRenderer(),
+        backend=RecordingTextBackend(messages.append),
+        cv_required=False,
+        needs_telegram=False,
+        telegram_markup=False,
+    )
+
+
 def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm_calls=None):
     telegram = telegram or FakeTelegram()
     state = set(initial_seen or ())
     saved = []
 
-    def save(seen):
+    def save(seen, *_a):
         state.clear()
         state.update(seen)
         saved.append(set(state))
 
-    monkeypatch.setattr(run, "TelegramClient", lambda *_args: telegram)
+    monkeypatch.setattr(run, "TelegramClient", lambda *_args, **_kwargs: telegram)
 
     class FakeLLMClient:
         @staticmethod
@@ -91,9 +186,9 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
             return FakeLLM()
 
     monkeypatch.setattr(run, "LLMClient", FakeLLMClient)
-    monkeypatch.setattr(run, "load_criteria", lambda: "criteria")
-    monkeypatch.setattr(run, "load_tailoring_instructions", lambda: "instructions")
-    monkeypatch.setattr(run, "load_base_tex", lambda: "base")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "criteria")
+    monkeypatch.setattr(run, "load_tailoring_instructions", lambda *_a: "instructions")
+    monkeypatch.setattr(run, "load_base_tex", lambda *_a: "base")
     monkeypatch.setattr(
         run,
         "fetch_jobs_with_health",
@@ -101,7 +196,7 @@ def install_daily_fakes(monkeypatch, jobs, telegram=None, initial_seen=None, llm
             tuple(jobs), (SourceHealth("fake", SourceStatus.SUCCESS, len(jobs), 1),),
         ),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: set(state))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: set(state))
     monkeypatch.setattr(run, "save_seen_jobs", save)
     return telegram, saved
 
@@ -115,11 +210,867 @@ def test_total_source_outage_aborts_without_evaluation_or_state_save(monkeypatch
             SourceHealth("down", SourceStatus.FAILED, failure_detail="offline"),
         )),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: (_ for _ in ()).throw(AssertionError("no state load")))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: (_ for _ in ()).throw(AssertionError("no state load")))
 
     assert run.run_daily(make_config()) == 1
     assert saved == []
-    assert any("source outage" in message.lower() for message in telegram.messages)
+    assert telegram.messages == [
+        "🚨 <b>Job source outage</b>\n"
+        "No selected source completed successfully; evaluation and state updates were aborted."
+    ]
+
+
+def test_configured_plain_source_outage_notice_has_no_telegram_markup(monkeypatch):
+    install_daily_fakes(monkeypatch, [])
+    messages = []
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_kwargs: FetchReport((), (
+            SourceHealth("down", SourceStatus.FAILED, failure_detail="offline"),
+        )),
+    )
+    monkeypatch.setattr(
+        run, "build_runtime", lambda *_a, **_k: configured_plain_components(messages)
+    )
+
+    assert run.run_daily(make_config()) == 1
+    assert messages == [
+        "Job source outage: No selected source completed successfully; "
+        "evaluation and state updates were aborted."
+    ]
+    assert "<" not in messages[0]
+
+
+def test_configured_plain_fatal_notice_has_no_telegram_markup(monkeypatch):
+    install_daily_fakes(monkeypatch, [])
+    messages = []
+    monkeypatch.setattr(
+        run, "build_runtime", lambda *_a, **_k: configured_plain_components(messages)
+    )
+    monkeypatch.setattr(
+        run,
+        "load_seen_jobs",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run.run_daily(make_config())
+
+    assert messages == ["Pipeline error: RuntimeError: boom"]
+    assert "<" not in messages[0]
+
+
+def test_invalid_escape_hatch_fails_before_state_sync_or_fetch(tmp_path, monkeypatch):
+    config_file = tmp_path / "invalid.py"
+    config_file.write_text("raise RuntimeError('invalid escape hatch')\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
+    monkeypatch.setattr(
+        run, "pull_state", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no state pull"))
+    )
+    monkeypatch.setattr(
+        run, "fetch_jobs_with_health", lambda **_k: (_ for _ in ()).throw(AssertionError("no fetch"))
+    )
+
+    cfg = make_config()
+    cfg.state_sync = True
+    # Errors from the user's escape-hatch file propagate raw (no wrapping into
+    # ConfigurationError) — a real traceback beats a mangled string.
+    with pytest.raises(RuntimeError, match="invalid escape hatch"):
+        run.run_daily(cfg)
+
+
+def test_daily_no_config_path_keeps_builtin_behavior(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
+    for name in (
+        "criteria.md",
+        "cv_tailoring_prompt.md",
+        "igor_pivnyk_cv_base_updated.tex",
+    ):
+        (tmp_path / name).write_text("fixture", encoding="utf-8")
+
+    telegram, _saved = install_daily_fakes(monkeypatch, [])
+
+    assert run.run_daily(make_config(digest_delivery=False)) == 0
+    assert telegram.messages and "Job search complete" in telegram.messages[-1]
+
+
+def test_missing_required_file_fails_before_state_sync_or_fetch(monkeypatch):
+    cfg = make_config()
+    cfg.state_sync = True
+    cfg.criteria_file = "missing-criteria.md"
+    monkeypatch.setattr(
+        run,
+        "load_criteria",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            FileNotFoundError("missing criteria")
+        ),
+    )
+    monkeypatch.setattr(
+        run,
+        "pull_state",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no state pull")),
+    )
+    monkeypatch.setattr(
+        run,
+        "fetch_jobs_with_health",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("no fetch")),
+    )
+
+    with pytest.raises(run.ConfigurationError, match="criteria_file.*missing-criteria"):
+        run.run_daily(cfg)
+
+
+def test_seed_uses_configured_seen_state_path(monkeypatch, tmp_path):
+    path = tmp_path / "custom-seen.json"
+    cfg = make_config()
+    cfg.seen_jobs_file = str(path)
+    job = Job(title="iOS Engineer", company="Acme", url="https://example.com/1")
+    monkeypatch.setattr(
+        run,
+        "_fetch_for_pipeline",
+        lambda _cfg: FetchReport(
+            (job,), (SourceHealth("fake", SourceStatus.SUCCESS, 1, 1),)
+        ),
+    )
+
+    assert run.run_seed(cfg) == 0
+    assert run.load_seen_jobs(str(path)) is not None
+
+
+def test_configured_filter_runs_before_configured_evaluator(monkeypatch):
+    from job_search.components import DefaultOutputBackend, DefaultOutputRenderer
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/custom-filter",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    calls = []
+
+    def reject_all(candidate):
+        calls.append(("filter", candidate.title))
+        return False
+
+    llm = SimpleNamespace(usage_summary=lambda: "usage")
+    components = SimpleNamespace(
+        llm=llm,
+        prompts=object(),
+        candidate_filter=reject_all,
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("filtered jobs must not reach the evaluator")
+        ),
+    )
+
+    assert run.run_daily(make_config()) == 0
+    assert calls == [("filter", "iOS Engineer")]
+
+
+def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
+    from job_search.components import DefaultOutputBackend, DefaultOutputRenderer
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/custom-evaluator",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    configured_llm = SimpleNamespace(usage_summary=lambda: "usage")
+    observed = []
+
+    def fake_evaluate_job(llm, criteria, candidate, prompts=None):
+        observed.append((llm, criteria, candidate.title))
+        return {
+            "fit": False, "verdict": "nonfit", "reason": "custom policy",
+            "timezone_note": None, "facts": {},
+        }
+
+    components = SimpleNamespace(
+        llm=configured_llm,
+        prompts=object(),
+        candidate_filter=lambda candidate: True,
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
+
+    assert run.run_daily(make_config()) == 0
+    assert observed == [(configured_llm, "criteria", "iOS Engineer")]
+
+
+def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
+    from job_search.components import (
+        CVArtifact, DefaultOutputBackend, DefaultOutputRenderer, DefaultPromptSet,
+    )
+
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/custom-cv",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    calls = []
+    section_calls = []
+    render_calls = []
+
+    class Renderer:
+        media_types = ("application/pdf",)
+
+        def render_tailored(self, llm, candidate, evaluation=None):
+            calls.append((llm, candidate.title, evaluation["reason"]))
+            return CVArtifact("ada_cv_acme.pdf", "application/pdf", b"CUSTOM-PDF")
+
+        def render_base(self, llm=None):
+            raise AssertionError("not base rendering")
+
+    class DigestRenderer(DefaultOutputRenderer):
+        def render_digest(self, context):
+            render_calls.append(len(context.fits))
+            return "<html><body>custom dashboard</body></html>"
+
+    llm = SimpleNamespace(
+        usage_summary=lambda: "usage",
+        generate=lambda *_a, **_k: "A concise job summary.",
+    )
+    components = SimpleNamespace(
+        llm=llm,
+        prompts=DefaultPromptSet(),
+        cv_renderer=Renderer(),
+        renderer=DigestRenderer(),
+        backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True, "verdict": "fit", "reason": "custom fit",
+            "timezone_note": None, "facts": {},
+        },
+    )
+    monkeypatch.setattr(
+        run,
+        "load_sections",
+        lambda path: (section_calls.append(path) or ((), "")),
+    )
+    monkeypatch.setattr(
+        delivery,
+        "publish_cvs",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("custom digest rendering must not publish built-in Telegraph")
+        ),
+    )
+
+    cfg = make_config(digest_delivery=True, telegraph_access_token="configured")
+    assert run.run_daily(cfg) == 0
+    assert calls == [(llm, "iOS Engineer", "custom fit")]
+    assert section_calls == [cfg.sections_file]
+    assert render_calls == [1]
+    assert telegram.documents[0][0].startswith("job-digest-")
+    with zipfile.ZipFile(io.BytesIO(telegram.documents[0][1])) as archive:
+        assert archive.read("cvs/ada_cv_acme.pdf") == b"CUSTOM-PDF"
+        assert archive.read("index.html") == b"<html><body>custom dashboard</body></html>"
+
+
+def test_default_backend_custom_digest_renderer_exception_records_retry(monkeypatch):
+    from job_search.components import CVArtifact, DefaultOutputBackend
+
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/digest-renderer-error",
+        description="Swift role",
+    )
+    telegram = FakeTelegram()
+    backend = DefaultOutputBackend(telegram)
+    seen = set()
+    saved = []
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: ["summary"])
+    monkeypatch.setattr(
+        run, "_save_seen_for", lambda _cfg, values: saved.append(set(values))
+    )
+
+    class Renderer:
+        kind = "telegram"
+
+        def render_notice(self, notice, **_context):
+            return str(notice)
+
+        def render_digest(self, _context):
+            raise RuntimeError("digest rendering failed")
+
+    evaluation = {"fit": True, "reason": "fit"}
+    artifact = CVArtifact("candidate.pdf", "application/pdf", b"PDF")
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=None,
+        renderer=Renderer(),
+        backend=backend,
+    )
+    run._deliver_digest(
+        components,
+        make_config(digest_delivery=True),
+        seen,
+        run.RunStats(fits=1),
+        datetime.date(2026, 8, 20),
+        [(job, {"artifact": artifact}, SimpleNamespace(notified=False), evaluation)],
+        [],
+        [],
+        [],
+        "",
+        lambda _job: "signature",
+        (),
+    )
+
+    tokens = delivery_identity_tokens(job.url, job.title, job.company, job.location)
+    assert all(
+        "delivery:attempt:{}:1:2026-08-21".format(token) in saved[-1]
+        for token in tokens
+    )
+
+
+def test_text_only_backend_skips_cv_and_successfully_completes_fit(monkeypatch):
+    from job_search.components import DefaultPromptSet, DigestOutcome
+
+    job = Job(
+        title="iOS Engineer", company="Acme", url="https://example.com/text-only",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    _telegram, saved = install_daily_fakes(monkeypatch, [job])
+    deliveries = []
+
+    class Renderer:
+        kind = "plain"
+
+        def render_notice(self, notice, **context):
+            return str(notice)
+
+        def render_fit(self, candidate, evaluation):
+            return candidate.title
+
+        def render_digest(self, context):
+            return "digest:{}".format(len(context.fits))
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+        requires_telegram_credentials = False
+
+        def deliver_notice(self, rendered):
+            deliveries.append(("notice", rendered))
+
+        def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
+            raise AssertionError("digest mode is atomic")
+
+        def deliver_digest(self, rendered, artifacts=(), **context):
+            deliveries.append((rendered, tuple(artifacts)))
+            return DigestOutcome(True, notification_sent=True)
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(
+            usage_summary=lambda: "usage",
+            generate=lambda *_a, **_k: "summary",
+        ),
+        prompts=DefaultPromptSet(),
+        cv_renderer=SimpleNamespace(
+            render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("CV rendering must be skipped")
+            )
+        ),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=False,
+        needs_telegram=False,
+        needs_base_tex=False,
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True, "verdict": "fit", "reason": "custom fit",
+            "timezone_note": None, "facts": {},
+        },
+    )
+    monkeypatch.setattr(
+        run,
+        "load_tailoring_instructions",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("text-only output must not load CV instructions")
+        ),
+    )
+    monkeypatch.setattr(
+        run,
+        "load_base_tex",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("text-only output must not load a base CV")
+        ),
+    )
+    cfg = make_config(digest_delivery=True)
+    cfg.telegram_bot_token = ""
+    cfg.telegram_chat_id = ""
+
+    assert run.run_daily(cfg) == 0
+    assert deliveries == [("digest:1", ())]
+    assert any("https://example.com/text-only" in snapshot for snapshot in saved)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "diagnostic", "cv_mode"),
+    (
+        (
+            {"delivered": False, "notification_sent": False,
+             "error": RuntimeError("token expired")},
+            "token expired",
+            "disabled",
+        ),
+        (
+            {"delivered": True, "notification_sent": False},
+            "notification was not sent",
+            "disabled",
+        ),
+        (
+            {"delivered": False, "notification_sent": True,
+             "error": RuntimeError("artifact store failed")},
+            "artifact store failed",
+            "disabled",
+        ),
+        (
+            {"delivered": True, "notification_sent": True, "cv_sent": 0},
+            "only 0 of 1 required CV artifacts were delivered",
+            "required",
+        ),
+    ),
+)
+def test_configured_digest_incomplete_delivery_is_diagnostic_and_retryable(
+    monkeypatch, capsys, outcome, diagnostic, cv_mode
+):
+    from job_search.components import CVArtifact, DigestOutcome
+
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/configured-digest-failure",
+        description="Swift role",
+    )
+    seen = set()
+    saved = []
+    notices = []
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: ["summary"])
+    monkeypatch.setattr(
+        run, "_save_seen_for", lambda _cfg, values: saved.append(set(values))
+    )
+
+    class Renderer:
+        kind = "plain"
+
+        def render_notice(self, notice, **_context):
+            return str(notice)
+
+        def render_digest(self, _context):
+            return "digest"
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ("application/pdf",)
+
+        def deliver_notice(self, rendered):
+            notices.append(rendered)
+
+        def deliver_digest(self, _rendered, _artifacts=(), **_context):
+            return DigestOutcome(**outcome)
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=SimpleNamespace(revision="test"),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=cv_mode == "required",
+        # Markup now follows rt.telegram_markup rather than the renderer's
+        # kind, so a plain renderer needs the matching flag to stay markup-free.
+        telegram_markup=False,
+    )
+    payload = {}
+    if cv_mode == "required":
+        payload["artifact"] = CVArtifact(
+            "candidate.pdf", "application/pdf", b"PDF"
+        )
+    stats = run.RunStats(fits=1)
+    cfg = make_config(digest_delivery=True)
+    completed = run._deliver_digest(
+        components,
+        cfg,
+        seen,
+        stats,
+        datetime.date(2026, 8, 20),
+        [(job, payload, SimpleNamespace(notified=False), {"fit": True})],
+        [],
+        [],
+        [],
+        "",
+        lambda _job: "signature",
+        (),
+    )
+
+    tokens = delivery_identity_tokens(job.url, job.title, job.company, job.location)
+    assert completed is False
+    assert "https://example.com/configured-digest-failure" not in seen
+    # Marked notified regardless of what the backend managed to send: the
+    # fallback run summary below names every pending fit, so the retry can take
+    # the known-fit route instead of re-paying evaluation and compilation
+    # (finding N9). This used to depend on outcome.notification_sent, which the
+    # built-in Telegram backend reports as False for exactly the case N9 is
+    # about — the two rules are now one.
+    assert all(f"delivery:notified:{token}" in seen for token in tokens)
+    assert any(marker.startswith("delivery:attempt:") for marker in seen)
+    assert stats.delivery_failed == 1
+    assert notices and "Job search complete" in notices[-1]
+    assert "<" not in notices[-1]
+    assert diagnostic in capsys.readouterr().err
+    assert saved
+
+
+def test_configured_digest_failure_makes_daily_run_fail(monkeypatch):
+    from job_search.components import DefaultPromptSet, DigestOutcome
+
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/configured-failure",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    install_daily_fakes(monkeypatch, [job])
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+
+        def deliver_notice(self, _rendered):
+            pass
+
+        def deliver_digest(self, _rendered, _artifacts=(), **_context):
+            return DigestOutcome(False, error=RuntimeError("offline"))
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(
+            usage_summary=lambda: "usage",
+            generate=lambda *_a, **_k: "summary",
+        ),
+        prompts=DefaultPromptSet(),
+        cv_renderer=SimpleNamespace(),
+        renderer=SimpleNamespace(
+            kind="plain",
+            render_notice=lambda notice, **_context: str(notice),
+            render_digest=lambda _context: "digest",
+        ),
+        backend=Backend(),
+        cv_required=False,
+        needs_base_tex=False,
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "custom fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
+
+    cfg = make_config(digest_delivery=True)
+    assert run.run_daily(cfg) == 1
+
+
+def test_configured_digest_cv_stats_count_fit_artifacts_not_review_artifacts(
+    monkeypatch
+):
+    from job_search.components import CVArtifact, DigestOutcome
+
+    fit = Job(
+        title="Fit", company="Acme", url="https://example.com/fit", description="fit"
+    )
+    review = Job(
+        title="Review",
+        company="Beta",
+        url="https://example.com/review",
+        description="review",
+    )
+    fit_artifact = CVArtifact("fit.pdf", "application/pdf", b"FIT")
+    review_artifact = CVArtifact("review.pdf", "application/pdf", b"REVIEW")
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: ["fit", "review"])
+    monkeypatch.setattr(run, "_save_seen_for", lambda *_a, **_k: None)
+
+    class Backend:
+        cv_mode = "required"
+
+        def deliver_digest(self, _rendered, artifacts=(), **_context):
+            return DigestOutcome(
+                True, notification_sent=True, cv_sent=len(tuple(artifacts))
+            )
+
+        def deliver_notice(self, _rendered):
+            pass
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=SimpleNamespace(revision="test"),
+        renderer=SimpleNamespace(
+            kind="plain",
+            render_notice=lambda notice, **_context: str(notice),
+            render_digest=lambda _context: "digest",
+        ),
+        backend=Backend(),
+    )
+    stats = run.RunStats(fits=1, uncertain=1)
+
+    completed = run._deliver_digest(
+        components,
+        make_config(digest_delivery=True),
+        set(),
+        stats,
+        datetime.date(2026, 8, 20),
+        [(fit, {"artifact": fit_artifact}, SimpleNamespace(notified=False), {})],
+        [(review, {"artifact": review_artifact}, {})],
+        [(review, {})],
+        [],
+        "",
+        lambda _job: "signature",
+        (),
+    )
+
+    assert completed is True
+    assert stats.cv_sent == 1
+
+
+def test_configured_empty_digest_commits_prior_deferral_without_batch_delivery(
+    monkeypatch
+):
+    job = Job(
+        title="Deferred",
+        company="Acme",
+        url="https://example.com/deferred",
+        description="description",
+    )
+    seen = set()
+    notices = []
+    saved = []
+    monkeypatch.setattr(run, "_summaries", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        run, "_save_seen_for", lambda _cfg, values: saved.append(set(values))
+    )
+
+    class Renderer:
+        kind = "plain"
+
+        def render_notice(self, notice, **_context):
+            return str(notice)
+
+        def render_digest(self, _context):
+            raise AssertionError("an empty batch must not render a digest")
+
+    class Backend:
+        cv_mode = "disabled"
+
+        def deliver_notice(self, rendered):
+            notices.append(rendered)
+
+        def deliver_digest(self, *_args, **_kwargs):
+            raise AssertionError("an empty batch must not call digest delivery")
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=SimpleNamespace(revision="test"),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=False,
+        telegram_markup=False,
+    )
+
+    cfg = make_config(digest_delivery=True)
+    completed = run._deliver_digest(
+        components,
+        cfg,
+        seen,
+        run.RunStats(),
+        datetime.date(2026, 8, 20),
+        [],
+        [],
+        [],
+        [],
+        "",
+        lambda _job: "unused",
+        [({"deferred:job:existing"}, job, "deferred-signature")],
+    )
+
+    assert completed is True
+    assert "deferred:job:existing" in seen
+    assert any(
+        marker.endswith(":deferred-signature:deferred") for marker in seen
+    )
+    assert notices and "Job search complete" in notices[-1]
+    assert "<" not in notices[-1]
+    assert saved
+
+
+def test_custom_per_fit_backend_exception_records_delivery_retry(monkeypatch):
+    from job_search.components import DefaultPromptSet
+
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/custom-delivery-error",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    _telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 8, 20))
+
+    evaluation = {
+        "fit": True,
+        "verdict": "fit",
+        "reason": "custom fit",
+        "timezone_note": None,
+        "facts": {},
+    }
+    renderer = SimpleNamespace(
+        kind="plain",
+        render_notice=lambda notice, **_context: str(notice),
+        render_fit=lambda candidate, _evaluation: candidate.title,
+        render_digest=lambda _context: "digest",
+    )
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+        requires_telegram_credentials = False
+
+        def deliver_notice(self, _rendered):
+            return None
+
+        def deliver_fit(self, *_args, **_kwargs):
+            raise RuntimeError("filesystem unavailable")
+
+        def deliver_digest(self, *_args, **_kwargs):
+            raise AssertionError("per-fit mode must not deliver a digest")
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=DefaultPromptSet(),
+        cv_renderer=SimpleNamespace(),
+        renderer=renderer,
+        backend=Backend(),
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_a, **_k: evaluation)
+
+    cfg = make_config(digest_delivery=False)
+    cfg.telegram_bot_token = ""
+    cfg.telegram_chat_id = ""
+    assert run.run_daily(cfg) == 0
+
+    tokens = delivery_identity_tokens(job.url, job.title, job.company, job.location)
+    assert all(
+        "delivery:attempt:{}:1:2026-08-21".format(token) in saved[-1]
+        for token in tokens
+    )
+
+
+def test_default_backend_custom_fit_renderer_exception_records_retry(monkeypatch):
+    from job_search.components import (
+        CVArtifact,
+        DefaultOutputBackend,
+        DefaultPromptSet,
+    )
+
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/default-renderer-error",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    telegram, saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 8, 20))
+
+    class Renderer:
+        kind = "telegram"
+
+        def render_notice(self, notice, **_context):
+            return str(notice)
+
+        def render_fit(self, _job, _evaluation):
+            raise RuntimeError("fit rendering failed")
+
+        def render_digest(self, _context):
+            return "digest"
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=DefaultPromptSet(),
+        cv_renderer=SimpleNamespace(
+            render_tailored=lambda *_a, **_k: CVArtifact(
+                "candidate.pdf", "application/pdf", b"PDF"
+            )
+        ),
+        renderer=Renderer(),
+        backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "custom fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
+
+    assert run.run_daily(make_config(digest_delivery=False)) == 0
+
+    tokens = delivery_identity_tokens(job.url, job.title, job.company, job.location)
+    assert all(
+        "delivery:attempt:{}:1:2026-08-21".format(token) in saved[-1]
+        for token in tokens
+    )
+
+
+def test_plain_message_per_fit_completion_does_not_report_a_pending_cv(monkeypatch):
+    job = Job(
+        title="iOS Engineer",
+        company="Acme",
+        url="https://example.com/plain-complete",
+        description="Swift UIKit native iOS remote engineering role. " * 10,
+    )
+    install_daily_fakes(monkeypatch, [job])
+    messages = []
+    components = configured_plain_components(messages)
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "custom fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
+
+    cfg = make_config(digest_delivery=False)
+    cfg.telegram_bot_token = ""
+    cfg.telegram_chat_id = ""
+    assert run.run_daily(cfg) == 0
+
+    assert "iOS Engineer" in messages[0]
+    assert "CV delivery: disabled" in messages[-1]
+    assert "not fully delivered" not in messages[-1]
 
 
 def test_partial_daily_run_continues_and_reports_unhealthy_source(monkeypatch):
@@ -164,8 +1115,8 @@ def test_run_seed_does_not_persist_empty_identity_keys(monkeypatch):
             (SourceHealth("fake", SourceStatus.SUCCESS, 2, 1),),
         ),
     )
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: set())
-    monkeypatch.setattr(run, "save_seen_jobs", lambda seen: saved.append(set(seen)))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: set())
+    monkeypatch.setattr(run, "save_seen_jobs", lambda seen, *_a: saved.append(set(seen)))
 
     run.run_seed(make_config())
 
@@ -176,7 +1127,7 @@ def test_all_deferred_stays_unseen_and_summary_reports_zero_matches(monkeypatch)
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
 
     run.run_daily(make_config())
 
@@ -195,12 +1146,12 @@ def test_mixed_run_evaluates_only_sufficient_job(monkeypatch):
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
     evaluated = []
 
-    def fake_evaluate(_client, _criteria, job):
+    def fake_evaluate(_client, _criteria, job, **_kwargs):
         assert isinstance(job, Job)
         evaluated.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", fake_evaluate)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate)
     run.run_daily(make_config())
 
     assert evaluated == ["Complete"]
@@ -220,11 +1171,11 @@ def test_successful_enrichment_is_cleaned_before_evaluation(monkeypatch):
     )
     descriptions = []
 
-    def fake_evaluate(_client, _criteria, candidate):
+    def fake_evaluate(_client, _criteria, candidate, **_kwargs):
         descriptions.append(candidate["description"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", fake_evaluate)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate)
     run.run_daily(make_config())
 
     assert len(descriptions[0]) >= 200
@@ -237,7 +1188,7 @@ def test_deferred_notice_failure_is_soft_and_job_stays_unseen(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     _telegram, saved = install_daily_fakes(monkeypatch, [job], FakeTelegram(fail_deferred=True))
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
 
     run.run_daily(make_config())
 
@@ -277,9 +1228,8 @@ def test_previously_deferred_job_can_later_be_evaluated(monkeypatch):
 
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: next(sufficiency))
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda _client, _criteria, candidate: (
+        EVALUATE_JOB,
+        lambda _client, _criteria, candidate, **_kwargs: (
             evaluated.append(candidate["url"])
             or {"fit": False, "reason": "no", "timezone_note": None}
         ),
@@ -314,9 +1264,8 @@ def test_all_evaluations_error_still_sends_completion_notice(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("llm down")),
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("llm down")),
     )
 
     run.run_daily(make_config())
@@ -333,15 +1282,14 @@ def test_fit_that_fails_to_send_does_not_claim_none_matched(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {"fit": True, "reason": "great", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "prepare_fit", lambda *_args: {"title": "Match"})
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args, **_kwargs: {"title": "Match"})
     monkeypatch.setattr(
-        run,
+        stages,
         "send_fit",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("telegram down")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("telegram down")),
     )
 
     run.run_daily(make_config())
@@ -355,29 +1303,19 @@ def test_fit_that_fails_to_send_does_not_claim_none_matched(monkeypatch):
 def _install_fit(monkeypatch, send_outcome=None, prepare_error=None):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {"fit": True, "reason": "great", "timezone_note": None},
     )
     if prepare_error is not None:
         monkeypatch.setattr(
             run,
-            "prepare_fit",
-            lambda *_args: (_ for _ in ()).throw(prepare_error),
+            "_prepare_with_renderer",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(prepare_error),
         )
     else:
-        monkeypatch.setattr(
-            run,
-            "prepare_fit",
-            lambda *_args: {
-                "title": "Match",
-                "company": "Acme",
-                "message": "fit",
-                "pdf_bytes": b"PDF",
-            },
-        )
+        monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
     if send_outcome is not None:
-        monkeypatch.setattr(run, "send_fit", lambda *_args, **_kwargs: send_outcome)
+        monkeypatch.setattr(stages, "send_fit", lambda *_args, **_kwargs: send_outcome)
 
 
 def test_preparation_failure_remains_unseen_and_is_reported(monkeypatch):
@@ -452,17 +1390,13 @@ def test_mixed_outcomes_have_accurate_summary(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, jobs)
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
 
-    def evaluate(_client, _criteria, job):
+    def evaluate(_client, _criteria, job, **_kwargs):
         if job["title"] == "EvalFail":
             raise RuntimeError("eval down")
         return {"fit": job["title"] != "No", "reason": "result", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", evaluate)
-    monkeypatch.setattr(
-        run,
-        "prepare_fit",
-        lambda *_args: {"title": _args[3]["title"], "company": "x", "message": "fit", "pdf_bytes": b"PDF"},
-    )
+    monkeypatch.setattr(EVALUATE_JOB, evaluate)
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
     outcomes = {
         "Good": DeliveryOutcome(notification_sent=True, notification_satisfied=True, cv_sent=True),
         "Partial": DeliveryOutcome(
@@ -472,9 +1406,9 @@ def test_mixed_outcomes_have_accurate_summary(monkeypatch):
         ),
     }
     monkeypatch.setattr(
-        run,
+        stages,
         "send_fit",
-        lambda payload, _telegram, **_kwargs: outcomes[payload["title"]],
+        lambda payload, _telegram, *_a, **_kwargs: outcomes[payload["title"]],
     )
 
     run.run_daily(make_config())
@@ -491,18 +1425,148 @@ def test_mixed_outcomes_have_accurate_summary(monkeypatch):
     assert "https://x/eval" not in saved[-1]
 
 
-def test_mode_defers_before_process_job_without_seen_state(monkeypatch):
+def test_mode_defers_before_tailoring_without_seen_state(monkeypatch):
     job = Job(title="Short", company="Acme", url="https://x/short", description="tiny")
     telegram, _saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(stages, "fetch_job_text_from_url", lambda _url: "")
-    monkeypatch.setattr(run, "process_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no processing")))
-    monkeypatch.setattr(run, "load_seen_jobs", lambda: (_ for _ in ()).throw(AssertionError("no load")))
-    monkeypatch.setattr(run, "save_seen_jobs", lambda _seen: (_ for _ in ()).throw(AssertionError("no save")))
+    monkeypatch.setattr(
+        run,
+        "_prepare_with_renderer",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no processing")),
+    )
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: (_ for _ in ()).throw(AssertionError("no load")))
+    monkeypatch.setattr(run, "save_seen_jobs", lambda _seen, *_a: (_ for _ in ()).throw(AssertionError("no save")))
 
     run.run_daily(make_config(), test=True)
 
     assert len(telegram.messages) == 1
     assert "1 new job posting deferred" in telegram.messages[0]
+
+
+def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
+    from job_search.components import DefaultPromptSet
+
+    job = Job(
+        title="Configured role",
+        company="Acme",
+        url="https://x/configured-test",
+        description="Detailed Swift engineering posting. " * 12,
+    )
+    _telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    calls = []
+
+    def fake_evaluate_job(llm, criteria, candidate, prompts=None):
+        calls.append(("evaluate", candidate.title))
+        return {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "configured fit",
+            "timezone_note": None,
+            "facts": {},
+        }
+
+    class Renderer:
+        kind = "plain"
+
+        def render_notice(self, notice, **context):
+            return str(notice)
+
+        def render_fit(self, candidate, evaluation):
+            calls.append(("render", evaluation["reason"]))
+            return candidate.title
+
+        def render_digest(self, context):
+            return "digest"
+
+    class Backend:
+        accepted_renderer_kinds = ("plain",)
+        accepted_media_types = ()
+        cv_mode = "disabled"
+        requires_telegram_credentials = False
+
+        def deliver_notice(self, rendered):
+            calls.append(("notice", rendered))
+
+        def deliver_fit(self, rendered, artifact=None, notification_already_sent=False, *, job=None):
+            calls.append(("deliver", rendered, artifact))
+            return DeliveryOutcome(
+                notification_sent=True,
+                notification_satisfied=True,
+                cv_required=False,
+            )
+
+        def deliver_digest(self, rendered, artifacts=(), **context):
+            raise AssertionError("test mode delivers one fit")
+
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=DefaultPromptSet(),
+        candidate_filter=(
+            lambda candidate: calls.append(("filter", candidate.title)) or True
+        ),
+        cv_renderer=SimpleNamespace(
+            render_tailored=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("text-only test mode must skip CV rendering")
+            )
+        ),
+        renderer=Renderer(),
+        backend=Backend(),
+        cv_required=False,
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
+    cfg = make_config()
+    assert run.run_daily(cfg, test=True) == 0
+    assert calls == [
+        ("filter", "Configured role"),
+        ("evaluate", "Configured role"),
+        ("render", "configured fit"),
+        ("deliver", "Configured role", None),
+    ]
+
+
+def test_mode_preserves_custom_artifact_with_default_telegram_backend(monkeypatch):
+    from job_search.components import (
+        CVArtifact,
+        DefaultOutputBackend,
+        DefaultOutputRenderer,
+        DefaultPromptSet,
+    )
+
+    job = Job(
+        title="Configured role",
+        company="Acme",
+        url="https://x/configured-telegram-test",
+        description="Detailed Swift engineering posting. " * 12,
+    )
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    artifact = CVArtifact("ada_cv_acme.pdf", "application/pdf", b"PDF")
+    components = SimpleNamespace(
+        llm=SimpleNamespace(usage_summary=lambda: "usage"),
+        prompts=DefaultPromptSet(),
+        cv_renderer=SimpleNamespace(
+            render_tailored=lambda *_a, **_k: artifact
+        ),
+        renderer=DefaultOutputRenderer(),
+        backend=DefaultOutputBackend(telegram),
+    )
+    monkeypatch.setattr(run, "build_runtime", lambda *_a, **_k: components)
+    monkeypatch.setattr(
+        EVALUATE_JOB,
+        lambda *_a, **_k: {
+            "fit": True,
+            "verdict": "fit",
+            "reason": "configured fit",
+            "timezone_note": None,
+            "facts": {},
+        },
+    )
+
+    assert run.run_daily(make_config(), test=True) == 0
+
+    assert telegram.documents == [
+        ("ada_cv_acme.pdf", b"PDF", "Tailored CV — Configured role at Acme")
+    ]
 
 
 def test_first_preparation_failure_records_attempt_and_sends_pending_fit_once(monkeypatch):
@@ -534,9 +1598,12 @@ def test_waiting_retry_skips_all_llm_work(monkeypatch):
     )
     telegram, _saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 15))
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
-    monkeypatch.setattr(run, "prepare_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no preparation")))
-    monkeypatch.setattr(run, "prepare_retry_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no retry")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(
+        run,
+        "_prepare_with_renderer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no preparation")),
+    )
 
     run.run_daily(make_config())
 
@@ -554,12 +1621,8 @@ def test_notified_due_retry_skips_evaluation_and_uploads_only_pdf(monkeypatch):
     mark_delivery_notified(seen, **job_dict)
     telegram, saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 16))
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
-    monkeypatch.setattr(
-        run,
-        "prepare_retry_fit",
-        lambda *_args: {"title": "Match", "company": "Acme", "pdf_bytes": b"PDF"},
-    )
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
 
     run.run_daily(make_config())
 
@@ -577,11 +1640,10 @@ def test_failed_pending_notification_re_evaluates_on_due_retry(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: today[0])
     evaluations = []
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "prepare_fit", lambda *_args: (_ for _ in ()).throw(RuntimeError("compile down")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("compile down")))
 
     run.run_daily(make_config())
     today[0] = datetime.date(2026, 7, 16)
@@ -601,8 +1663,8 @@ def test_third_failure_blocks_without_seen_keys_and_sends_terminal_alert(monkeyp
     mark_delivery_notified(seen, **job_dict)
     telegram, saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 18))
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
-    monkeypatch.setattr(run, "prepare_retry_fit", lambda *_args: (_ for _ in ()).throw(RuntimeError("compile down")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("compile down")))
 
     run.run_daily(make_config())
 
@@ -623,9 +1685,12 @@ def test_blocked_job_only_retries_terminal_alert_until_acknowledged(monkeypatch)
     record_delivery_failure(seen, job_dict, datetime.date(2026, 7, 18), "document")
     telegram = FakeTelegram(fail_block=True)
     _telegram, saved = install_daily_fakes(monkeypatch, [job], telegram=telegram, initial_seen=seen)
-    monkeypatch.setattr(run, "evaluate_job", lambda *_args: (_ for _ in ()).throw(AssertionError("no evaluation")))
-    monkeypatch.setattr(run, "prepare_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no preparation")))
-    monkeypatch.setattr(run, "prepare_retry_fit", lambda *_args: (_ for _ in ()).throw(AssertionError("no retry")))
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no evaluation")))
+    monkeypatch.setattr(
+        run,
+        "_prepare_with_renderer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no preparation")),
+    )
 
     run.run_daily(make_config())
     assert not any(marker.startswith("delivery:block-alerted:") for marker in saved[-1])
@@ -644,19 +1709,13 @@ def test_three_attempt_lifecycle_runs_on_days_zero_one_and_three(monkeypatch):
     preparations = []
     monkeypatch.setattr(run, "_today", lambda: today[0])
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: evaluations.append(today[0]) or {"fit": True, "reason": "great", "timezone_note": None},
     )
     monkeypatch.setattr(
         run,
-        "prepare_fit",
-        lambda *_args: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
-    )
-    monkeypatch.setattr(
-        run,
-        "prepare_retry_fit",
-        lambda *_args: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
+        "_prepare_with_renderer",
+        lambda *_args, **_kwargs: preparations.append(today[0]) or (_ for _ in ()).throw(RuntimeError("compile down")),
     )
 
     run.run_daily(make_config())
@@ -692,11 +1751,11 @@ def test_reopen_on_description_change_reevaluates(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     evaluations = []
 
-    def counting_nonfit(_client, _criteria, job):
+    def counting_nonfit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())
     # Same identity (url/title/company), different sufficient description.
@@ -713,11 +1772,11 @@ def test_same_description_is_not_reevaluated(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     evaluations = []
 
-    def counting_nonfit(_client, _criteria, job):
+    def counting_nonfit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())
     run.run_daily(make_config())
@@ -737,11 +1796,11 @@ def test_delivered_fit_is_not_reopened_on_change(monkeypatch):
     )
     evaluations = []
 
-    def counting_fit(_client, _criteria, job):
+    def counting_fit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": True, "reason": "great", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_fit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_fit)
 
     run.run_daily(make_config())
     # Change the description; a delivered fit must never be re-opened.
@@ -762,9 +1821,8 @@ def test_legacy_seen_job_without_lifecycle_markers_stays_skipped(monkeypatch):
     )
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("legacy job must stay skipped")),
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy job must stay skipped")),
     )
 
     assert run.run_daily(make_config()) == 0  # skipped, evaluate never called
@@ -777,14 +1835,14 @@ def test_criteria_change_reopens_prior_nonfit(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     evaluations = []
 
-    def counting_nonfit(_client, _criteria, job):
+    def counting_nonfit(_client, _criteria, job, **_kwargs):
         evaluations.append(job["title"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", counting_nonfit)
+    monkeypatch.setattr(EVALUATE_JOB, counting_nonfit)
 
     run.run_daily(make_config())  # criteria == "criteria" (harness default)
-    monkeypatch.setattr(run, "load_criteria", lambda: "totally different criteria")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "totally different criteria")
     run.run_daily(make_config())
 
     assert len(evaluations) == 2  # a criteria change reopens the prior non-fit
@@ -807,13 +1865,12 @@ def test_reopened_job_that_defers_records_signature_and_stops_reopening(monkeypa
 
     monkeypatch.setattr(run, "ensure_job_description", ensure)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {"fit": False, "reason": "no", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None},
     )
 
     run.run_daily(make_config())  # run 1: evaluated, non-fit
-    monkeypatch.setattr(run, "load_criteria", lambda: "different criteria")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "different criteria")
     run.run_daily(make_config())  # run 2: reopened, description now insufficient -> deferred
     run.run_daily(make_config())  # run 3: same content+criteria -> must NOT reopen
 
@@ -825,16 +1882,15 @@ def test_uncertain_verdict_is_surfaced_for_review_and_marked_seen(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [job])
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_args: {
+        EVALUATE_JOB,
+        lambda *_args, **_kwargs: {
             "fit": False,
             "verdict": "uncertain",
             "reason": "policy could not decide",
             "timezone_note": None,
         },
     )
-    monkeypatch.setattr(run, "prepare_fit", lambda *_a: (_ for _ in ()).throw(AssertionError("no tailoring")))
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_a, **_kwargs: (_ for _ in ()).throw(AssertionError("no tailoring")))
 
     run.run_daily(make_config())
 
@@ -867,30 +1923,25 @@ def _read_digest(telegram):
 
 def _capture_digest_contexts(monkeypatch):
     """Record each DigestContext handed to build_digest_zip, still building the ZIP."""
-    real = run.build_digest_zip
+    real = delivery.build_digest_zip
     contexts = []
 
-    def spy(ctx):
+    def spy(ctx, rendered=None):
         contexts.append(ctx)
-        return real(ctx)
+        return real(ctx, rendered)
 
-    monkeypatch.setattr(run, "build_digest_zip", spy)
+    monkeypatch.setattr(delivery, "build_digest_zip", spy)
     return contexts
 
 
 def _install_digest_fit(monkeypatch, pdf=b"PDFDATA", summary="One-line summary."):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
     )
-    monkeypatch.setattr(
-        run,
-        "prepare_fit",
-        lambda *_a: {"title": "Match", "company": "Acme", "message": "m", "pdf_bytes": pdf},
-    )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: summary)
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(pdf))
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: summary)
 
 
 def test_digest_delivery_sends_one_zip_and_marks_fit_seen(monkeypatch):
@@ -944,18 +1995,14 @@ def test_digest_folds_uncertain_and_deferred_into_zip_not_messages(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda job: job["title"] != "Sparse")
 
-    def evaluate(_client, _criteria, job):
+    def evaluate(_client, _criteria, job, **_kwargs):
         if job["title"] == "Match":
             return {"fit": True, "reason": "great", "timezone_note": None, "facts": {}}
         return {"fit": False, "verdict": "uncertain", "reason": "cannot decide", "timezone_note": None}
 
-    monkeypatch.setattr(run, "evaluate_job", evaluate)
-    monkeypatch.setattr(
-        run,
-        "prepare_fit",
-        lambda *_a: {"title": "Match", "company": "Acme", "message": "m", "pdf_bytes": b"PDF"},
-    )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "sum")
+    monkeypatch.setattr(EVALUATE_JOB, evaluate)
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "sum")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -973,12 +2020,11 @@ def test_digest_success_marks_uncertain_seen(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "prepare_fit", lambda *_a: {"pdf_bytes": b"REVIEW-PDF"})
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"REVIEW-PDF"))
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -1000,11 +2046,10 @@ def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
     )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -1020,18 +2065,19 @@ def test_digest_caption_counts_delivered_fits_not_found_fits(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great", "timezone_note": None, "facts": {}},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": True, "reason": "great", "timezone_note": None, "facts": {}},
     )
 
-    def prepare(_llm, _instr, _base, job, _evaluation):
+    real = fake_prepare(b"PDF")
+
+    def prepare(renderer, llm, job, evaluation=None):
         if job["title"] == "Bad":
             raise RuntimeError("compile down")
-        return {"title": "Good", "company": "Acme", "message": "m", "pdf_bytes": b"PDF"}
+        return real(renderer, llm, job, evaluation)
 
-    monkeypatch.setattr(run, "prepare_fit", prepare)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "_prepare_with_renderer", prepare)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -1049,7 +2095,7 @@ def test_digest_success_commits_deferral_markers(monkeypatch):
     telegram, saved = install_daily_fakes(monkeypatch, [sparse])
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -1073,7 +2119,7 @@ def test_digest_failure_does_not_commit_deferral_markers(monkeypatch):
     _t, saved = install_daily_fakes(monkeypatch, [sparse], telegram=telegram)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: False)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     run.run_daily(make_config(digest_delivery=True))
 
@@ -1111,12 +2157,8 @@ def test_digest_does_not_recount_a_notification_for_a_retried_fit(monkeypatch):
     telegram, _saved = install_daily_fakes(monkeypatch, [job], initial_seen=seen)
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
-    monkeypatch.setattr(
-        run,
-        "prepare_retry_fit",
-        lambda *_a: {"title": "Match", "company": "Acme", "message": "m", "pdf_bytes": b"PDF"},
-    )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
     contexts = _capture_digest_contexts(monkeypatch)
 
@@ -1173,15 +2215,15 @@ def test_digest_reopened_defer_is_recorded_even_with_nothing_to_bundle(monkeypat
 
     monkeypatch.setattr(run, "ensure_job_description", ensure)
     monkeypatch.setattr(
-        run, "evaluate_job", lambda *_a: {"fit": False, "reason": "no", "timezone_note": None}
+        EVALUATE_JOB, lambda *_a, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None}
     )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
     cfg = make_config(digest_delivery=True)
 
     run.run_daily(cfg)  # run 1: evaluated, non-fit
-    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v2")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "criteria v2")
     run.run_daily(cfg)  # run 2: reopened, description-poor -> FIRST deferral, so it bundles
-    monkeypatch.setattr(run, "load_criteria", lambda: "criteria v3")
+    monkeypatch.setattr(run, "load_criteria", lambda *_a: "criteria v3")
     run.run_daily(cfg)  # run 3: reopened again, markers already seen -> nothing to bundle
     run.run_daily(cfg)  # run 4: unchanged since run 3 -> must NOT reopen
 
@@ -1195,9 +2237,8 @@ def test_digest_zero_results_sends_text_summary_and_no_zip(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {"fit": False, "reason": "no", "timezone_note": None},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "reason": "no", "timezone_note": None},
     )
 
     run.run_daily(make_config(digest_delivery=True))
@@ -1334,7 +2375,7 @@ class FakeTelegraphClient:
 
 def _install_telegraph(monkeypatch, client=None):
     client = client or FakeTelegraphClient()
-    monkeypatch.setattr(run, "TelegraphClient", lambda: client)
+    monkeypatch.setattr(delivery, "TelegraphClient", lambda: client)
     return client
 
 
@@ -1357,10 +2398,10 @@ class FakeX0Client:
 def _install_x0(monkeypatch, client=None, archive_builder=None):
     """Install the file-host fake and a deterministic archive password."""
     client = client or FakeX0Client()
-    monkeypatch.setattr(run, "X0Client", lambda: client)
+    monkeypatch.setattr(delivery, "X0Client", lambda: client)
     if archive_builder is not None:
-        monkeypatch.setattr(run, "build_encrypted_cv_zip", archive_builder)
-    monkeypatch.setattr(run, "new_password", lambda: "test-password-1234")
+        monkeypatch.setattr(delivery, "build_encrypted_cv_zip", archive_builder)
+    monkeypatch.setattr(delivery, "new_password", lambda: "test-password-1234")
     return client
 
 
@@ -1468,9 +2509,8 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run,
-        "evaluate_job",
-        lambda *_a: {
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {
             "fit": False,
             "verdict": "uncertain",
             "reason": "unclear",
@@ -1480,12 +2520,14 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
     )
     tailored = []
 
-    def prepare(_llm, _instructions, _base, candidate, evaluation):
-        tailored.append((candidate.title, evaluation["verdict"]))
-        return {"pdf_bytes": b"REVIEW-PLAINTEXT"}
+    real = fake_prepare(b"REVIEW-PLAINTEXT")
 
-    monkeypatch.setattr(run, "prepare_fit", prepare)
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    def prepare(renderer, llm, candidate, evaluation=None):
+        tailored.append((candidate.title, evaluation["verdict"]))
+        return real(renderer, llm, candidate, evaluation)
+
+    monkeypatch.setattr(run, "_prepare_with_renderer", prepare)
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "summary")
     _install_telegraph(monkeypatch)
     host = _install_x0(monkeypatch)
 
@@ -1570,11 +2612,11 @@ def test_a_run_with_no_fits_still_publishes_a_page(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run, "evaluate_job",
-        lambda *_a: {"fit": False, "verdict": "uncertain", "reason": "unclear",
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "unclear",
                      "timezone_note": None, "facts": {}},
     )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "s")
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
     client = _install_telegraph(monkeypatch)
     host = _install_x0(monkeypatch)
 
@@ -1634,17 +2676,11 @@ def test_every_fit_commits_when_the_page_is_delivered(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
-        run, "evaluate_job",
-        lambda *_a: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
+        EVALUATE_JOB,
+        lambda *_a, **_kwargs: {"fit": True, "reason": "great fit", "timezone_note": None, "facts": {}},
     )
-    monkeypatch.setattr(
-        run, "prepare_fit",
-        lambda _llm, _ti, _bt, job, _ev: {
-            "title": job["title"], "company": job["company"],
-            "message": "m", "pdf_bytes": b"PDFDATA",
-        },
-    )
-    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job: "summary")
+    monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDFDATA"))
+    monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "summary")
     _install_telegraph(monkeypatch)
     host = _install_x0(monkeypatch)
 
@@ -1737,10 +2773,10 @@ def test_zip_build_failure_is_fatal_not_a_delivery_failure(monkeypatch):
     monkeypatch.setattr(run, "_today", lambda: datetime.date(2026, 7, 21))
     _install_digest_fit(monkeypatch)
 
-    def boom(_ctx):
+    def boom(_ctx, _rendered=None):
         raise RuntimeError("render bug")
 
-    monkeypatch.setattr(run, "build_digest_zip", boom)
+    monkeypatch.setattr(delivery, "build_digest_zip", boom)
 
     with pytest.raises(RuntimeError, match="render bug"):
         run.run_daily(make_config(digest_delivery=True))
