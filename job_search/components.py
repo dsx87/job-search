@@ -457,6 +457,7 @@ def _default_output_pair(settings: object, telegram: object):
     backend = FilesystemOutputBackend(
         getattr(settings, "output_dir", "") or ".",
         require_artifact=getattr(settings, "output_cv_mode", "required") == "required",
+        page_suffix=renderer.page_suffix,
     )
     return renderer, backend
 

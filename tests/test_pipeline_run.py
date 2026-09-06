@@ -261,6 +261,72 @@ def test_configured_plain_fatal_notice_has_no_telegram_markup(monkeypatch):
     assert "<" not in messages[0]
 
 
+def test_every_legacy_notice_reaches_a_plain_renderer_without_markup():
+    """The builders all emit Telegram HTML; the adapter is what downgrades it.
+
+    Asserted over every builder at once rather than one test each: the point
+    is that no builder is exempt, including any added later.
+    """
+    from job_search.output import PlainTextOutputRenderer
+
+    job = {"title": "iOS Engineer", "company": "Acme", "url": "https://x.test/1"}
+    retry_on = datetime.date(2026, 9, 4)
+    notices = [
+        stages._format_deferred_notification([job]),
+        stages._format_uncertain_notification([(job, {"reason": "unclear"})]),
+        run._pending_fit_message(job, {"reason": "strong match"}, retry_on),
+        run._block_alert_message({**job, "stage": "document"}),
+        run._format_run_summary(run.RunStats(new_jobs=1), source_warning="flaky"),
+        "⚠️ Digest sections: bad <config>",
+    ]
+
+    messages = []
+    notifier = run._OutputNoticeAdapter(
+        PlainTextOutputRenderer(),
+        RecordingTextBackend(messages.append),
+        telegram_markup=False,
+    )
+    for notice in notices:
+        notifier.send_message(notice)
+
+    assert len(messages) == len(notices)
+    for message in messages:
+        assert "<" not in message and "&" not in message
+    # The link target survives the tag it lived in.
+    assert "https://x.test/1" in messages[0]
+    assert "Job search complete" in messages[4]
+
+
+def test_telegram_output_still_receives_the_markup_unchanged():
+    messages = []
+    notice = stages._format_deferred_notification(
+        [{"title": "iOS Engineer", "company": "Acme", "url": "https://x.test/1"}]
+    )
+    notifier = run._OutputNoticeAdapter(
+        SimpleNamespace(render_notice=lambda notice, **_c: str(notice)),
+        RecordingTextBackend(messages.append),
+        telegram_markup=True,
+    )
+
+    notifier.send_message(notice)
+
+    assert messages == [notice]
+    assert "<b>" in messages[0]
+
+
+def test_strip_telegram_markup_leaves_escaped_payload_text_intact():
+    """Builders escape what they interpolate, so nothing in the payload can
+    be mistaken for a tag: `<` arrives as `&lt;` and survives as `<`."""
+    notice = stages._format_deferred_notification(
+        [{"title": "<b>not bold</b>", "company": "A & B", "url": "not-a-url"}]
+    )
+
+    plain = run.strip_telegram_markup(notice)
+
+    assert "<b>not bold</b> — A & B" in plain
+    assert "1 new job posting deferred" in plain
+
+
 def test_invalid_escape_hatch_fails_before_state_sync_or_fetch(tmp_path, monkeypatch):
     config_file = tmp_path / "invalid.py"
     config_file.write_text("raise RuntimeError('invalid escape hatch')\n", encoding="utf-8")

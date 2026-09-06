@@ -7,6 +7,7 @@ save points) is preserved exactly from the original pipeline.
 import concurrent.futures
 import datetime
 import html
+import re
 import sys
 import os
 from dataclasses import dataclass, field
@@ -80,14 +81,15 @@ class RunStats:
 
 def _format_run_summary(
     stats: RunStats, source_warning="", cv_required=True,
-    telegram_markup=True,
 ) -> str:
+    """Build the end-of-run summary as Telegram HTML.
+
+    Like every other notice builder this always emits markup;
+    :func:`strip_telegram_markup` in the output adapter downgrades it for
+    non-Telegram renderers.
+    """
     lines = [
-        (
-            "✅ <b>Job search complete</b>"
-            if telegram_markup
-            else "✅ Job search complete"
-        ),
+        "✅ <b>Job search complete</b>",
         f"New candidates: {stats.new_jobs}",
         f"Evaluated: {stats.evaluated} (non-fit: {stats.non_fit}, fit: {stats.fits})",
         f"Needs review (uncertain): {stats.uncertain}",
@@ -118,27 +120,13 @@ def _format_run_summary(
             )
         )
     if stats.failure_details:
-        lines.extend((
-            "",
-            (
-                "<b>Fit delivery failures</b>"
-                if telegram_markup
-                else "Fit delivery failures"
-            ),
-        ))
-        lines.extend(
-            detail if telegram_markup else html.unescape(detail)
-            for detail in stats.failure_details[:10]
-        )
+        lines.extend(("", "<b>Fit delivery failures</b>"))
+        lines.extend(stats.failure_details[:10])
     if source_warning:
         lines.extend((
             "",
-            (
-                "⚠️ <b>Source health</b>"
-                if telegram_markup
-                else "⚠️ Source health"
-            ),
-            html.escape(source_warning) if telegram_markup else str(source_warning),
+            "⚠️ <b>Source health</b>",
+            html.escape(source_warning),
         ))
     return "\n".join(lines)
 
@@ -278,14 +266,43 @@ def _prepare_with_renderer(renderer, llm, job, evaluation=None):
     return payload
 
 
-class _OutputNoticeAdapter:
-    """Expose the legacy send_message seam over a configured output pair."""
+_ANCHOR_RE = re.compile(r'<a href="([^"]*)">(.*?)</a>', re.DOTALL)
+_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 
-    def __init__(self, renderer, backend):
+
+def strip_telegram_markup(message):
+    """Downgrade a legacy Telegram-HTML notice to plain text.
+
+    Every notice builder escapes the values it interpolates, so no ``<`` in
+    the payload survives here as markup: stripping tags first and unescaping
+    second removes exactly the markup the builder added and nothing else.
+    Anchors keep their target, which would otherwise vanish with the tag.
+    """
+    text = _ANCHOR_RE.sub(
+        lambda match: "{} ({})".format(match.group(2), match.group(1)),
+        str(message),
+    )
+    return html.unescape(_TAG_RE.sub("", text))
+
+
+class _OutputNoticeAdapter:
+    """Expose the legacy send_message seam over a configured output pair.
+
+    ``send_message`` is the seam every legacy notice builder still writes
+    Telegram HTML into. Downgrading it here rather than in each builder means
+    one place decides, and a builder added later cannot forget: a renderer
+    that is not the Telegram one receives plain text, which it is then free
+    to escape (HTML) or emit as-is (plain).
+    """
+
+    def __init__(self, renderer, backend, telegram_markup=True):
         self.renderer = renderer
         self.backend = backend
+        self.telegram_markup = bool(telegram_markup)
 
     def send_message(self, message):
+        if not self.telegram_markup:
+            message = strip_telegram_markup(message)
         return self.send_notice(message)
 
     def send_notice(self, notice, **context):
@@ -466,10 +483,11 @@ def _deliver_digest(
     rt, cfg, seen, stats, today, prepared, prepared_reviews,
     uncertain, newly_deferred, source_warning, signature_for, deferrals,
 ):
-    notifier = _OutputNoticeAdapter(rt.renderer, rt.backend)
     # Read off the runtime rather than cfg: the escape hatch may have flipped
     # these to keep a swapped-in renderer/backend pair coherent.
-    telegram_markup = getattr(rt, "telegram_markup", True)
+    notifier = _OutputNoticeAdapter(
+        rt.renderer, rt.backend, getattr(rt, "telegram_markup", True)
+    )
     cv_required = getattr(rt, "cv_required", True)
     ctx = _digest_context(
         rt, cfg, seen, stats, today, prepared, prepared_reviews,
@@ -480,10 +498,7 @@ def _deliver_digest(
         try:
             notifier.send_message(
                 _format_run_summary(
-                    stats,
-                    source_warning,
-                    cv_required=cv_required,
-                    telegram_markup=telegram_markup,
+                    stats, source_warning, cv_required=cv_required
                 )
             )
         except Exception as exc:
@@ -553,10 +568,7 @@ def _deliver_digest(
         try:
             notifier.send_message(
                 _format_run_summary(
-                    stats,
-                    source_warning,
-                    cv_required=cv_required,
-                    telegram_markup=telegram_markup,
+                    stats, source_warning, cv_required=cv_required
                 )
             )
         except Exception as exc:
@@ -594,9 +606,10 @@ def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
     rt = _build_runtime(cfg, command="daily")
     llm = rt.llm
-    notifier = _OutputNoticeAdapter(rt.renderer, rt.backend)
     # See the matching comment in _deliver_digest.
-    telegram_markup = getattr(rt, "telegram_markup", True)
+    notifier = _OutputNoticeAdapter(
+        rt.renderer, rt.backend, getattr(rt, "telegram_markup", True)
+    )
     cv_required = getattr(rt, "cv_required", True)
     state_mutation_allowed = False
     exit_code = 0
@@ -1065,10 +1078,7 @@ def run_daily(cfg, test: bool = False) -> int:
                         file=sys.stderr,
                     )
             summary = _format_run_summary(
-                stats,
-                source_warning,
-                cv_required=cv_required,
-                telegram_markup=telegram_markup,
+                stats, source_warning, cv_required=cv_required
             )
             try:
                 notifier.send_message(summary)

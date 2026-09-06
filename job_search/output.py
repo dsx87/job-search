@@ -15,6 +15,8 @@ from .models import coerce_job
 class HtmlOutputRenderer:
     """Pure HTML presentation suitable for files, sites, or custom adapters."""
 
+    page_suffix = ".html"
+
     def render_notice(self, notice, **context):
         if context.get("level") == "error":
             return "<p><strong>{}:</strong> {}</p>".format(
@@ -38,6 +40,10 @@ class HtmlOutputRenderer:
 
 class PlainTextOutputRenderer:
     """Pure portable text presentation for message-oriented adapters."""
+
+    # Nothing this renderer emits is escaped, so naming its output .html
+    # would publish a job title containing markup as live markup.
+    page_suffix = ".txt"
 
     def render_notice(self, notice, **context):
         if context.get("level") == "error":
@@ -96,12 +102,27 @@ def _atomic_write(path, content):
 
 
 class FilesystemOutputBackend:
-    """Publish renderer output and artifacts as one filesystem generation."""
+    """Publish renderer output and artifacts as one filesystem generation.
 
-    def __init__(self, directory, require_artifact=True):
+    ``page_suffix`` names the extension the paired renderer's output belongs
+    under: the backend never inspects what it is handed, so the extension has
+    to come from whoever chose the renderer.
+    """
+
+    def __init__(self, directory, require_artifact=True, page_suffix=".html"):
         self.directory = os.path.abspath(os.fspath(directory))
         self.require_artifact = bool(require_artifact)
+        suffix = str(page_suffix or "")
+        separators = tuple(sep for sep in (os.sep, os.altsep) if sep)
+        if any(sep in suffix for sep in separators):
+            raise ValueError("page_suffix must not contain a path separator")
+        self.fit_page = "latest-fit" + suffix
+        self.digest_page = "index" + suffix
         self._lock = threading.Lock()
+
+    @property
+    def _published_names(self):
+        return ("cvs", "notice.txt", self.fit_page, self.digest_page)
 
     @property
     def _releases_directory(self):
@@ -180,7 +201,7 @@ class FilesystemOutputBackend:
                 dir=self._releases_directory, prefix="generation-"
             )
             try:
-                for name in ("notice.txt", "latest-fit.html", "index.html", "cvs"):
+                for name in self._published_names:
                     source = os.path.join(self.directory, name)
                     destination = os.path.join(bootstrap, name)
                     if os.path.isdir(source):
@@ -198,7 +219,7 @@ class FilesystemOutputBackend:
 
         # The stable public paths all traverse one pointer. Replacing that
         # pointer commits every file in a later generation simultaneously.
-        for name in ("cvs", "notice.txt", "latest-fit.html", "index.html"):
+        for name in self._published_names:
             self._install_public_link(name)
 
         current = os.path.realpath(self._current_link)
@@ -244,7 +265,7 @@ class FilesystemOutputBackend:
             if self.require_artifact and artifact is None:
                 raise ValueError("a CV artifact is required for filesystem delivery")
             content = rendered if isinstance(rendered, bytes) else str(rendered).encode("utf-8")
-            writes = [("latest-fit.html", content)]
+            writes = [(self.fit_page, content)]
             if artifact is not None:
                 writes.append(
                     (
@@ -274,7 +295,7 @@ class FilesystemOutputBackend:
                         artifact.content,
                     )
                 )
-            writes.append(("index.html", content))
+            writes.append((self.digest_page, content))
             self._publish(writes)
         except Exception as exc:
             return DigestOutcome(False, error=exc)

@@ -85,9 +85,17 @@ ran, or `null`). API keys, tokens, and chat identifiers are redacted:
   the default) one ZIP/telegra.ph page per run. Requires `TELEGRAM_BOT_TOKEN`
   and `TELEGRAM_CHAT_ID`, and always runs with `OUTPUT_CV_MODE=required`.
 - **`html`** — a filesystem generation with an HTML digest under `OUTPUT_DIR`,
-  staged hidden and promoted atomically with its artifacts.
+  staged hidden and promoted atomically with its artifacts. Published as
+  `index.html`, `latest-fit.html`, `notice.txt`, and `cvs/`.
 - **`plain`** — the same generation with a plain-text digest, for scripts or
-  notifications that shouldn't render markup.
+  notifications that shouldn't render markup. The two pages take a `.txt`
+  extension (`index.txt`, `latest-fit.txt`): this renderer escapes nothing,
+  so serving its output as HTML would publish markup found in a job title.
+
+Notices — deferred jobs, uncertain jobs, blocked fits, the end-of-run summary —
+are written by builders that emit Telegram HTML. Outside `telegram` mode that
+markup is stripped before the renderer sees it, so `plain` gets real plain text
+and `html` gets its own escaped markup rather than someone else's.
 
 For `html`/`plain`, set `OUTPUT_CV_MODE=disabled` to skip tailoring and
 compilation — a successful delivery completes the fit without a CV. Manual

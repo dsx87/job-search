@@ -57,6 +57,36 @@ def test_filesystem_digest_failure_keeps_previous_generation(monkeypatch, tmp_pa
     assert (tmp_path / "cvs" / "two.txt").read_bytes() == b"old two"
 
 
+def test_plain_output_is_published_under_a_text_extension(tmp_path):
+    """A .html name over unescaped text would publish markup in a job title."""
+    renderer = PlainTextOutputRenderer()
+    backend = FilesystemOutputBackend(
+        tmp_path, require_artifact=False, page_suffix=renderer.page_suffix
+    )
+    job = Job(title="<script>alert(1)</script> Engineer", company="Acme")
+
+    assert backend.deliver_fit(renderer.render_fit(job, {"reason": "ok"})).cv_sent is False
+    assert backend.deliver_digest(renderer.render_digest(sample_context())).delivered is True
+
+    assert not (tmp_path / "index.html").exists()
+    assert not (tmp_path / "latest-fit.html").exists()
+    assert "<script>" in (tmp_path / "latest-fit.txt").read_text(encoding="utf-8")
+    assert (tmp_path / "index.txt").read_text(encoding="utf-8").startswith("Job Search Digest")
+
+
+def test_the_output_pair_hands_the_backend_the_renderer_extension():
+    from job_search.components import _default_output_pair
+
+    for mode, suffix in (("html", ".html"), ("plain", ".txt")):
+        settings = SimpleNamespace(
+            output_mode=mode, output_dir=".", output_cv_mode="disabled"
+        )
+        renderer, backend = _default_output_pair(settings, None)
+        assert renderer.page_suffix == suffix
+        assert backend.digest_page == "index" + suffix
+        assert backend.fit_page == "latest-fit" + suffix
+
+
 def test_inherited_default_digest_backend_never_claims_unsent_cv_artifacts():
     messages = []
 
