@@ -1,6 +1,7 @@
 """Coverage for job_search.runtime: build_runtime, the escape hatch, preflight."""
 import pytest
 
+import job_search.runtime as runtime_module
 from job_search.config import ConfigurationError, PipelineConfig
 from job_search.runtime import Runtime, apply_user_config, build_runtime, redacted_settings
 
@@ -249,3 +250,38 @@ def test_redacted_settings_reports_which_hatch_ran(tmp_path, monkeypatch):
 
     assert rt.config_file == str(config_file)
     assert str(config_file) in rendered
+
+
+def test_a_latex_engine_that_is_not_installed_fails_preflight(tmp_path, monkeypatch):
+    """A typo here is not retryable, so it must not reach the retry ladder."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
+    _cv_fixtures(tmp_path)
+    monkeypatch.setattr(runtime_module, "_engine_available", lambda engine: engine == "pdflatex")
+    settings = PipelineConfig(llm_primary_api_key="key", latex_engine="xelatx")
+
+    with pytest.raises(ConfigurationError, match="LATEX_ENGINE is not an executable"):
+        build_runtime(settings, command="check")
+
+    assert build_runtime(
+        PipelineConfig(llm_primary_api_key="key"), command="check"
+    ).cv_required is True
+
+
+def test_a_cv_less_runtime_is_never_asked_for_a_latex_engine(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
+    _cv_fixtures(tmp_path)
+    monkeypatch.setattr(
+        runtime_module,
+        "_engine_available",
+        lambda engine: pytest.fail("preflight consulted the engine with CVs disabled"),
+    )
+    settings = PipelineConfig(
+        output_mode="plain",
+        output_cv_mode="disabled",
+        output_dir=str(tmp_path / "out"),
+        llm_primary_api_key="key",
+    )
+
+    assert build_runtime(settings, command="check").cv_required is False

@@ -19,6 +19,19 @@ def isolate_job_search_composition(monkeypatch):
     monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
 
 
+@pytest.fixture(autouse=True)
+def assume_the_latex_engine_is_installed(monkeypatch):
+    """Let preflight pass on a host with no TeX installation.
+
+    This suite is offline and never invokes a compiler, so the presence of
+    the engine binary is a property of the developer's machine rather than
+    anything under test. Tests that care override the seam themselves.
+    """
+    from job_search import runtime
+
+    monkeypatch.setattr(runtime, "_engine_available", lambda engine: True)
+
+
 class FakeLLM:
     """Minimal stand-in for LLMClient / a provider with a .generate method.
 

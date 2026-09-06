@@ -16,6 +16,7 @@ import importlib.util
 import inspect
 import json
 import os
+import shutil
 import sys
 from dataclasses import asdict, dataclass
 
@@ -25,6 +26,7 @@ from .config import (
     ConfigurationError,
     CRITERIA_FILE,
     CV_TAILORING_PROMPT_FILE,
+    LATEX_ENGINE,
 )
 
 DEFAULT_CONFIG_FILE = "job_search_config.py"
@@ -139,6 +141,16 @@ def apply_user_config(runtime: Runtime, settings: object, *, environ=None) -> Ru
     return runtime
 
 
+def _engine_available(engine: str) -> bool:
+    """Whether ``engine`` resolves to an executable on this host's PATH.
+
+    A named seam rather than an inline ``shutil.which``: the offline test
+    suite has no TeX installation and never shells out to one, so it stubs
+    this rather than the whole of :mod:`shutil`.
+    """
+    return shutil.which(engine) is not None
+
+
 def preflight(settings: object, runtime: Runtime, command: str = "daily") -> None:
     """Check this host: settings combinations, credentials, and required files.
 
@@ -197,6 +209,18 @@ def preflight(settings: object, runtime: Runtime, command: str = "daily") -> Non
             valid_file = False
         if not valid_file:
             problems.append("{} does not name a readable file: {}".format(label, path))
+
+    # A misspelled engine is not a transient failure, but the tailoring stage
+    # cannot tell: every fit would spend a retry-ladder attempt on a
+    # FileNotFoundError no retry can fix. Catch it once, here.
+    if command in ("daily", "tailor", "base", "check") and getattr(
+        runtime, "needs_base_tex", True
+    ):
+        # Same fallback the CV renderer applies, so preflight checks the
+        # engine the compiler will actually invoke.
+        engine = getattr(settings, "latex_engine", LATEX_ENGINE) or LATEX_ENGINE
+        if not _engine_available(engine):
+            problems.append("LATEX_ENGINE is not an executable on PATH: {}".format(engine))
 
     if problems:
         raise ConfigurationError("Invalid job-search configuration: " + "; ".join(problems))

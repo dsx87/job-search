@@ -55,6 +55,11 @@ Two combinations are rejected at startup rather than failing mid-run: **`OUTPUT_
 `PROMPT_REVISION`** (prompt wording feeds the reopen fingerprint below, so an
 unnamed revision would silently reuse the wrong one).
 
+Whenever CV work is enabled, **`LATEX_ENGINE` must name an executable on
+`PATH`**. A typo is not a transient failure, but the tailoring stage cannot
+tell one from the other: left to run, every fit would spend a retry-ladder
+attempt on an error no retry can fix.
+
 ## Checking your configuration
 
 Validate configuration without scraping, changing state, calling an LLM,

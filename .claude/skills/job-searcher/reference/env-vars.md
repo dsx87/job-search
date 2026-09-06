@@ -87,6 +87,9 @@ at delivery after a full run.
 | `CV_FILENAME_PREFIX` | `igor_pivnyk_cv` | prefix of every tailored PDF |
 | `CV_PHONE` | unset | substituted for `((PHONE))` at compile time only |
 
+`LATEX_ENGINE` must resolve on `PATH` whenever CV work is enabled; preflight
+rejects a typo rather than letting each fit burn a retry-ladder attempt on it.
+
 ## Sources, tuning, delivery
 
 | Variable | Default | Purpose |
