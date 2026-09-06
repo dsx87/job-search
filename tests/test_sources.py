@@ -430,6 +430,25 @@ def test_fetch_jobs_with_health_reports_empty_success(monkeypatch):
     assert report.outcomes[0].attempt_count == 1
 
 
+def test_fetch_threads_configured_seen_file_to_source_instances(monkeypatch):
+    observed = []
+
+    class Empty(base.BaseSource):
+        name = "empty"
+
+        def fetch(self, verbose=False):
+            observed.append(self.seen_jobs_file)
+            return []
+
+    monkeypatch.setattr(fetch_mod, "ALL_SOURCES", {"empty": Empty})
+
+    fetch_mod.fetch_jobs_with_health(
+        source_names=["empty"], seen_jobs_file="state/custom.json"
+    )
+
+    assert observed == ["state/custom.json"]
+
+
 def test_fetch_jobs_with_health_reports_failed_and_partial_sources_in_order(monkeypatch):
     today = dt.date.today()
 

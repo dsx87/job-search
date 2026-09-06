@@ -193,16 +193,19 @@ def _stub_daily(monkeypatch, calls):
     monkeypatch.setattr(run_mod, "pull_state", lambda *a, **k: calls.append("pull"))
     monkeypatch.setattr(run_mod, "push_state", lambda *a, **k: calls.append("push"))
     monkeypatch.setattr(run_mod, "fetch_jobs_with_health", fake_fetch)
-    monkeypatch.setattr(run_mod, "load_criteria", lambda: "criteria")
-    monkeypatch.setattr(run_mod, "load_tailoring_instructions", lambda: "instr")
-    monkeypatch.setattr(run_mod, "load_base_tex", lambda: "tex")
-    monkeypatch.setattr(run_mod, "load_seen_jobs", lambda: set())
+    monkeypatch.setattr(run_mod, "load_criteria", lambda *a: "criteria")
+    monkeypatch.setattr(run_mod, "load_tailoring_instructions", lambda *a: "instr")
+    monkeypatch.setattr(run_mod, "load_base_tex", lambda *a: "tex")
+    monkeypatch.setattr(run_mod, "load_seen_jobs", lambda *a: set())
     monkeypatch.setattr(run_mod, "save_seen_jobs", lambda *a, **k: None)
 
     class FakeLLM:
         @classmethod
         def from_config(cls, _cfg):
             return cls()
+
+        def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
+            raise AssertionError("this test stubs the stages that call the LLM")
 
         def usage_summary(self):
             return ""

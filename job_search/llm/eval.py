@@ -13,7 +13,7 @@ from ..text import is_probably_english
 from .facts import default_facts, extract_facts
 
 
-def evaluate_job(client, criteria: str, job: dict) -> dict:
+def evaluate_job(client, criteria: str, job: dict, prompts=None) -> dict:
     """Extract facts, then apply the deterministic policy.
 
     Returns {"fit": bool, "reason": str, "timezone_note": str|None,
@@ -29,7 +29,7 @@ def evaluate_job(client, criteria: str, job: dict) -> dict:
     if not is_israel_job(job) and not is_probably_english(job.description):
         facts = default_facts()
     else:
-        facts = extract_facts(client, job)
+        facts = extract_facts(client, job, prompts=prompts)
     decision = apply_policy(facts, job)
     return {
         "fit": decision["verdict"] == "fit",

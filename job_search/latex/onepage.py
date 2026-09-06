@@ -53,7 +53,9 @@ def _apply_density_overrides(tex_source: str, step: dict) -> str:
     return tex_source  # malformed; leave untouched so the caller keeps the original
 
 
-def _shrink_to_one_page(tex_source: str, pdf_bytes: bytes, page_count: int) -> tuple:
+def _shrink_to_one_page(
+    tex_source: str, pdf_bytes: bytes, page_count: int, compile_fn=None
+) -> tuple:
     """Force a compiled-but-overflowing CV down to a single page.
 
     Walks ONE_PAGE_SHRINK_LADDER (gentlest first), recompiling each candidate,
@@ -62,10 +64,11 @@ def _shrink_to_one_page(tex_source: str, pdf_bytes: bytes, page_count: int) -> t
     (pdf_bytes, final_tex, page_count).
     """
     print(f"    PDF is {page_count} pages — auto-shrinking density to fit one page...", flush=True)
+    compile_fn = compile_fn or _compile_latex
     best = (pdf_bytes, tex_source, page_count)
     for i, step in enumerate(ONE_PAGE_SHRINK_LADDER, 1):
         candidate = _apply_density_overrides(tex_source, step)
-        result = _compile_latex(candidate)
+        result = compile_fn(candidate)
         if not result.ok or result.page_count is None or not result.pdf_bytes:
             continue
         if result.page_count < best[2]:

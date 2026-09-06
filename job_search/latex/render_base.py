@@ -8,55 +8,34 @@ the public repo. Set CV_PHONE locally to render a full copy for yourself.
 Run with: python -m job_search.latex.render_base
 """
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 
-from ..config import BASE_TEX_FILE, OUT_PDF_FILE
-from .compile import pdf_pages_from_log
+from ..config import PipelineConfig
+from ..runtime import build_runtime
 
 
-def main() -> int:
-    with open(BASE_TEX_FILE, encoding="utf-8") as f:
-        tex_source = f.read()
+def main(cfg=None) -> int:
+    cfg = PipelineConfig.from_env() if cfg is None else cfg
+    rt = build_runtime(cfg, command="base")
+    try:
+        artifact = rt.cv_renderer.render_base(rt.llm)
+    except Exception as exc:
+        print("ERROR: base CV rendering failed: {}".format(exc), file=sys.stderr)
+        return 1
+    output_path = cfg.rendered_base_file
+    with open(output_path, "wb") as handle:
+        handle.write(artifact.content)
+    manifest = os.environ.get("JOB_SEARCH_RENDER_BASE_MANIFEST", "").strip()
+    if manifest:
+        with open(manifest, "w", encoding="utf-8") as handle:
+            handle.write(os.path.abspath(output_path) + "\n")
 
     phone = os.environ.get("CV_PHONE", "").strip()
-    phone_tex = f"\\enspace\\textbar\\enspace {phone}" if phone else ""
-    tex_source = tex_source.replace("((PHONE))", phone_tex)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tex_path = os.path.join(tmpdir, "cv.tex")
-        pdf_path = os.path.join(tmpdir, "cv.pdf")
-        log_path = os.path.join(tmpdir, "cv.log")
-        with open(tex_path, "w", encoding="utf-8") as f:
-            f.write(tex_source)
-
-        cmd = ["pdflatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]
-        for _ in range(2):  # twice so cross-references resolve
-            subprocess.run(cmd, capture_output=True, timeout=120)
-
-        if not os.path.exists(pdf_path):
-            print("pdflatex did not produce a PDF — see the log above.", file=sys.stderr)
-            return 1
-
-        # Hard guard: the base CV must be exactly one page. Fail loudly on a
-        # regression so CI/the committer notices instead of shipping a 2-page
-        # sample. (The tailored pipeline auto-shrinks; the hand-tuned base does
-        # not — a spill here means the .tex needs a real fix.)
-        pages = pdf_pages_from_log(log_path)
-        if pages is not None and pages != 1:
-            print(
-                f"ERROR: base CV rendered {pages} pages — it must be exactly 1. "
-                f"Tighten igor_pivnyk_cv_base_updated.tex (density/content) until it fits.",
-                file=sys.stderr,
-            )
-            return 1
-
-        shutil.copyfile(pdf_path, OUT_PDF_FILE)
-
-    pagedesc = "1 page" if pages == 1 else f"{pages} pages" if pages else "unknown page count"
-    print(f"Wrote {OUT_PDF_FILE} ({pagedesc}, phone {'included' if phone else 'masked'}).")
+    if artifact.media_type == "application/pdf":
+        detail = "1 page, phone {}".format("included" if phone else "masked")
+    else:
+        detail = artifact.media_type
+    print("Wrote {} ({}).".format(output_path, detail))
     return 0
 
 

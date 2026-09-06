@@ -110,7 +110,9 @@ class LinkedInGuestSource(BaseSource):
         # module in a cycle.
         try:
             from ..state.seen_jobs import load_seen_jobs
-            seen = load_seen_jobs() or set()
+            path = getattr(self, "seen_jobs_file", None)
+            seen = load_seen_jobs(path) if path else load_seen_jobs()
+            seen = seen or set()
         except Exception:
             seen = set()
 

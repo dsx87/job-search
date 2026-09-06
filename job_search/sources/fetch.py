@@ -92,8 +92,10 @@ def regions_for_display(regions):
     return ",".join(reverse[region] for region in ordered if region in regions)
 
 
-def _fetch_source_with_diagnostics(source_name, source_cls, verbose):
+def _fetch_source_with_diagnostics(source_name, source_cls, verbose, seen_jobs_file=None):
     source = source_cls()
+    if seen_jobs_file is not None:
+        source.seen_jobs_file = seen_jobs_file
     if verbose:
         print("[{}] fetching...".format(source_name), flush=True)
     try:
@@ -147,7 +149,10 @@ def _source_health(name, jobs, error, source):
     return SourceHealth(name, status, len(jobs), attempts, failures[-1] if failures else "")
 
 
-def fetch_jobs_with_health(source_names=None, relocation_regions=None, max_age=30, verbose=False, budget_seconds=None):
+def fetch_jobs_with_health(
+    source_names=None, relocation_regions=None, max_age=30, verbose=False,
+    budget_seconds=None, seen_jobs_file=None,
+):
     """Fetch and filter jobs, returning the list of Job objects.
 
     Sources run concurrently under a wall-clock budget: any source still running
@@ -176,7 +181,9 @@ def fetch_jobs_with_health(source_names=None, relocation_regions=None, max_age=3
 
     def worker(name, source_cls):
         with limiter:
-            results.put(_fetch_source_with_diagnostics(name, source_cls, verbose))
+            results.put(
+                _fetch_source_with_diagnostics(name, source_cls, verbose, seen_jobs_file)
+            )
 
     for name, source_cls in selected:
         threading.Thread(
@@ -234,7 +241,10 @@ def fetch_jobs_with_health(source_names=None, relocation_regions=None, max_age=3
     return FetchReport(tuple(filtered), outcomes)
 
 
-def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=False, budget_seconds=None):
+def fetch_jobs(
+    source_names=None, relocation_regions=None, max_age=30, verbose=False,
+    budget_seconds=None, seen_jobs_file=None,
+):
     """Compatibility wrapper returning only the filtered job list."""
     return list(fetch_jobs_with_health(
         source_names=source_names,
@@ -242,6 +252,7 @@ def fetch_jobs(source_names=None, relocation_regions=None, max_age=30, verbose=F
         max_age=max_age,
         verbose=verbose,
         budget_seconds=budget_seconds,
+        seen_jobs_file=seen_jobs_file,
     ).jobs)
 
 

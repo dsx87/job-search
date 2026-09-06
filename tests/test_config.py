@@ -281,3 +281,45 @@ def test_telegraph_token_defaults_to_empty_and_reads_the_env(monkeypatch):
 
     monkeypatch.setenv("TELEGRAPH_ACCESS_TOKEN", "tok-123")
     assert PipelineConfig.from_env().telegraph_access_token == "tok-123"
+
+
+def test_pipeline_config_file_paths_and_auth_modes_are_environment_backed(monkeypatch):
+    overrides = {
+        "SEEN_JOBS_FILE": "state/custom.json",
+        "CRITERIA_FILE": "private/criteria.md",
+        "CV_TAILORING_PROMPT_FILE": "private/tailor.md",
+        "BASE_TEX_FILE": "private/base.tex",
+        "OUT_PDF_FILE": "build/base.pdf",
+        "SECTIONS_FILE": "private/sections.py",
+        "LLM_PRIMARY_AUTH_MODE": "none",
+        "LLM_FALLBACK_AUTH_MODE": "bearer",
+    }
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+
+    cfg = PipelineConfig.from_env()
+
+    assert cfg.seen_jobs_file == "state/custom.json"
+    assert cfg.criteria_file == "private/criteria.md"
+    assert cfg.cv_tailoring_prompt_file == "private/tailor.md"
+    assert cfg.base_tex_file == "private/base.tex"
+    assert cfg.rendered_base_file == "build/base.pdf"
+    assert cfg.sections_file == "private/sections.py"
+    assert cfg.llm_primary_auth_mode == "none"
+    assert cfg.llm_fallback_auth_mode == "bearer"
+
+
+def test_file_loaders_accept_explicit_paths(tmp_path):
+    criteria = tmp_path / "criteria.txt"
+    criteria.write_text("custom criteria", encoding="utf-8")
+    base = tmp_path / "base.tex"
+    base.write_text("\\documentclass{article}", encoding="utf-8")
+    tailoring = tmp_path / "tailor.md"
+    tailoring.write_text(
+        "prefix\n## STEP 3\ncustom instructions\n## BASE LaTeX TEMPLATE\nsuffix",
+        encoding="utf-8",
+    )
+
+    assert config.load_criteria(str(criteria)) == "custom criteria"
+    assert config.load_base_tex(str(base)) == "\\documentclass{article}"
+    assert config.load_tailoring_instructions(str(tailoring)) == "## STEP 3\ncustom instructions"

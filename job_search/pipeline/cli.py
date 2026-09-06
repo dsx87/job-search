@@ -3,23 +3,39 @@ import argparse
 import sys
 import urllib.parse
 
-from ..config import MIN_JOB_TEXT_LEN, PipelineConfig
-from ..llm.clients import LLMClient
+from ..config import ConfigurationError, MIN_JOB_TEXT_LEN, PipelineConfig
+from ..runtime import build_runtime, redacted_settings
 from ..models import Job
-from ..notify.telegram import TelegramClient
 from .run import run_daily, run_list, run_seed
-from .stages import _send_error_notification, ensure_job_description, tailor_single_job
+from .stages import CVDeliveryError, ensure_job_description
+
+
+# A manual tailor is a fit like any other, so it goes through the one fit
+# renderer. The reason line carries what the old bespoke header said.
+MANUAL_TAILOR_REASON = "Manually requested — tailored CV attached."
+
+
+def _notify_composed_error(rt, exc):
+    try:
+        notice = "{}: {}".format(type(exc).__name__, exc)
+        rt.backend.deliver_notice(
+            rt.renderer.render_notice(
+                notice,
+                level="error",
+                title="Pipeline error",
+                icon="⚠️",
+                code=True,
+            )
+        )
+    except Exception:
+        pass
 
 
 def run_tailor(args, cfg) -> None:
     """Entry point for `--tailor`: build one Job, then tailor it."""
-    if not all([cfg.llm_primary_api_key, cfg.telegram_bot_token, cfg.telegram_chat_id]):
-        print(
-            "Error: the primary LLM API key (LLM_PRIMARY_API_KEY / GEMINI_API_KEY), "
-            "TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID must be set.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    if getattr(cfg, "output_cv_mode", "required") != "required":
+        raise ConfigurationError("--tailor requires a CV-capable output backend")
+    rt = build_runtime(cfg, command="tailor")
 
     company = (args.company or "").strip()
     if not company and args.url:
@@ -44,14 +60,24 @@ def run_tailor(args, cfg) -> None:
         )
         sys.exit(1)
 
-    telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    # One path, whatever the components are: render the CV, render the fit,
+    # hand both to the backend. The built-in Telegram backend turns that into
+    # the message-plus-document pair it always sent.
     try:
-        client = LLMClient.from_config(cfg)
-        tailor_single_job(client, job, telegram)
+        # No cv_mode branch: the guard above already refuses --tailor when
+        # OUTPUT_CV_MODE is not "required", so there is always a CV to render.
+        artifact = rt.cv_renderer.render_tailored(rt.llm, job)
+        rendered = rt.renderer.render_fit(
+            job, {"reason": MANUAL_TAILOR_REASON}
+        )
+        outcome = rt.backend.deliver_fit(rendered, artifact, job=job)
+        if not outcome.complete:
+            raise CVDeliveryError(outcome)
+        print("  Verified CV delivered.", flush=True)
         print("Done.", flush=True)
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
-        _send_error_notification(exc, telegram)
+        _notify_composed_error(rt, exc)
         raise
 
 
@@ -59,6 +85,11 @@ def main():
     cfg = PipelineConfig.from_env()
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check-config",
+        action="store_true",
+        help="Load and validate configuration, print redacted effective settings, and exit.",
+    )
     parser.add_argument(
         "--test",
         action="store_true",
@@ -89,17 +120,30 @@ def main():
     parser.add_argument("--location", default="", help="Job location (used with --tailor).")
     args = parser.parse_args()
 
-    if args.tailor:
-        run_tailor(args, cfg)
-        return
+    if args.check_config:
+        try:
+            rt = build_runtime(cfg, command="check")
+        except ConfigurationError as exc:
+            print("Error: {}".format(exc), file=sys.stderr)
+            return 2
+        print(redacted_settings(cfg, rt))
+        return 0
 
-    if args.seed:
-        return run_seed(cfg)
+    try:
+        if args.tailor:
+            run_tailor(args, cfg)
+            return
 
-    if args.list:
-        return run_list(cfg)
+        if args.seed:
+            return run_seed(cfg)
 
-    return run_daily(cfg, test=args.test)
+        if args.list:
+            return run_list(cfg)
+
+        return run_daily(cfg, test=args.test)
+    except ConfigurationError as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

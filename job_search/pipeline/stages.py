@@ -1,9 +1,10 @@
-"""Per-job pipeline stages: evaluate → tailor → compile → deliver.
+"""Per-job pipeline helpers: description fetching, formatting, delivery.
 
 Telegram I/O goes through an injected TelegramClient (the `telegram` param)
-rather than module globals, so a single client is built once in run.py/cli.py
-and threaded through. prepare_fit performs NO Telegram I/O (safe to run
-concurrently); send_fit does the delivery.
+rather than module globals, so a single client is built once and threaded
+through. Tailoring and compilation live behind ``components.DefaultCVRenderer``; what
+remains here is the presentation and the one Telegram send (``send_fit``) that
+``DefaultOutputBackend`` delegates to.
 """
 import html
 import re
@@ -11,33 +12,16 @@ import sys
 import urllib.parse
 import urllib.request
 from collections.abc import MutableMapping
-from dataclasses import dataclass
-from typing import Optional
 
-from ..config import MIN_JOB_TEXT_LEN, load_base_tex, load_tailoring_instructions
+from ..components import DeliveryOutcome
+from ..config import MIN_JOB_TEXT_LEN
 from ..http import read_capped
-from ..latex.compile import compile_with_fixes
-from ..llm.eval import evaluate_job
-from ..llm.tailor import tailor_resume
 from ..models import Job, coerce_job
-from ..profile import validate_tailored_cv
 from ..text import collapse_ws, strip_html
 
 
 class CVPreparationError(RuntimeError):
     """Raised when a verified one-page PDF cannot be prepared."""
-
-
-@dataclass(frozen=True)
-class DeliveryOutcome:
-    notification_sent: bool = False
-    cv_sent: bool = False
-    error: Optional[Exception] = None
-    notification_satisfied: bool = False
-
-    @property
-    def complete(self) -> bool:
-        return self.notification_satisfied and self.cv_sent and self.error is None
 
 
 class CVDeliveryError(RuntimeError):
@@ -216,78 +200,20 @@ def _format_notification(job: dict, evaluation: dict) -> str:
     reason = html.escape(evaluation.get("reason", ""))
     timezone_note = evaluation.get("timezone_note")
 
+    posting = f'<a href="{url}">View posting</a>' if url else ""
+    source_label = f"Source: {source}" if source else ""
+    link_line = "  |  ".join(part for part in (posting, source_label) if part)
     lines = [
         f"<b>{title}</b>",
         f"<b>{company}</b>" + (f" — {location}" if location else ""),
-        f'<a href="{url}">View posting</a>  |  Source: {source}',
-        "",
-        f"<i>{reason}</i>",
     ]
+    if link_line:
+        lines.append(link_line)
+    lines.extend(("", f"<i>{reason}</i>"))
     if timezone_note:
         lines.append(f"\n⚠️ <b>Timezone:</b> {html.escape(timezone_note)}")
 
     return "\n".join(lines)
-
-
-def _prepare_verified_pdf(client, instructions: str, base_tex: str, job: dict) -> bytes:
-    """Tailor and compile a job-specific CV, failing unless a verified PDF exists."""
-    job = coerce_job(job)
-    try:
-        tex_source = tailor_resume(client, instructions, base_tex, job)
-    except Exception as exc:
-        raise CVPreparationError(f"CV tailoring failed: {exc}") from exc
-
-    try:
-        ok, pdf_bytes, final_tex = compile_with_fixes(client, tex_source)
-    except Exception as exc:
-        raise CVPreparationError(f"CV compilation failed: {exc}") from exc
-
-    if not ok or not isinstance(pdf_bytes, bytes) or not pdf_bytes:
-        raise CVPreparationError("CV compilation did not produce a verified one-page PDF")
-    if not isinstance(final_tex, str):
-        raise CVPreparationError("CV compilation did not return verifiable LaTeX source")
-    violations = validate_tailored_cv(final_tex)
-    if violations:
-        raise CVPreparationError(
-            "Final CV validation failed after compilation repair: " + "; ".join(violations)
-        )
-    return pdf_bytes
-
-
-def prepare_fit(llm, tailoring_instructions: str, base_tex: str, job: dict, evaluation: dict) -> dict:
-    """
-    Tailor + compile the CV for a job already judged a fit, and assemble the
-    Telegram send-payload. Performs NO Telegram I/O — pure preparation, so it is
-    safe to run concurrently across jobs. Preparation failures propagate so the
-    job remains eligible for a later retry.
-
-    Returns a payload dict consumed by send_fit().
-    """
-    job = coerce_job(job)
-    title = job.get("title", "?")
-    company = job.get("company", "?")
-    print(f"    Fit! Tailoring resume: {title} at {company}", flush=True)
-
-    print(f"    Preparing verified PDF: {title} at {company}...", flush=True)
-    pdf_bytes = _prepare_verified_pdf(llm, tailoring_instructions, base_tex, job)
-    print(f"    Verified one-page PDF ready: {title} at {company}.", flush=True)
-
-    return {
-        "title": title,
-        "company": company,
-        "message": _format_notification(job, evaluation),
-        "pdf_bytes": pdf_bytes,
-    }
-
-
-def prepare_retry_fit(llm, tailoring_instructions: str, base_tex: str, job: dict) -> dict:
-    """Prepare a verified CV for a known fit without creating another fit message."""
-    job = coerce_job(job)
-    title = job.get("title", "?")
-    company = job.get("company", "?")
-    print(f"    Retrying verified PDF: {title} at {company}...", flush=True)
-    pdf_bytes = _prepare_verified_pdf(llm, tailoring_instructions, base_tex, job)
-    return {"title": title, "company": company, "pdf_bytes": pdf_bytes}
 
 
 def send_fit(payload: dict, telegram, notification_already_sent=False) -> DeliveryOutcome:
@@ -297,7 +223,8 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
     """
     title = payload["title"]
     company = payload["company"]
-    pdf_bytes = payload.get("pdf_bytes")
+    artifact = payload.get("artifact")
+    pdf_bytes = artifact.content if artifact is not None else None
     if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
         return DeliveryOutcome(
             error=ValueError("verified PDF bytes are required for delivery"),
@@ -312,10 +239,9 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
             return DeliveryOutcome(error=exc)
         notification_sent = True
 
-    slug = _company_slug(company)
     try:
         telegram.send_document(
-            f"igor_pivnyk_cv_{slug}.pdf",
+            artifact.filename,
             pdf_bytes,
             caption=f"Tailored CV — {title} at {company}",
         )
@@ -330,82 +256,3 @@ def send_fit(payload: dict, telegram, notification_already_sent=False) -> Delive
         notification_satisfied=True,
         cv_sent=True,
     )
-
-
-def process_job(llm, criteria: str, tailoring_instructions: str, base_tex: str, job: dict, telegram) -> bool:
-    """
-    Evaluate → tailor → compile → send a single job end-to-end.
-    Returns True if a notification was sent (job was a fit).
-    Raises on evaluation, preparation, or incomplete-delivery errors so the job
-    can retry next run.
-
-    Thin wrapper over evaluate_job/prepare_fit/send_fit, kept for --test mode.
-    """
-    job = coerce_job(job)
-    title = job.get("title", "?")
-    company = job.get("company", "?")
-    print(f"  Evaluating: {title} at {company}", flush=True)
-
-    # Let evaluation errors propagate — caller will not mark the job as seen.
-    evaluation = evaluate_job(llm, criteria, job)
-
-    if not evaluation.get("fit"):
-        print(f"    Skip — {evaluation.get('reason', '')}")
-        return False
-
-    payload = prepare_fit(llm, tailoring_instructions, base_tex, job, evaluation)
-    outcome = send_fit(payload, telegram)
-    if not outcome.complete:
-        raise CVDeliveryError(outcome)
-    return True
-
-
-def tailor_single_job(client, job: dict, telegram) -> None:
-    """Tailor + compile + Telegram-deliver a CV for one manually supplied job.
-
-    Reuses the same tailoring/compilation/delivery path as the scheduled
-    pipeline (see process_job). Does NOT touch seen_jobs.json — this is an
-    on-demand action, not part of dedup state.
-    """
-    job = coerce_job(job)
-    title = job.get("title", "iOS Developer")
-    company = job.get("company", "the role")
-
-    print(f"  Tailoring and verifying CV for: {title} at {company}", flush=True)
-    pdf_bytes = _prepare_verified_pdf(
-        client,
-        load_tailoring_instructions(),
-        load_base_tex(),
-        job,
-    )
-
-    safe_title = html.escape(title)
-    safe_company = html.escape(company)
-    safe_location = html.escape(job.get("location", ""))
-    safe_url = html.escape(job.get("url", ""), quote=True)
-    header = (
-        f"<b>{safe_title}</b>\n"
-        f"<b>{safe_company}</b>" + (f" — {safe_location}" if job.get("location") else "") + "\n"
-        + (f'<a href="{safe_url}">View posting</a>\n' if job.get("url") else "")
-        + "\n📄 Tailored CV attached."
-    )
-    outcome = send_fit(
-        {
-            "title": title,
-            "company": company,
-            "message": header,
-            "pdf_bytes": pdf_bytes,
-        },
-        telegram,
-    )
-    if not outcome.complete:
-        raise CVDeliveryError(outcome)
-    print("  Verified PDF sent to Telegram.", flush=True)
-
-
-def _send_error_notification(exc: Exception, telegram) -> None:
-    try:
-        text = f"⚠️ <b>Pipeline error</b>\n\n<code>{type(exc).__name__}: {exc}</code>"
-        telegram.send_message(text)
-    except Exception:
-        pass

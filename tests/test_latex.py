@@ -145,7 +145,7 @@ def test_compile_latex_rejects_either_failed_pass(monkeypatch, returncodes):
         log_text="! Undefined control sequence.\nOutput written on cv.pdf (1 page, 3 bytes).",
     )
 
-    result = _compile_latex("\\documentclass{x}\\begin{document}x\\end{document}", cv_phone="")
+    result = _compile_latex("\\documentclass{x}\\begin{document}x\\end{document}")
 
     assert len(calls) == 2
     assert result.ok is False
@@ -167,7 +167,7 @@ def test_compile_latex_rejects_either_failed_pass(monkeypatch, returncodes):
 def test_compile_latex_rejects_unverifiable_pdf(monkeypatch, pdf_bytes, log_text, page_count):
     _fake_pdflatex(monkeypatch, (0, 0), pdf_bytes=pdf_bytes, log_text=log_text)
 
-    result = _compile_latex("source", cv_phone="")
+    result = _compile_latex("source")
 
     assert result.ok is False
     assert result.pdf_bytes is None
@@ -185,7 +185,7 @@ def test_compile_latex_rejects_unverifiable_pdf(monkeypatch, pdf_bytes, log_text
 def test_compile_latex_environment_failures_are_not_repairable(monkeypatch, exc, expected):
     monkeypatch.setattr(compile_mod.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(exc))
 
-    result = _compile_latex("source", cv_phone="")
+    result = _compile_latex("source")
 
     assert result.ok is False
     assert result.repairable is False
@@ -196,7 +196,7 @@ def test_compile_with_fixes_does_not_repair_nonrepairable_failure(monkeypatch, f
     monkeypatch.setattr(
         compile_mod,
         "_compile_latex",
-        lambda _tex: CompileResult(False, None, "page count unavailable", None, False),
+        lambda _tex, **_kw: CompileResult(False, None, "page count unavailable", None, False),
     )
     client = fake_llm(["unused"])
 
@@ -211,7 +211,7 @@ def test_compile_with_fixes_repairs_compiler_failure(monkeypatch, fake_llm):
             CompileResult(True, b"PDF", "", 1, False),
         ]
     )
-    monkeypatch.setattr(compile_mod, "_compile_latex", lambda _tex: next(results))
+    monkeypatch.setattr(compile_mod, "_compile_latex", lambda _tex, **_kw: next(results))
     client = fake_llm(["fixed source"])
 
     assert compile_with_fixes(client, "broken source") == (True, b"PDF", "fixed source")
@@ -222,7 +222,7 @@ def test_compile_with_fixes_accepts_known_one_page_result(monkeypatch, fake_llm)
     monkeypatch.setattr(
         compile_mod,
         "_compile_latex",
-        lambda _tex: CompileResult(True, b"PDF", "", 1, False),
+        lambda _tex, **_kw: CompileResult(True, b"PDF", "", 1, False),
     )
 
     assert compile_with_fixes(fake_llm([]), "source") == (True, b"PDF", "source")
@@ -232,12 +232,12 @@ def test_compile_with_fixes_rejects_unrecoverable_multi_page_result(monkeypatch,
     monkeypatch.setattr(
         compile_mod,
         "_compile_latex",
-        lambda _tex: CompileResult(True, b"TWO", "", 2, False),
+        lambda _tex, **_kw: CompileResult(True, b"TWO", "", 2, False),
     )
     monkeypatch.setattr(
         onepage_mod,
         "_shrink_to_one_page",
-        lambda tex, pdf, pages: (b"STILL_TWO", "shrunk", 2),
+        lambda tex, pdf, pages, **_kw: (b"STILL_TWO", "shrunk", 2),
     )
 
     assert compile_with_fixes(fake_llm([]), "source") == (False, None, "shrunk")
@@ -311,7 +311,7 @@ def test_compile_latex_holds_latex_semaphore_around_both_passes(monkeypatch):
     monkeypatch.setattr(compile_mod.subprocess, "run", run)
 
     result = _compile_latex(
-        "\\documentclass{x}\\begin{document}x\\end{document}", cv_phone=""
+        "\\documentclass{x}\\begin{document}x\\end{document}"
     )
 
     assert result.ok is True

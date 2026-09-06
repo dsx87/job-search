@@ -7,6 +7,8 @@ tailor stage. They deliberately hold the *structured* job/evaluation objects
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..components import CVArtifact
+
 
 @dataclass
 class FitEntry:
@@ -15,11 +17,21 @@ class FitEntry:
     job: object
     evaluation: Optional[dict]
     summary: str
-    pdf_bytes: bytes
-    cv_filename: str
+    pdf_bytes: bytes = b""
+    cv_filename: str = ""
     # Retained for compatibility with older fixture/custom-context callers.
     # Production Telegraph pages intentionally publish only the archive URL.
     cv_url: str = ""
+    artifact: Optional[CVArtifact] = None
+
+    def __post_init__(self):
+        if self.artifact is None and (self.pdf_bytes or self.cv_filename):
+            self.artifact = CVArtifact(
+                self.cv_filename, "application/pdf", self.pdf_bytes
+            )
+        elif self.artifact is not None:
+            self.pdf_bytes = self.artifact.content
+            self.cv_filename = self.artifact.filename
 
 
 @dataclass
@@ -31,6 +43,16 @@ class ReviewEntry:
     summary: str = ""
     pdf_bytes: bytes = b""
     cv_filename: str = ""
+    artifact: Optional[CVArtifact] = None
+
+    def __post_init__(self):
+        if self.artifact is None and (self.pdf_bytes or self.cv_filename):
+            self.artifact = CVArtifact(
+                self.cv_filename, "application/pdf", self.pdf_bytes
+            )
+        elif self.artifact is not None:
+            self.pdf_bytes = self.artifact.content
+            self.cv_filename = self.artifact.filename
 
 
 @dataclass
