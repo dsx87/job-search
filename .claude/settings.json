@@ -1,17 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git *)",
-      "Bash(gh run *)",
-      "Bash(gh api *)",
-      "Bash(gh auth *)",
-      "Bash(gh workflow *)",
-      "Bash(ssh *)",
-      "Bash(scp *)",
-      "Bash(rsync *)",
-      "Bash(python3 *)",
-      "Bash(python *)",
-      "Bash(.venv/bin/python *)",
       "Bash(fc-list *)",
       "Bash(mv seen_jobs.json seen_jobs.json.local)",
       "Bash(mv seen_jobs.json.local seen_jobs.json)",

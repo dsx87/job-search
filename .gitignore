@@ -25,6 +25,11 @@
 # skills are repository documentation for agents (see README "Claude Code
 # skills"); per-developer settings (.claude/settings.local.json) stay ignored
 # by the `*` default above.
+#
+# The tracked allowlist auto-approves tools for everyone who clones, so it
+# holds read-only and single-command entries only. Anything that can run
+# arbitrary code or reach another host — `python *`, `git *`, `ssh`, `scp`,
+# `rsync`, `gh api` — belongs in your own settings.local.json, never here.
 !.claude/
 !.claude/skills/
 !.claude/skills/**
