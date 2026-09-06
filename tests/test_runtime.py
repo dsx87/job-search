@@ -285,3 +285,18 @@ def test_a_cv_less_runtime_is_never_asked_for_a_latex_engine(tmp_path, monkeypat
     )
 
     assert build_runtime(settings, command="check").cv_required is False
+
+
+def test_the_shipped_example_hatch_is_a_no_op(tmp_path, monkeypatch):
+    """docs/configuration.md tells users to `cp` this file verbatim, so an
+    active filter in it would silently empty a first-time user's digest."""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / "job_search_config.example.py"
+    monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(example))
+    before = _runtime(candidate_filter=None)
+
+    after = apply_user_config(before, PipelineConfig())
+
+    assert after is before
+    assert after.candidate_filter is None

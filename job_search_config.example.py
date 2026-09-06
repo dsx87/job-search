@@ -15,11 +15,17 @@ your own traceback, unmodified.
 """
 
 
-def _wants_remote_ios(job):
-    return job.is_remote and "ios" in job.title.lower()
+# def _wants_remote_ios(job):
+#     return job.is_remote and "ios" in job.title.lower()
 
 
 def configure(runtime, settings):
-    """Only consider remote iOS roles; leave everything else untouched."""
-    runtime.candidate_filter = _wants_remote_ios
+    """A no-op as shipped: copy this file, then uncomment what you need.
+
+    Left inert on purpose — an active filter here would silently discard
+    every job it rejects, which looks exactly like an empty digest. Example
+    (with ``_wants_remote_ios`` above uncommented)::
+
+        runtime.candidate_filter = _wants_remote_ios
+    """
     return runtime
