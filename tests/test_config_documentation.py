@@ -13,6 +13,8 @@ DOCS = ROOT / "docs" / "configuration.md"
 
 
 def _annotation_value(value):
+    if value is None:
+        return "null"
     if isinstance(value, list):
         return ", ".join(value)
     if isinstance(value, bool):
@@ -120,6 +122,7 @@ def test_catalog_annotations_cover_every_required_documentation_field():
                 assert _annotation_value(value) in line
         for field in (
             "absent_behavior", "absent_path", "empty_behavior", "execution",
+            "replacement",
         ):
             if field in descriptor:
                 assert "{}: {}".format(field, descriptor[field]) in line
@@ -194,6 +197,12 @@ def test_constraint_annotations_explain_the_catalog_rules():
     ssh_key = settings.option_metadata()["environment"]["CONFIG_SSH_KEY"]
     assert ssh_key["default"] == "$HOME/.ssh/job_search_config_ed25519"
     assert "# CONFIG_SSH_KEY |" in ENV_EXAMPLE.read_text(encoding="utf-8")
+
+    for name in ("JOB_SEARCH_CONFIG_PY", "SECTIONS_PY"):
+        descriptor = settings.option_metadata()["environment"][name]
+        assert descriptor["status"] == "inactive"
+        assert descriptor["consumed_by"] is None
+        assert descriptor["replacement"] == "pinned_private_config_checkout"
 
 
 def test_deployment_template_only_activates_private_checkout_coordinates():

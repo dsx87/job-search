@@ -164,11 +164,15 @@ _ENVIRONMENT_METADATA = {
     },
     "JOB_SEARCH_CONFIG_PY": {
         "type": "string", "default": "", "sensitive": True,
-        "description": "GitHub Actions secret materialized as the legacy Python hook.",
+        "status": "inactive", "consumed_by": None,
+        "replacement": "pinned_private_config_checkout",
+        "description": "Legacy Actions transport name retained for compatibility; current private-config workflows do not consume it.",
     },
     "SECTIONS_PY": {
         "type": "string", "default": "", "sensitive": False,
-        "description": "GitHub Actions variable materialized as the configured sections file.",
+        "status": "inactive", "consumed_by": None,
+        "replacement": "pinned_private_config_checkout",
+        "description": "Legacy Actions transport name retained for compatibility; current private-config workflows do not consume it.",
     },
     "LINKEDIN_BUDGET_SECONDS": {
         "type": "positive_duration_seconds",

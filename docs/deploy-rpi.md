@@ -191,6 +191,66 @@ private configuration SHA. Check out the public revision, put the paired SHA in
 `.deployment.env`, run `--sync`, then run `--check-only`. Do not use `pull`,
 `reset`, `clean`, or a branch name to move the private checkout.
 
+## Controlled rollout and paired rollback
+
+Rehearse the change first in a disposable copy. Copy the current state and
+configuration into that rehearsal, replace source, LLM, and delivery endpoints
+with stubs, and run the bounded pipeline against the copied state. The
+rehearsal may fetch the private configuration for `--sync`, then runs
+`--check-only`, TOML validation, and the stubbed pipeline. Do not use it to
+send a live delivery or alter a production state branch. Set `STATE_SYNC=0` in
+the rehearsal and remove or redirect any production state remote to a local
+stub. Use sanitized credentials and environment values that cannot reach a
+production delivery endpoint.
+
+Before the production cutover, record the current public application SHA and
+private configuration SHA, the Actions workflow and enablement state, and the
+Pi timer and bot enabled/active states. Make a private, permission-restricted
+backup of the current `seen_jobs.json`, `.env`, `.deployment.env`, `.state`
+checkout when present, and systemd unit files. Keep this backup outside the
+public repository.
+
+Pause scheduled work before changing either revision. Record the **effective**
+prior personal-run behavior, rather than only whether
+`PERSONAL_RUNS_ENABLED` was present: an older active workflow has no gate but
+is effectively enabled. On a workflow with the new gate, set
+`PERSONAL_RUNS_ENABLED` to a value other than `true`; for an older workflow,
+disable the schedule in the Actions UI. Pause the Pi timer and bot only if they
+were previously enabled or active, then wait for any active run to finish. Do
+not enable a timer or bot that was previously disabled.
+
+After the reusable-configuration PR and the private-deployment PR are manually
+merged, update the deployment clone to the merged `main` revision. Set the
+same exact private `CONFIG_REF` on the Pi
+and in the Actions variables, run `scripts/prepare-private-config.sh --sync`
+and `--check-only` on the Pi, and validate the selected TOML. Run an authorized
+host `--check-config` only after its trusted secrets are available. Restore only
+the timer, bot, Actions schedule, and effective personal-run state recorded
+before the pause. Set `PERSONAL_RUNS_ENABLED=true` only when personal runs were
+formerly effective; otherwise leave schedules paused or disabled. Before
+restoring an active bot, refresh the Pi systemd unit files with the updated
+`scripts/setup-rpi.sh`, supplying the recorded `TIMEZONE`, `RUN_TIME`,
+`SWAP_MB`, and other host-tuning values so they are preserved. The setup script
+keeps timer and bot state unchanged and reloads the daemon; this gives the bot
+the new pinned-TOML selector.
+Do not run an automatic delivery test as part of cutover.
+
+To roll back, first preserve the current deployment information and newest
+dedup state. Restore the recorded public deployment branch/workflow revision in
+Actions together with the configuration mechanism that revision supports; a
+pre-migration workflow may not use `CONFIG_REF` or the private TOML checkout.
+On the Pi, restore the matching saved systemd unit files and reload the daemon
+before restoring any recorded enabled/active service states. Restore the public
+application revision and use that revision's documented configuration procedure
+instead of assuming `prepare-private-config.sh` or TOML exists. Preserve the
+newest dedup state: do not replace `seen_jobs.json` or the state branch with the
+pre-cutover backup. Rollback also has no automatic delivery test.
+
+Restoring a previously enabled Pi timer with `Persistent=true` can immediately
+run a missed schedule and produce normal delivery. Treat that restoration as an
+explicit delivery-capable operator action; keep a previously disabled timer
+disabled.
+
 ---
 
 ## Seeding the dedup state (avoid the first-run trap)
@@ -281,8 +341,8 @@ terminal alert points to `/tailor`; terminal alerts retry until Telegram accepts
 them without repeating any LLM work. `/tailor` is intentionally manual and
 bypasses this daily state. The final summary reports retry, backoff, known-fit,
 blocked, preparation, notification, and CV-delivery counts plus bounded per-job
-failure details. The system never sends raw `.tex`, an unknown-page PDF, or a
-multi-page PDF.
+failure details. The system never sends raw `.tex`, a PDF with an unverified
+page count, or a PDF exceeding its selected maximum-page limit.
 
 **Everything runs through one wrapper.** Both the daily timer and the bot execute
 `scripts/run_pipeline.sh`, guarded by a single `flock` — the single 700 MHz core

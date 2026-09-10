@@ -61,6 +61,10 @@ def test_option_metadata_is_json_serializable_and_covers_catalog():
         "supported_in_file": False,
         "description": "Path to the read-only private configuration SSH key; the path itself is not secret.",
     }
+    for name in ("JOB_SEARCH_CONFIG_PY", "SECTIONS_PY"):
+        assert metadata["environment"][name]["status"] == "inactive"
+        assert metadata["environment"][name]["consumed_by"] is None
+        assert metadata["environment"][name]["replacement"] == "pinned_private_config_checkout"
     legacy_hook = metadata["environment"]["JOB_SEARCH_CONFIG_FILE"]
     assert legacy_hook["default"] == "job_search_config.py"
     assert legacy_hook["absent_behavior"] == "optionally_load_default_path"
