@@ -6,7 +6,7 @@ import curses
 import threading
 import webbrowser
 
-from .config import PipelineConfig
+from .config import PipelineConfig, require_search_configured
 from .sources.fetch import fetch_jobs_with_health
 from .sources.health import format_source_health
 from .state.job_store import JobStore
@@ -155,6 +155,7 @@ class JobTUI:
         def worker():
             try:
                 settings = getattr(self, "settings", None) or PipelineConfig.from_env()
+                require_search_configured(settings)
                 options = {}
                 if getattr(settings, "settings_file", ""):
                     options.update(search=settings.search, candidate=settings.candidate,

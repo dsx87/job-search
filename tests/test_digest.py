@@ -27,7 +27,7 @@ def _stats(**over):
 
 
 def _fit(title="iOS Engineer", company="Acme", url="https://x/1", reason="Fully remote iOS role.",
-         summary="Senior iOS role on a Swift app.", pdf=b"PDF-A", cv="igor_pivnyk_cv_acme_ab12cd.pdf"):
+         summary="Senior iOS role on a Swift app.", pdf=b"PDF-A", cv="avery_example_cv_acme_ab12cd.pdf"):
     job = Job(title=title, company=company, url=url, location="Remote", is_remote=True,
               region=Region.EU, description="A long description. " * 20, matched_skills=["ios", "swift"])
     evaluation = {"fit": True, "reason": reason, "timezone_note": None,
@@ -104,20 +104,20 @@ def test_review_with_a_cv_renders_a_local_download_link():
         job=Job(title="Maybe iOS", company="Beta", url="https://x/2"),
         evaluation={"reason": "unclear", "timezone_note": None},
         pdf_bytes=b"REVIEW-PDF",
-        cv_filename="igor_pivnyk_cv_beta.pdf",
+        cv_filename="avery_example_cv_beta.pdf",
     )
 
     html = render_digest_html(_context(fits=[], review=[entry]))
 
-    assert 'href="cvs/igor_pivnyk_cv_beta.pdf"' in html
+    assert 'href="cvs/avery_example_cv_beta.pdf"' in html
 
 
 def test_header_counts_reflect_shown_entries_not_stats():
     # stats can over-count (a fit whose CV failed to compile is dropped from the
     # bundle); the dashboard must report what it actually shows.
     stats = _stats(fits=9, uncertain=9, deferred=9)
-    a = _fit(company="Acme", cv="igor_pivnyk_cv_acme_a.pdf")
-    b = _fit(company="Beta", cv="igor_pivnyk_cv_beta_b.pdf")
+    a = _fit(company="Acme", cv="avery_example_cv_acme_a.pdf")
+    b = _fit(company="Beta", cv="avery_example_cv_beta_b.pdf")
     html = render_digest_html(_context(fits=[a, b], review=[], deferred=[], stats=stats))
     assert "<b>2</b><span>Fits</span>" in html
     assert "<b>0</b><span>Review</span>" in html
@@ -180,7 +180,7 @@ def test_review_renders_as_a_card():
 # ── build_digest_zip ──────────────────────────────────────────────────────────
 
 def test_encrypted_cv_zip_requires_the_password_and_contains_plain_pdfs():
-    entry = _fit(pdf=b"%PDF-1.4 plaintext", cv="igor_pivnyk_cv_acme.pdf")
+    entry = _fit(pdf=b"%PDF-1.4 plaintext", cv="avery_example_cv_acme.pdf")
 
     data = build_encrypted_cv_zip([entry], "correct horse battery staple")
 
@@ -193,8 +193,8 @@ def test_encrypted_cv_zip_requires_the_password_and_contains_plain_pdfs():
 
 
 def test_zip_contains_index_and_one_pdf_per_fit():
-    a = _fit(company="Acme", pdf=b"PDF-A", cv="igor_pivnyk_cv_acme_a1.pdf")
-    b = _fit(company="Beta", pdf=b"PDF-B", cv="igor_pivnyk_cv_beta_b2.pdf")
+    a = _fit(company="Acme", pdf=b"PDF-A", cv="avery_example_cv_acme_a1.pdf")
+    b = _fit(company="Beta", pdf=b"PDF-B", cv="avery_example_cv_beta_b2.pdf")
     data = build_digest_zip(_context(fits=[a, b]))
 
     zf = zipfile.ZipFile(io.BytesIO(data))
@@ -211,13 +211,13 @@ def test_zip_contains_a_tailored_pdf_for_a_review_job():
         job=Job(title="Maybe iOS", company="Beta", url="https://x/2"),
         evaluation={"reason": "unclear", "timezone_note": None},
         pdf_bytes=b"REVIEW-PDF",
-        cv_filename="igor_pivnyk_cv_beta.pdf",
+        cv_filename="avery_example_cv_beta.pdf",
     )
 
     data = build_digest_zip(_context(fits=[], review=[entry]))
 
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        assert archive.read("cvs/igor_pivnyk_cv_beta.pdf") == b"REVIEW-PDF"
+        assert archive.read("cvs/avery_example_cv_beta.pdf") == b"REVIEW-PDF"
 
 
 def test_zip_html_links_resolve_to_bundled_pdfs():
@@ -250,23 +250,23 @@ def test_archive_names_stay_unique_for_two_fits_at_one_company():
 
     taken = set()
     first = _unique_artifact(
-        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", b"A"), taken
+        CVArtifact("avery_example_cv_acme.pdf", "application/pdf", b"A"), taken
     )
     taken.add(first.filename)
     second = _unique_artifact(
-        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", b"B"), taken
+        CVArtifact("avery_example_cv_acme.pdf", "application/pdf", b"B"), taken
     )
     taken.add(second.filename)
     third = _unique_artifact(
-        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", b"C"), taken
+        CVArtifact("avery_example_cv_acme.pdf", "application/pdf", b"C"), taken
     )
 
     # A numeric suffix, not a hash: the name is downloaded by a human and
     # forwarded to a recruiter.
     assert [first.filename, second.filename, third.filename] == [
-        "igor_pivnyk_cv_acme.pdf",
-        "igor_pivnyk_cv_acme_2.pdf",
-        "igor_pivnyk_cv_acme_3.pdf",
+        "avery_example_cv_acme.pdf",
+        "avery_example_cv_acme_2.pdf",
+        "avery_example_cv_acme_3.pdf",
     ]
     # Renaming must not disturb the bytes.
     assert [first.content, second.content, third.content] == [b"A", b"B", b"C"]

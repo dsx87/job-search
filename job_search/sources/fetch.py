@@ -378,8 +378,9 @@ def render_jobs(jobs, as_json=False):
         print("")
 
 
-def print_sources():
+def print_sources(generic=False):
+    enabled = set(default_source_names(generic=generic))
     print("Available sources:")
     for name in ALL_SOURCES:
-        marker = "" if getattr(ALL_SOURCES[name], "default_enabled", True) else "  (default: off)"
+        marker = "" if name in enabled else "  (default: off)"
         print("  {:18} {}{}".format(name, SOURCE_DESCRIPTIONS.get(name, ""), marker))

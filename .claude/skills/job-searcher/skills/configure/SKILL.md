@@ -1,142 +1,104 @@
 ---
 name: configure
-description: Configure AI Job Hunter with versioned TOML, host environment controls, LLM providers, search and policy data, digest sections, or the rare trusted Python escape hatch. Use for requests that change what is searched, who is eligible, how CVs are limited, which model is called, or how a digest is delivered.
-when_to_use: Triggered by requests like "switch the job search to Groq", "change the candidate's residency", "make EU CVs two pages", "search for platform engineers", "group the digest by region", "write the digest to disk", or "check my job-search config".
+description: Configure AI Job Hunter through a selected, versioned TOML file, protected environment variables, private deployment checkout, digest sections, or the rare reviewed Python escape hatch.
+when_to_use: Triggered by requests to change searches, candidate eligibility, CV limits, providers, output, prompts, digest sections, or to inspect configuration.
 argument-hint: [what to change]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash(python3 -m job_search*), Bash(python -m job_search*)
 ---
 
 # Configure the job searcher
 
-Use the least powerful layer that expresses the requested change.
+Use a selected versioned TOML file for normal behavior. The public
+`job_search.example.toml` is complete but fictional; copy it into the private
+configuration repository, replace Avery Example values, and select it with
+`JOB_SEARCH_SETTINGS_FILE`. Candidate identity, CV paths, legal countries,
+employer order, and placeholders have generic blank defaults. There is no
+legacy personal profile to fall back to.
+
+A fetch requires both selected TOML and at least one explicit `[search]`
+setting supplied by TOML, environment, or an explicit override. A
+version-only TOML can be validated but cannot fetch.
 
 | Layer | Mechanism | Use for |
 |---|---|---|
-| 1 | `job_search.toml` | versioned search, candidate, policy, provider, and delivery data |
-| 2 | protected environment / Actions secrets and variables | credentials, host-specific paths, temporary overrides, and environment-only tuning |
-| 3 | `criteria.md` | reopen-fingerprint compatibility input; it does not define evaluator context or policy |
-| 4 | `sections.py` | digest presentation only |
-| 5 | `job_search_config.py` | rare reviewed Python behavior with no catalogued setting |
+| 1 | selected `job_search.toml` | versioned provider, search, candidate, policy, CV, and delivery data |
+| 2 | protected environment | credentials, host tuning, and temporary overrides |
+| 3 | `.deployment.env` | pinned private-config checkout and non-secret host overrides |
+| 4 | `criteria.md` | reevaluation fingerprint compatibility input only |
+| 5 | `sections.py` | digest presentation only |
+| 6 | `job_search_config.py` | rare reviewed Python behavior missing from the catalog |
 
-Start with `job_search.example.toml` and `deployment.env.example`. The TOML
-example has every supported option with type, default, env name, valid values,
-dependencies, and effects. Treat it as the authoritative human reference;
-`--describe-config` is the machine-readable reference.
-
-## Read-only discovery and validation
-
-Use the command matching the requested confidence level:
+## Discovery and validation
 
 ```bash
-# JSON catalog: no selected settings file, environment, hook, service, state,
-# or host check is loaded.
 python3 -m job_search --describe-config
-
-# Strict data-only validation of exactly this TOML. It ignores environment
-# overrides and never executes hooks, touches state, calls services, or checks
-# toolchains.
-python3 -m job_search --validate-config job_search.toml
-
-# Operational check on the actual deployment host. Loads selected settings and
-# environment, executes trusted job_search_config.py if present, builds the
-# runtime, checks host prerequisites, and redacts secrets in its JSON output.
+python3 -m job_search --validate-config path/to/job_search.toml
 python3 -m job_search.pipeline --check-config
 ```
 
-`--describe-config` exposes versioned metadata for every setting: dotted key,
-type, default, description, environment aliases, sensitivity, and whether TOML
-supports it. Its `environment` mapping covers the settings selector and the
-trusted-hook/sections transport controls. `--validate-config` is safe for unreviewed configuration because
-it is pure data validation. Never use `--check-config` to inspect unreviewed
-repositories: it intentionally runs the trusted Python escape hatch.
+`--describe-config` emits the versioned JSON catalog without loading selected
+settings. `--validate-config` parses exactly the supplied TOML as data: no
+environment overrides, hooks, state, services, sources, or host checks.
+`--check-config` is for a trusted target host: it resolves overrides, may run
+reviewed Python, builds the runtime, checks tools, and redacts sensitive values.
+Never use it to inspect unreviewed configuration.
 
-Without a selected TOML file, the PR1 compatibility path keeps repository
-legacy personal defaults. They differ from the generic TOML catalog shown by
-`--describe-config`; select TOML for reusable defaults and use `--check-config`
-to inspect the effective host configuration.
+## Private configuration checkout
 
-## TOML and environment rules
+On a host, copy `deployment.env.example` to mode-600 `.deployment.env` and
+put `CONFIG_REPOSITORY`, lowercase 40-hex `CONFIG_REF`, and `CONFIG_SSH_KEY` there.
+Keep LLM, Telegram, Telegraph, and CV values in separate mode-600 `.env`.
+Then run:
 
-`[settings].version = 1` is required. TOML rejects unknown keys, invalid types,
-credentials, and host-only controls. Precedence is explicit programmatic
-override, first nonempty environment alias, TOML, then catalog default. Empty
-environment variables do not replace TOML values.
-
-Input paths in TOML are relative to the TOML file; output paths are relative to
-the process working directory. Credentials, chat IDs, and private template
-values only belong in a protected host environment or Actions Secrets. The
-legacy aliases `GEMINI_MODEL`, `GEMINI_API_KEY`, `GEMINI_API_BASE`,
-`OPENAI_API_KEY`, and `XELATEX_MAX_WORKERS` remain supported during migration.
-
-For GitHub Actions, store sensitive values in Secrets and normal provider
-controls in Variables. `JOB_SEARCH_CONFIG_PY` and `SECTIONS_PY` are reviewed
-source-transport controls for workflows that explicitly materialize them after
-checkout; they are not secret storage.
-
-## Search, candidate, and policy changes
-
-Use `[search]` for title terms, required skill groups, location exclusions,
-source selection, query terms/locations, age, and remote/relocation scope.
-Skill groups are AND across groups and OR inside each group. `remote_allowed`
-and `relocation_allowed` can both be true and govern only those two gates.
-An explicitly local role is still eligible when its advertised country appears
-in both candidate residency and work-authorization lists.
-For selected generic query sources, supply both `search_terms` and
-`query_locations`: empty query locations skip those sources with a diagnostic
-rather than falling back to embedded legacy queries. Run `python3 -m job_search
---list-sources` before naming a source.
-
-Use `[candidate]` for legal residence and work authorization (ISO alpha-2), CV
-identity, private placeholder-to-environment mappings, and page limits. CV page
-limits resolve from exact advertised ISO country, then `EU`, then the fallback
-`max_pages` (default 1); multi-location postings take the smallest result.
-Broad locations such as Europe and EMEA do not imply EU, and the UK,
-Switzerland, and Norway are non-EU. Country keys accept either case and
-canonicalize to uppercase valid ISO alpha-2 codes; `XK` and `ZZ` are rejected.
-Base-CV rendering validates only fallback
-`max_pages`; it does not auto-shrink or apply advertised-location overrides.
-
-The retained `nonremote_work_authorization` policy-check identifier now applies
-explicit authorization requirements to every advertised arrangement, including
-remote. Do not infer authorization from residency; configure the two country
-lists independently.
-
-Use `[policy]` for named, ordered built-in checks. Configuration data cannot run
-arbitrary predicates. A model claim must be grounded in the posting before it
-rejects a job; otherwise it is reviewable.
-
-`criteria.md` is a required compatibility input whose contents feed only the
-reopen fingerprint. Tell the user that an edit can reopen rejected jobs and
-cause new LLM work, but it never reaches evaluator prompts or changes
-structured `[policy]` behavior. Make a policy edit in TOML instead.
-
-`cv_tailoring_prompt_file` is also compatibility-only: the pipeline parses it
-for legacy file-format validation, then the deterministic tailor ignores its
-instruction text. To change the active CV bullet-selection prompt, set
-`prompt_dir` and `prompt_revision` and add `cv_bullet_selection.txt`; the same
-directory supports `fact_extraction.txt`, `job_summary.txt`, and
-`compiler_repair.txt` with per-file built-in fallbacks.
-
-## Digest sections and escape hatch
-
-Copy `sections.example.py` to `sections.py` for optional presentation grouping.
-Section order is priority and each job appears once. A load or definition error
-falls back to an ungrouped digest; a predicate smoke-check error retains valid
-sections and reports a warning. Sections never change search, policy, CVs, or
-delivery.
-
-Reach for `job_search_config.py` only when no catalogued setting expresses the
-need. It is reviewed executable Python, deliberately unvalidated, and runs
-with process credentials. Never put credentials or private CV data in it.
-When `JOB_SEARCH_CONFIG_FILE` is absent, the runtime optionally checks the
-working-directory `job_search_config.py`; an explicit nonempty path must exist,
-and an explicit blank value is an error.
-
-```python
-def configure(runtime, settings):
-    runtime.candidate_filter = lambda job: job.source == "example-source"
-    return runtime
+```bash
+scripts/prepare-private-config.sh --sync
+scripts/prepare-private-config.sh --check-only
 ```
 
-Finish every configuration change with the appropriate validation command; use
-`--check-config` only on the intended, trusted deployment host.
+The sync command is the only fetch path. It creates the detached, clean private
+checkout at `.private-config/job-search-config`; check-only is network-free and
+checks its remote, cleanliness, exact HEAD, and `job_search.toml`. Host wrappers
+load `.deployment.env` before `.env` and select the nested TOML. Actions uses
+Variables for `PERSONAL_RUNS_ENABLED`, `CONFIG_REPOSITORY`, and `CONFIG_REF`,
+and an Actions Secret for `CONFIG_DEPLOY_KEY`.
+
+## Configuration semantics
+
+TOML precedence is explicit override, first nonempty environment alias, TOML,
+then generic catalog default. TOML input paths are relative to the TOML and
+output paths to the process working directory.
+
+Use `[search]` for source controls, role terms, skill groups, locations, age,
+and remote/relocation gates. Skill groups are AND across groups and OR within a
+group. Generic query sources use `search_terms` and `query_locations` exactly;
+empty locations skip those sources rather than choosing a legacy scope. Use
+`--list-sources` before configuring a source name.
+
+Use `[candidate]` for legal countries and CV data. Country map keys accept ISO
+alpha-2 in either case and canonicalize to uppercase; `XK` and `ZZ` fail.
+Tailored page limits use exact advertised country, then `EU`, then fallback
+`max_pages` (default 1), taking the smallest result for multiple locations.
+The UK, Switzerland, and Norway are non-EU. Base rendering validates only the
+fallback and never auto-shrinks.
+
+Search and evaluation accept blank CV identity and paths. Render operations
+need their CV inputs: `python3 -m job_search.latex.render_base` requires both
+`base_tex_file` and `rendered_base_file`; tailored rendering needs configured
+base and prompt inputs.
+
+Use `[policy]` for ordered, known built-in checks. The compatible
+`nonremote_work_authorization` identifier checks explicit authorization for
+all arrangements, including remote; residency never implies authorization.
+`criteria.md` changes only the reevaluation fingerprint, never evaluator
+context or policy. `cv_tailoring_prompt_file` is parsed only for compatibility
+validation; active bullet instructions come from
+`prompt_dir/cv_bullet_selection.txt` and require `prompt_revision`.
+
+Sections affect presentation only. Load/definition errors yield ungrouped
+output; a blank-entry predicate smoke warning retains otherwise valid sections.
+Use `job_search_config.py` only as a reviewed local-host hook for code that no
+catalog option can express. It runs with host credentials. An absent
+`JOB_SEARCH_CONFIG_FILE` optionally checks the working-directory default; an
+explicit blank is an error. The Actions private-config checkout does not select
+a Python hook. `JOB_SEARCH_CONFIG_PY` and `SECTIONS_PY` are legacy transport
+metadata, not the private deployment path.

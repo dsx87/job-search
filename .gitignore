@@ -7,8 +7,7 @@
 !LICENSE
 !criteria.md
 !cv_tailoring_prompt.md
-!igor_pivnyk_cv_base_updated.tex
-!igor_pivnyk_cv_base_updated.pdf
+!avery_example_base.tex
 !requirements.txt
 !sections.example.py
 # Deliberately trackable trusted CODE — and note what "trusted" means: this
@@ -59,6 +58,7 @@
 !docs/configuration.md
 !scripts/
 !scripts/setup-rpi.sh
+!scripts/prepare-private-config.sh
 !scripts/run_pipeline.sh
 !scripts/enable-jobspy.sh
 !scripts/setup-state-sync.sh

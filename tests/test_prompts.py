@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -7,9 +8,25 @@ from job_search.components import (
     DefaultPromptSet,
     FilePromptSet,
 )
-from job_search.config import load_base_tex
 from job_search.models import Job
 from job_search.state.seen_jobs import criteria_fingerprint, criteria_version
+
+
+CV_FIXTURE = Path(__file__).parent / "fixtures" / "fictional_candidate.tex"
+
+
+def _cv_base():
+    return CV_FIXTURE.read_text(encoding="utf-8")
+
+
+def _avery_profile():
+    return CandidateProfile(
+        display_name="Avery Example",
+        base_tex_path=str(CV_FIXTURE),
+        cv_filename_prefix="avery_example_cv",
+        employer_order=("Example Labs", "Sample Systems"),
+        forbidden_claim_patterns=(),
+    )
 
 
 def _job():
@@ -36,8 +53,8 @@ def test_default_prompt_text_is_byte_compatible_with_the_legacy_builders():
     assert _sha(prompts.job_summary(job)) == (
         "d3a245365e747e426b44859319052e519abcd48b17dd9f6199825df506b45236"
     )
-    assert _sha(prompts.cv_bullet_selection(load_base_tex(), job, CandidateProfile())) == (
-        "d4fd277bb774b637c91dc8339bbbaa5f00392890f909ff3fa66ad8b05b5e14fe"
+    assert _sha(prompts.cv_bullet_selection(_cv_base(), job, _avery_profile())) == (
+        "3f73d02f5a6b643a4a104a31324afe075cf4456f6bd9aa69a8d670ca63f5b4c1"
     )
     assert _sha(prompts.compiler_repair("\\documentclass{article}", "! Error")) == (
         "edfb0cdb1577e48e97aa638b13515d44c6dc048e2fa60a489db545009f817290"
@@ -60,8 +77,8 @@ def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
 
     assert prompts.fact_extraction(_job()).startswith("Senior iOS Engineer|Acme|Berlin|True|")
     assert prompts.job_summary(_job()).startswith("Senior iOS Engineer|")
-    assert "Check Point" in prompts.cv_bullet_selection(
-        load_base_tex(), _job(), CandidateProfile()
+    assert "Example Labs" in prompts.cv_bullet_selection(
+        _cv_base(), _job(), _avery_profile()
     )
     assert prompts.compiler_repair("TEX", "ERROR") == "ERROR|TEX"
     assert prompts.revision == "my-prompts-v2"

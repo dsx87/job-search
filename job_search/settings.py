@@ -178,23 +178,31 @@ _ENVIRONMENT_METADATA = {
     },
     "PERSONAL_RUNS_ENABLED": {
         "type": "boolean", "default": None, "sensitive": False,
-        "status": "planned", "consumed_by": "deployment_pr2",
-        "description": "Planned GitHub Actions host control for personal scheduled runs; not active in PR1.",
+        "status": "active", "consumed_by": "github_actions",
+        "description": "GitHub Actions host control for personal scheduled runs.",
     },
     "CONFIG_REPOSITORY": {
         "type": "repository", "default": None, "sensitive": False,
-        "status": "planned", "consumed_by": "deployment_pr2",
-        "description": "Planned GitHub Actions configuration repository control; not active in PR1.",
+        "status": "active", "consumed_by": ["github_actions", "private_config_helper"],
+        "constraints": {"regex": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"},
+        "description": "Private configuration repository in owner/repository form, consumed by GitHub Actions and the local helper.",
     },
     "CONFIG_REF": {
         "type": "git_ref", "default": None, "sensitive": False,
-        "status": "planned", "consumed_by": "deployment_pr2",
-        "description": "Planned GitHub Actions configuration revision control; not active in PR1.",
+        "status": "active", "consumed_by": ["github_actions", "private_config_helper"],
+        "constraints": {"regex": "^[0-9a-f]{40}$"},
+        "description": "Private configuration revision consumed by GitHub Actions and the local helper; must be a lowercase 40-hex commit SHA.",
+    },
+    "CONFIG_SSH_KEY": {
+        "type": "path", "default": "$HOME/.ssh/job_search_config_ed25519", "sensitive": False,
+        "status": "active", "consumed_by": "private_config_helper",
+        "constraints": {"file": True, "readable": True},
+        "description": "Path to the read-only private configuration SSH key; the path itself is not secret.",
     },
     "CONFIG_DEPLOY_KEY": {
         "type": "ssh_private_key", "default": None, "sensitive": True,
-        "status": "planned", "consumed_by": "deployment_pr2",
-        "description": "Planned GitHub Actions secret deploy key for the configuration repository; not active in PR1.",
+        "status": "active", "consumed_by": "github_actions",
+        "description": "GitHub Actions secret deploy key for the configuration repository.",
     },
 }
 

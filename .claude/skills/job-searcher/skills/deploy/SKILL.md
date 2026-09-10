@@ -1,121 +1,69 @@
 ---
 name: deploy
-description: Deploy and operate the AI Job Hunter — the GitHub Actions daily cron, the Raspberry Pi systemd + Telegram-bot install, dedup-state seeding and sync, and rollout of a config change to a running host.
-when_to_use: Triggered by requests like "set up the daily job search on Actions", "deploy this to the Pi", "why did last night's run fail", "the timer didn't fire", "push my config change to the Pi", "seed the dedup state".
-argument-hint: [actions | pi | rollout | triage]
+description: Deploy and operate AI Job Hunter with the private, commit-pinned configuration checkout on GitHub Actions or a Raspberry Pi host.
+when_to_use: Triggered by requests to set up or diagnose scheduled runs, private configuration checkout, host deployment, Actions, timers, or rollout.
+argument-hint: [actions | pi | config | triage]
 disable-model-invocation: true
 ---
 
 # Deploy and operate the job searcher
 
-Two runners execute the identical fetch → dedupe → filter → tailor → notify
-chain. Pick the target first, then follow only that track.
+All fetches use a selected private TOML. Public repository examples are fictional
+and must not become a deployment profile. The private configuration checkout is
+always `.private-config/job-search-config`, with
+`job_search.toml` at its root.
 
-| | GitHub Actions | Raspberry Pi 1 (ARMv6) |
-|---|---|---|
-| Setup | repository secrets only | `bash scripts/setup-rpi.sh` |
-| Sources | all ~20 (JobSpy + Chromium) | ~16 of 20 (stdlib-only path) |
-| Trigger | daily cron 11:00 UTC + `workflow_dispatch` | `job-search.timer` + Telegram `/run` |
-| State | orphan `state` branch | working directory, optionally synced |
-| Guide | README "Deploy on GitHub Actions" | `docs/deploy-rpi.md` |
+Confirm before enabling a timer, changing a live Actions variable or secret,
+starting/restarting a service, or otherwise affecting a runner. Never print a
+secret or copy it into a public file.
 
-**Confirm before acting.** Enabling a timer, pushing secrets, restarting a unit,
-or seeding state all have effects outside this repo. State what you are about to
-do and get a yes first. Never print or echo a secret value.
+## Private configuration on a host
 
-## Track A — GitHub Actions
+1. Copy `deployment.env.example` to mode-600 `.deployment.env`.
+2. Put `CONFIG_REPOSITORY`, an exact lowercase 40-character `CONFIG_REF`, and a
+   readable local `CONFIG_SSH_KEY` in it. It may include non-secret host
+   overrides.
+3. Keep LLM, Telegram, Telegraph, and private CV values in separate mode-600
+   `.env`.
+4. Run `scripts/prepare-private-config.sh --sync`.
+5. Run `scripts/prepare-private-config.sh --check-only`, then
+   `python3 -m job_search.pipeline --check-config` on the trusted host.
 
-1. Fork or use the repo; the daily workflow is `.github/workflows/job_search.yml`
-   (`Daily Job Search`). `render_base_cv.yml`, `tailor_cv.yml`,
-   `verify_cv_one_page.yml` and `tests.yml` are the supporting workflows.
-2. Add Actions **secrets**: `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-   `TELEGRAM_CHAT_ID` are required; `OPENAI_API_KEY` (fallback — effectively
-   required, see below), `CV_PHONE`, `TELEGRAPH_ACCESS_TOKEN`, and
-   `JOB_SEARCH_CONFIG_PY` are optional.
-3. Add Actions **variables** only if overriding provider defaults or grouping the
-   digest: the eight `LLM_*` names, and `SECTIONS_PY`.
-4. Dispatch the workflow manually once and read the run log before trusting the
-   cron.
+The sync command is the only private-config fetch. It detached-checks out the
+configured revision and verifies the remote. Check-only makes no network calls;
+it requires a clean nested checkout with matching origin, exact HEAD, and
+`job_search.toml`. Host wrappers load `.deployment.env` before `.env` and
+default `JOB_SEARCH_SETTINGS_FILE` to the nested TOML. Neither file is
+rewritten by the helper.
 
-The workflow reads `seen_jobs.json` from the orphan `state` branch and commits it
-back there. A repository **ruleset that matches the `state` branch will break
-that push with GH013** — check rulesets first when a run succeeds but state never
-advances.
+A selected TOML plus at least one explicit `[search]` setting is required
+before fetch. `--describe-config` and `--validate-config path` remain safe
+ways to inspect configuration without a selected file; `--check-config` may
+execute trusted Python.
 
-Verify with `gh run list --workflow job_search.yml` and
-`gh run view <id> --log`.
+## GitHub Actions
 
-## Track B — Raspberry Pi
+Use Actions Variables for `PERSONAL_RUNS_ENABLED`,
+`CONFIG_REPOSITORY`, and `CONFIG_REF`; use an Actions Secret for
+`CONFIG_DEPLOY_KEY`. The daily scheduled job skips unless the flag is exactly
+`true`. Manual daily and tailoring workflows preflight all private-config
+controls and fail when any is missing. They checkout the configured private
+repository at the full SHA into `.private-config/job-search-config`, verify
+HEAD, and use `persist-credentials: false`.
 
-```bash
-git clone https://github.com/dsx87/job-search.git ~/job-search
-cd ~/job-search
-bash scripts/setup-rpi.sh          # idempotent; safe to re-run
-nano .env                          # mode 600 — fill in the keys
-sudo systemctl enable --now job-search.timer job-search-bot.service
-```
+The render-base and one-page guard workflows use only the fictional public CV
+fixture. They must not require or materialize a personal configuration.
 
-The script installs a right-sized TeX (never `texlive-full`), bumps swap, sets
-the timezone, writes the `.env` template, seeds `seen_jobs.json` from the `state`
-branch, pre-warms `pdflatex`, and installs the units. It deliberately stops
-short of secrets and of enabling the timer.
+## Raspberry Pi and triage
 
-Overrides: `TIMEZONE=`, `RUN_TIME=`, `SWAP_MB=`, `TRY_JOBSPY=1`.
+`bash scripts/setup-rpi.sh` prepares the host but does not enable timers,
+start services, or change bot state. After the private checkout passes
+check-only and runtime check, an operator can deliberately enable or run the
+appropriate service.
 
-Pi-specific settings: `EVAL_WORKERS=2`, `TAILOR_WORKERS=1`, `linkedin-guest` on
-via `SOURCES_ENABLE`, the jobspy LinkedIn sources off via `SOURCES_DISABLE`.
-
-**Seed the dedup state before the first run.** On empty state every fetched job
-is new — hundreds of LLM evaluations and dozens of compiles, potentially 1–3
-hours. `python3 -m job_search.pipeline --seed` marks everything currently
-fetched as seen without evaluating.
-
-Optional two-way state sync with the Actions runner:
-`bash scripts/setup-state-sync.sh`, add the printed key as a **write** deploy
-key, then `STATE_SYNC=1` in `.env`. Sync is best-effort — a failure logs and the
-run proceeds locally; concurrent pushes union-merge.
-
-`docs/deploy-rpi.md` carries the hardware notes, runtime expectations, the
-manual equivalent of every script step, and the troubleshooting table.
-
-## Operating a Pi host
-
-```bash
-sudo systemctl start job-search.service        # run now, through the wrapper
-journalctl -u job-search.service -f            # live run log
-journalctl -u job-search-bot.service -f        # bot: commands, poll errors
-systemctl list-timers job-search.timer         # last / next fire
-sudo systemctl disable --now job-search.timer  # pause the daily run
-```
-
-Both the timer and the bot execute the same `flock`'d `scripts/run_pipeline.sh`,
-so the single core never runs two pipelines; a colliding trigger is refused, not
-queued. The run record is `.last_run.json` (trigger, start/finish, exit code);
-the transcript is `logs/run-*.log`.
-
-Telegram control bot (long-polls `getUpdates`, so it works behind NAT with
-nothing opened on the router): `/run`, `/status`, `/tailor <url>`,
-`/tailor <pasted text>` — from the authorized chat only.
-
-## Rolling out a config change
-
-1. Validate locally: `python3 -m job_search.pipeline --check-config`.
-2. Actions: commit tracked files, or update the secret/variable — an untracked
-   `sections.py` or `job_search_config.py` never reaches a runner.
-3. Pi: `git pull` in `~/job-search`, edit `.env` or the untracked local files,
-   then `--check-config` **on the Pi**, then trigger one run and watch it.
-4. Confirm the digest actually arrived before calling it deployed.
-
-## Triage
-
-| Symptom | Where to look |
-|---|---|
-| Run green, state never advances | `state`-branch ruleset (GH013) on the push |
-| Fetch hangs / run times out | LinkedIn throttling; `SCRAPE_BUDGET_SECONDS` caps the stage |
-| Nothing delivered, every job failed evaluation | primary model retired or key missing; check the fallback key |
-| `pdflatex not found`, or first compile times out | TeX install / cold cache — pre-warm once |
-| OOM-killed on the Pi | raise `SWAP_MB`, keep `TAILOR_WORKERS=1` / `EVAL_WORKERS=2` |
-| A match arrived with no CV | attempts run days 0, 1, 3; after the blocked alert recover with `/tailor` |
-| First run takes hours | dedup state was never seeded |
-
-The full Pi troubleshooting table is at the end of `docs/deploy-rpi.md`.
+For failures, inspect the run log and first verify the private checkout:
+missing `.deployment.env`, malformed repository/full SHA, unreadable deploy
+key, a dirty checkout, remote mismatch, wrong HEAD, or missing
+`job_search.toml` are configuration failures. Then check the selected TOML,
+its explicit search settings, protected credentials in `.env`, and host
+prerequisites reported by `--check-config`.

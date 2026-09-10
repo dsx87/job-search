@@ -38,8 +38,29 @@ def test_option_metadata_is_json_serializable_and_covers_catalog():
         "description": "LinkedIn Guest source time budget; defaults from the fetch budget.",
     }
     assert metadata["environment"]["CONFIG_DEPLOY_KEY"]["sensitive"] is True
-    assert metadata["environment"]["CONFIG_DEPLOY_KEY"]["status"] == "planned"
-    assert metadata["environment"]["CONFIG_DEPLOY_KEY"]["consumed_by"] == "deployment_pr2"
+    assert metadata["environment"]["CONFIG_DEPLOY_KEY"]["status"] == "active"
+    assert metadata["environment"]["CONFIG_DEPLOY_KEY"]["consumed_by"] == "github_actions"
+    assert metadata["environment"]["CONFIG_REF"]["constraints"] == {
+        "regex": "^[0-9a-f]{40}$"
+    }
+    assert metadata["environment"]["CONFIG_REPOSITORY"]["consumed_by"] == [
+        "github_actions", "private_config_helper"
+    ]
+    assert metadata["environment"]["CONFIG_REPOSITORY"]["constraints"] == {
+        "regex": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+    }
+    assert metadata["environment"]["CONFIG_SSH_KEY"] == {
+        "env": "CONFIG_SSH_KEY",
+        "type": "path",
+        "default": "$HOME/.ssh/job_search_config_ed25519",
+        "sensitive": False,
+        "status": "active",
+        "consumed_by": "private_config_helper",
+        "constraints": {"file": True, "readable": True},
+        "environment_only": True,
+        "supported_in_file": False,
+        "description": "Path to the read-only private configuration SSH key; the path itself is not secret.",
+    }
     legacy_hook = metadata["environment"]["JOB_SEARCH_CONFIG_FILE"]
     assert legacy_hook["default"] == "job_search_config.py"
     assert legacy_hook["absent_behavior"] == "optionally_load_default_path"
@@ -369,14 +390,12 @@ def test_legacy_environment_keeps_source_enable_precedence_without_a_file():
     assert loaded.values["sources_disable"] == ("remotive",)
 
 
-def test_legacy_personal_fallback_has_an_explicit_origin(monkeypatch):
+def test_no_file_candidate_defaults_remain_generic(monkeypatch):
     monkeypatch.delenv("JOB_SEARCH_SETTINGS_FILE", raising=False)
     monkeypatch.delenv("CV_DISPLAY_NAME", raising=False)
 
     config = PipelineConfig.from_env()
 
-    assert config.candidate.display_name == "Igor Pivnyk"
-    assert config.setting_origins["display_name"]["kind"] == "legacy-default"
-    assert config.setting_origins["display_name"]["source"] == (
-        "legacy PipelineConfig compatibility default"
-    )
+    assert config.candidate.display_name == ""
+    assert config.setting_origins["display_name"]["kind"] == "default"
+    assert config.setting_origins["display_name"]["source"] == "default"

@@ -1,7 +1,9 @@
 """Characterization tests locking the config defaults (must not drift)."""
+import pytest
+
 # --- module under test (repoint on migration) ---
 from job_search import config
-from job_search.config import PipelineConfig
+from job_search.config import CandidateConfig, ConfigurationError, PipelineConfig, require_search_configured
 
 
 def test_scraper_config_defaults():
@@ -28,12 +30,74 @@ def test_pipeline_config_defaults():
     assert config.MIN_JOB_TEXT_LEN == 200
 
 
+def test_candidate_and_pipeline_defaults_are_generic():
+    candidate = CandidateConfig()
+    pipeline = PipelineConfig()
+
+    assert candidate.display_name == ""
+    assert candidate.filename_prefix == ""
+    assert candidate.base_tex_file == ""
+    assert candidate.rendered_base_file == ""
+    assert candidate.employer_order == ()
+    assert candidate.forbidden_claim_patterns == ()
+    assert dict(candidate.private_placeholders) == {}
+    assert candidate.residency_countries == ()
+    assert pipeline.cv_display_name == ""
+    assert pipeline.cv_filename_prefix == ""
+    assert pipeline.base_tex_file == ""
+    assert pipeline.rendered_base_file == ""
+
+
+def test_require_search_configured_requires_a_selected_toml():
+    with pytest.raises(ConfigurationError, match="JOB_SEARCH_SETTINGS_FILE"):
+        require_search_configured(PipelineConfig())
+
+
+def test_require_search_configured_requires_an_explicit_search_origin():
+    config = PipelineConfig(settings_file="settings.toml")
+
+    with pytest.raises(ConfigurationError, match=r"\[search\]"):
+        require_search_configured(config)
+
+
+def test_require_search_configured_accepts_a_file_search_option():
+    config = PipelineConfig(
+        settings_file="settings.toml",
+        setting_origins={"search_terms": {"kind": "file", "source": "search.search_terms"}},
+    )
+
+    require_search_configured(config)
+
+
+def test_selected_empty_settings_file_does_not_configure_fetch(monkeypatch, tmp_path):
+    settings = tmp_path / "settings.toml"
+    settings.write_text("[settings]\nversion = 1\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_SEARCH_SETTINGS_FILE", str(settings))
+
+    with pytest.raises(ConfigurationError, match=r"\[search\]"):
+        require_search_configured(PipelineConfig.from_env())
+
+
+def test_selected_file_search_option_configures_fetch(monkeypatch, tmp_path):
+    settings = tmp_path / "settings.toml"
+    settings.write_text(
+        "[settings]\nversion = 1\n[search]\nsearch_terms = [\"platform engineer\"]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JOB_SEARCH_SETTINGS_FILE", str(settings))
+
+    config = PipelineConfig.from_env()
+
+    assert config.search.search_terms == ("platform engineer",)
+    require_search_configured(config)
+
+
 def test_pipeline_filenames():
     assert config.SEEN_JOBS_FILE == "seen_jobs.json"
     assert config.CRITERIA_FILE == "criteria.md"
     assert config.CV_TAILORING_PROMPT_FILE == "cv_tailoring_prompt.md"
-    assert config.BASE_TEX_FILE == "igor_pivnyk_cv_base_updated.tex"
-    assert config.OUT_PDF_FILE == "igor_pivnyk_cv_base_updated.pdf"
+    assert config.BASE_TEX_FILE == ""
+    assert config.OUT_PDF_FILE == ""
 
 
 def test_pipeline_config_from_env_reads_keys(monkeypatch):
@@ -172,8 +236,9 @@ def test_digest_delivery_defaults_on_and_is_disabled_by_zero(monkeypatch):
 
 def test_loaders_read_repo_files():
     assert "iOS" in config.load_criteria() or len(config.load_criteria()) > 0
-    base = config.load_base_tex()
+    base = config.load_base_tex("avery_example_base.tex")
     assert "\\documentclass" in base
+    assert "Avery Example" in base
     instr = config.load_tailoring_instructions()
     assert instr  # STEP 3 slice is non-empty
     assert "## BASE LaTeX TEMPLATE" not in instr  # sliced out

@@ -12,9 +12,17 @@ def _runtime(**overrides):
     return Runtime(**values)
 
 
+def _configured_cv(**kwargs):
+    values = dict(base_tex_file='avery_example_base.tex',
+                  rendered_base_file='build/avery_example_base.pdf',
+                  cv_filename_prefix='avery_example_cv')
+    values.update(kwargs)
+    return PipelineConfig(**values)
+
+
 def _cv_fixtures(tmp_path):
     (tmp_path / "criteria.md").write_text("criteria", encoding="utf-8")
-    (tmp_path / "igor_pivnyk_cv_base_updated.tex").write_text("tex", encoding="utf-8")
+    (tmp_path / "avery_example_base.tex").write_text("tex", encoding="utf-8")
     (tmp_path / "cv_tailoring_prompt.md").write_text(
         "## STEP 3\ninstructions\n## BASE LaTeX TEMPLATE\n", encoding="utf-8"
     )
@@ -146,7 +154,7 @@ def test_module_loading_registers_itself_for_dataclasses(tmp_path, monkeypatch):
 def test_check_config_rejects_missing_required_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
-    settings = PipelineConfig(criteria_file=str(tmp_path / "missing.md"))
+    settings = _configured_cv(criteria_file=str(tmp_path / "missing.md"))
 
     with pytest.raises(ConfigurationError, match="criteria_file"):
         build_runtime(settings, command="check")
@@ -169,7 +177,7 @@ def test_hatch_cv_less_backend_clears_flags_and_skips_cv_and_telegram_checks(
     monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
     # No base_tex/cv_tailoring_prompt file and no Telegram credentials exist
     # anywhere in tmp_path — build_runtime must not ask for them.
-    settings = PipelineConfig(llm_primary_api_key="key")
+    settings = _configured_cv(llm_primary_api_key="key")
 
     rt = build_runtime(settings, command="daily")
 
@@ -192,7 +200,7 @@ def test_output_mode_selects_the_renderer_and_telegram_markup_flag(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
     _cv_fixtures(tmp_path)
-    settings = PipelineConfig(
+    settings = _configured_cv(
         output_mode=output_mode,
         output_dir=str(tmp_path / "out"),
         llm_primary_api_key="key",
@@ -215,7 +223,7 @@ def test_redacted_settings_hides_secrets_and_reports_null_config_file(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
     _cv_fixtures(tmp_path)
-    settings = PipelineConfig(
+    settings = _configured_cv(
         llm_primary_api_key="primary-secret",
         llm_fallback_api_key="fallback-secret",
         telegram_bot_token="telegram-secret",
@@ -243,7 +251,7 @@ def test_redacted_settings_reports_which_hatch_ran(tmp_path, monkeypatch):
         "def configure(runtime, settings):\n    return runtime\n", encoding="utf-8"
     )
     monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(config_file))
-    settings = PipelineConfig(llm_primary_api_key="key")
+    settings = _configured_cv(llm_primary_api_key="key")
 
     rt = build_runtime(settings, command="check")
     rendered = redacted_settings(settings, rt)
@@ -258,13 +266,13 @@ def test_a_latex_engine_that_is_not_installed_fails_preflight(tmp_path, monkeypa
     monkeypatch.delenv("JOB_SEARCH_CONFIG_FILE", raising=False)
     _cv_fixtures(tmp_path)
     monkeypatch.setattr(runtime_module, "_engine_available", lambda engine: engine == "pdflatex")
-    settings = PipelineConfig(llm_primary_api_key="key", latex_engine="xelatx")
+    settings = _configured_cv(llm_primary_api_key="key", latex_engine="xelatx")
 
     with pytest.raises(ConfigurationError, match="LATEX_ENGINE is not an executable"):
         build_runtime(settings, command="check")
 
     assert build_runtime(
-        PipelineConfig(llm_primary_api_key="key"), command="check"
+        _configured_cv(llm_primary_api_key="key"), command="check"
     ).cv_required is True
 
 
@@ -277,7 +285,7 @@ def test_a_cv_less_runtime_is_never_asked_for_a_latex_engine(tmp_path, monkeypat
         "_engine_available",
         lambda engine: pytest.fail("preflight consulted the engine with CVs disabled"),
     )
-    settings = PipelineConfig(
+    settings = _configured_cv(
         output_mode="plain",
         output_cv_mode="disabled",
         output_dir=str(tmp_path / "out"),
@@ -296,7 +304,7 @@ def test_the_shipped_example_hatch_is_a_no_op(tmp_path, monkeypatch):
     monkeypatch.setenv("JOB_SEARCH_CONFIG_FILE", str(example))
     before = _runtime(candidate_filter=None)
 
-    after = apply_user_config(before, PipelineConfig())
+    after = apply_user_config(before, _configured_cv())
 
     assert after is before
     assert after.candidate_filter is None

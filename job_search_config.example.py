@@ -1,12 +1,15 @@
 """Optional trusted escape hatch for the job-search pipeline.
 
-Copy this file to ``job_search_config.py`` or point ``JOB_SEARCH_CONFIG_FILE``
-at it. It is trusted Python, executed on every run: keep credentials in
-environment variables and use this module only to adjust the runtime.
+Use this file only as a reviewed local-host hook when configuration data cannot
+express the behavior. Point ``JOB_SEARCH_CONFIG_FILE`` at it. It is trusted
+Python, executed on every runtime check or run; keep credentials in the
+protected environment rather than this source. The Actions private-config
+checkout does not select this hook.
 
 Start with ``job_search.example.toml``: provider, search, candidate, policy,
-CV-page, digest, and delivery choices are declarative settings. Use this module
-only for the rare reviewed behavior that no setting can express. ``configure``
+CV-page, digest, and delivery choices are declarative settings. Fetching also
+requires a selected TOML and explicit search setting. Use this module only for
+the rare reviewed behavior that no setting can express. ``configure``
 is called once after the built-in object graph is built and before host
 preflight. Mutate ``runtime`` in place, return a replacement, or both —
 ``build_runtime`` uses the returned runtime (or the unchanged one for ``None``).

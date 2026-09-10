@@ -18,8 +18,8 @@ from job_search.pipeline.stages import (
 
 CLEAN_CV = (
     "\\documentclass[9.5pt]{article}\\begin{document}"
-    "\\jobheader{Check Point}\\jobheader{Applitools}"
-    "\\jobheader{Shutterfly}\\jobheader{CNOGA}\\end{document}"
+    "\\jobheader{Example Labs}\\jobheader{Sample Systems}"
+    "\\jobheader{Example Studio}\\jobheader{Sample Devices}\\end{document}"
 )
 
 
@@ -43,7 +43,7 @@ class FakeTelegram:
 
 def _payload(pdf_bytes=b"PDF"):
     artifact = (
-        CVArtifact("igor_pivnyk_cv_acme.pdf", "application/pdf", pdf_bytes)
+        CVArtifact("avery_example_cv_acme.pdf", "application/pdf", pdf_bytes)
         if pdf_bytes
         else None
     )
@@ -71,7 +71,7 @@ def test_send_fit_complete_delivery():
     assert tg.messages == ["hi"]
     assert len(tg.documents) == 1
     name, content, _caption = tg.documents[0]
-    assert name == "igor_pivnyk_cv_acme.pdf"
+    assert name == "avery_example_cv_acme.pdf"
     assert content == b"PDF"
 
 

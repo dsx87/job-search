@@ -32,6 +32,7 @@ shift || true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$SCRIPT_DIR")"
 cd "$REPO" || { echo "run_pipeline: cannot cd to repo root '$REPO'" >&2; exit 1; }
+readonly REPO
 
 # Resolve the interpreter ourselves so callers (the bot) never need to know
 # PY_BIN: the jobspy venv if present, else the system python3.
@@ -41,11 +42,14 @@ else
   PY="python3"
 fi
 
-# Load .env if present. systemd already injects it via EnvironmentFile, but this
-# makes a manual `scripts/run_pipeline.sh …` from a bare shell self-sufficient
-# and mirrors run.sh. There is no .env on CI — env there comes from the runner's
-# secrets, and the `[ -f ]` guard simply skips this.
+# Load host controls before credentials. `.deployment.env` holds non-secret
+# controls and `.env` remains the separate secret store; neither can redirect
+# this deployment away from its verified private checkout.
+set -a; [ -f "$REPO/.deployment.env" ] && . "$REPO/.deployment.env"; set +a
 set -a; [ -f "$REPO/.env" ] && . "$REPO/.env"; set +a
+
+"$REPO/scripts/prepare-private-config.sh" --check-only || exit $?
+export JOB_SEARCH_SETTINGS_FILE="$REPO/.private-config/job-search-config/job_search.toml"
 
 LOCK="$REPO/.pipeline.lock"
 LAST_RUN="$REPO/.last_run.json"

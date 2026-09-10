@@ -4,6 +4,10 @@ This runs the full pipeline — **fetch → dedupe → LLM filter → tailor ré
 validate → compile and verify a one-page PDF → Telegram** — on a self-hosted Pi
 instead of (or alongside) the GitHub Actions cron.
 
+This guide describes the private-configuration deployment after its public code
+branch has been manually merged. Preparing the branch does not change an
+existing Actions schedule, Pi timer, bot, or delivery path.
+
 > The GitHub Actions cron is still the more reliable option (no SD-card wear, no
 > home power/network dependency). Treat the Pi as a project or a redundant runner
 > and keep the Actions workflow as your fallback.
@@ -16,25 +20,24 @@ The whole application is **pure Python standard library** — every LLM call
 (each provider is a raw wire-protocol scheme) and Telegram delivery is a raw
 `urllib` HTTPS request, and LaTeX is
 a `subprocess` call to `pdflatex`. There is **no `grpcio`, no `google-generativeai`
-SDK, no `requests`** — nothing to compile. So the full pipeline needs **zero pip
-packages**; only the optional sources do.
+SDK, no `requests`** — nothing to compile. Python 3.11+ uses its standard
+library TOML parser; Python 3.9/3.10 needs the small `tomli` package, which
+`scripts/setup-rpi.sh` installs. Optional sources may need additional packages.
 
 | Feature | Original Pi B (ARMv6, ~512 MB) | Notes |
 |---|---|---|
-| 16 stdlib sources + LLM filter + tailor + PDF + Telegram | ✅ Works, no pip installs | All stdlib; LLM/Telegram are HTTPS |
-| `linkedin-guest` (LinkedIn via the public guest API) | ✅ Works, stdlib | Default-off; the Pi's `.env` turns it on **in place of** the jobspy LinkedIn sources |
+| 16 stdlib sources + LLM filter + tailor + PDF + Telegram | ✅ Works | `tomli` is installed on Python 3.9/3.10; LLM/Telegram are HTTPS |
+| `linkedin-guest` (LinkedIn via the public guest API) | ✅ Works, stdlib | Select it in the pinned private TOML when needed |
 | `jobspy` (Indeed + Google) | ⚙️ Opt-in via a bundled lib | `tls-client` has no ARMv6 wheel, so the repo ships a cross-built `vendor/tls-client-armv6.so`; `scripts/enable-jobspy.sh` wires it up |
-| `linkedin-global` / `linkedin-israel` (jobspy LinkedIn) | ➖ Superseded | `linkedin-guest` replaces them; the Pi's `.env` disables them |
+| `linkedin-global` / `linkedin-israel` (jobspy LinkedIn) | optional | Select sources in the pinned private TOML |
 | `secrettelaviv` (Chromium) | ❌ Skip | Chromium has no ARMv6 build |
 
 The optional sources are **lazily imported**: absent their dependency, each
 registered source self-skips at fetch time and everything else runs. **20 sources
-are registered.** The setup script's `.env` enables `linkedin-guest` and disables
-the two jobspy LinkedIn sources, selecting **18** — of which **16 stdlib sources
-actually fetch** on a stock Pi (`jobspy` and `secrettelaviv` self-skip without
-their optional deps). Running `scripts/enable-jobspy.sh` adds Indeed/Google for a
-17th. On a Pi 3/4/5 (ARMv7/ARMv8) the jobspy sources install cleanly via piwheels
-and Chromium is available, so you can run all of it.
+are registered. Select sources in the pinned private TOML. On a stock Pi,
+sources whose optional dependencies are absent self-skip; running
+`scripts/enable-jobspy.sh` makes the JobSpy sources available. On a Pi 3/4/5
+(ARMv7/ARMv8), JobSpy installs cleanly via piwheels and Chromium is available.
 
 The code uses no Python 3.10+ syntax, so whatever Python ships with Raspberry Pi
 OS (3.9 on Bullseye, 3.11 on Bookworm) is fine — no need to compile 3.12.
@@ -66,6 +69,12 @@ core bites is the `pdflatex` compiles during tailoring.
 
 ## Quickstart (one script)
 
+Before provisioning, create a private configuration repository. It contains the
+deployment TOML, CV source, prompt files, and sections; it must never contain
+credentials. Commit those files, record the full lowercase 40-character commit
+SHA, and authorize a dedicated **read-only** deploy key for that repository.
+The Pi key defaults to `~/.ssh/job_search_config_ed25519`.
+
 1. **Flash the OS**: Raspberry Pi Imager → **Raspberry Pi OS Legacy Lite
    (Bullseye), 32-bit** (only the 32-bit build supports ARMv6; Lite has no desktop
    to eat your RAM). In ⚙️ settings enable **SSH**, hostname, Wi-Fi, and locale.
@@ -74,6 +83,9 @@ core bites is the `pdflatex` compiles during tailoring.
    ```bash
    git clone https://github.com/dsx87/job-search.git ~/job-search
    cd ~/job-search
+   cp deployment.env.example .deployment.env
+   chmod 600 .deployment.env
+   # Set CONFIG_REPOSITORY, CONFIG_REF, and CONFIG_SSH_KEY in .deployment.env.
    bash scripts/setup-rpi.sh
    ```
    Override defaults with env vars if needed:
@@ -82,10 +94,11 @@ core bites is the `pdflatex` compiles during tailoring.
    TRY_JOBSPY=1 bash scripts/setup-rpi.sh     # also attempt the 3 JobSpy sources
    ```
 
-The script installs packages, bumps swap, sets the timezone, writes a `.env`
-template, seeds `seen_jobs.json` from the `state` branch, pre-warms pdflatex, and
-installs the systemd service + timer. It **stops short** of putting in your
-secrets and enabling the timer — finish those two steps below.
+The script installs packages, bumps swap, sets the timezone, writes a missing
+`.env` template without changing an existing one, synchronizes the exact private
+revision into `.private-config/job-search-config`, validates its TOML, seeds
+`seen_jobs.json`, pre-warms the configured CV, and writes systemd units. It does
+not start, stop, enable, disable, or restart the timer or bot.
 
 > The script must already be committed to the repo for `git clone` to bring it to
 > the Pi. If you're setting this up before pushing, `scp scripts/setup-rpi.sh`
@@ -111,7 +124,7 @@ secrets and enabling the timer — finish those two steps below.
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
-   | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | comma lists forcing sources on/off; the Pi ships `linkedin-guest` on and the jobspy LinkedIn sources off |
+   | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | non-secret host overrides; normally select sources in the pinned TOML |
    | `STATE_SYNC` | sync | `1` to sync `seen_jobs.json` with the `state` branch (see below); default `0` |
    | `OUTPUT_MODE` / `OUTPUT_DIR` / `OUTPUT_CV_MODE` | optional | non-Telegram delivery (`html`/`plain` to a directory); `telegram` (default) requires `OUTPUT_CV_MODE=required` |
    | `PROMPT_DIR` / `PROMPT_REVISION` | optional | file-backed prompt overrides; `PROMPT_REVISION` is required whenever `PROMPT_DIR` is set |
@@ -140,31 +153,43 @@ secrets and enabling the timer — finish those two steps below.
 ### The escape hatch on the Pi
 
 Almost everything above is a setting; no `job_search_config.py` is required.
-For the rare thing that genuinely needs code, keep a reviewed one in the
-checkout or point `JOB_SEARCH_CONFIG_FILE` at a file kept elsewhere. It's
-trusted, deliberately unvalidated executable Python — keep tokens and private
-CV values in the mode-600 `.env`, never in that module. If you replace the
+For the rare thing that genuinely needs code, keep a reviewed hook on the Pi
+and point `JOB_SEARCH_CONFIG_FILE` at it explicitly. The pinned private
+configuration checkout supplies TOML only; it does not implicitly execute a
+Python hook. A hook is trusted, deliberately unvalidated executable Python —
+keep tokens and private CV values in the mode-600 `.env`, never in that module.
+If you replace the
 `.venv` `scripts/setup-rpi.sh` creates, reinstall `pyzipper~=0.4.0` (used by
 Telegraph digest delivery) plus anything your module imports. See
 [`configuration.md`](configuration.md#job_search_configpy-the-escape-hatch).
 
-4. **Smoke-test** the heaviest path end to end (fetch → tailor → PDF → Telegram):
+4. **Verify the local deployment without delivery**:
    ```bash
-   cd ~/job-search && set -a && . ./.env && set +a
-   python3 -m job_search.pipeline --check-config
-   python3 -m job_search.pipeline --tailor \
-     --job-text 'Senior iOS Engineer, remote, Swift/SwiftUI' \
-     --title 'Senior iOS Developer' --company 'Acme'
+   cd ~/job-search
+   scripts/prepare-private-config.sh --check-only
+   CONFIG_TOML="$PWD/.private-config/job-search-config/job_search.toml"
+   JOB_SEARCH_SETTINGS_FILE="$CONFIG_TOML" \
+     .venv/bin/python -m job_search.pipeline --validate-config "$CONFIG_TOML"
    ```
-   A tailored PDF landing in Telegram means the whole strict chain worked:
-   factual validation, pdflatex compilation, one-page verification, and PDF
-   upload all succeeded.
+   `--check-only` performs no fetch and never exposes configuration contents.
 
-5. **Enable the daily timer**:
+5. **Choose activation explicitly** after reviewing the validated configuration:
    ```bash
    sudo systemctl enable --now job-search.timer
    systemctl list-timers job-search.timer      # confirm next run
    ```
+
+## Update or roll back a private configuration
+
+`scripts/prepare-private-config.sh --sync` is the only command that fetches the
+private repository. It rejects a mismatched origin, local changes, a non-SHA
+pin, or a checkout that cannot resolve the requested commit. `--check-only` is
+read-only and network-free. Neither command rewrites `.env`.
+
+To roll back, select a known compatible pair: the public code revision and the
+private configuration SHA. Check out the public revision, put the paired SHA in
+`.deployment.env`, run `--sync`, then run `--check-only`. Do not use `pull`,
+`reset`, `clean`, or a branch name to move the private checkout.
 
 ---
 
@@ -224,8 +249,8 @@ from the other runner is resolved by union-merging both files, so no keys are lo
 Because the home network has **no dedicated IP**, there's no webhook or port
 forward. The bot instead **long-polls** Telegram's `getUpdates` — all traffic is
 outbound HTTPS, so it works behind NAT with nothing to open on your router. The
-setup script installs it as `job-search-bot.service` (`Type=simple`,
-`Restart=always`), enabled alongside the timer once your secrets are in.
+setup script writes it as `job-search-bot.service` (`Type=simple`,
+`Restart=always`) without changing whether it is enabled or running.
 
 From the **authorized chat only** (`TELEGRAM_CHAT_ID` — messages from any other
 account are ignored silently):
@@ -293,8 +318,8 @@ sudo systemctl disable --now job-search-bot.service
 ```
 
 The daily service and the bot both run from the repo root as your user, with
-`.env` loaded via `EnvironmentFile` and `Nice=10` (stay responsive); the daily
-run keeps its 2 h `TimeoutStartSec` safety cap. The run record lives in
+`.deployment.env` loaded before `.env` and `Nice=10` (stay responsive); the
+daily run keeps its 2 h `TimeoutStartSec` safety cap. The run record lives in
 `.last_run.json` (trigger, start/finish, exit code) with the full transcript in
 `logs/run-*.log`.
 
@@ -317,8 +342,8 @@ sudo dphys-swapfile setup && sudo dphys-swapfile swapon
 # 3. Timezone
 sudo timedatectl set-timezone Asia/Jerusalem
 
-# 4. Pre-warm pdflatex (first cold compile builds the format/font cache and can be slow)
-cd ~/job-search && pdflatex -interaction=nonstopmode igor_pivnyk_cv_base_updated.tex
+# 4. Verify the pinned configuration and pre-warm its configured CV
+cd ~/job-search && scripts/prepare-private-config.sh --check-only
 ```
 
 The systemd unit files the script installs are `/etc/systemd/system/job-search.service`
