@@ -18,7 +18,8 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields, is_dataclass
+from collections.abc import Mapping
 
 from .components import CandidateProfile, DefaultCVRenderer, _default_output_pair, _default_prompts
 from .config import (
@@ -271,9 +272,20 @@ def build_runtime(
     return runtime
 
 
+def _settings_data(value):
+    """Serialize frozen settings without deepcopying immutable mappings."""
+    if is_dataclass(value):
+        return {item.name: _settings_data(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _settings_data(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_settings_data(item) for item in value]
+    return value
+
+
 def redacted_settings(settings: object, runtime: Runtime) -> str:
     """Stable JSON suitable for ``--check-config`` output."""
-    values = asdict(settings)
+    values = _settings_data(settings)
     for name in tuple(values):
         if any(secret in name for secret in ("api_key", "token", "chat_id")):
             values[name] = "<redacted>" if values[name] else "<unset>"

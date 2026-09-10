@@ -218,6 +218,21 @@ def test_compile_with_fixes_repairs_compiler_failure(monkeypatch, fake_llm):
     assert len(client.prompts) == 1
 
 
+def test_compile_with_fixes_keeps_the_explicit_limit_after_a_repair(monkeypatch, fake_llm):
+    results = iter(
+        [
+            CompileResult(False, None, "undefined control sequence", None, True),
+            CompileResult(True, b"TWO", "", 2, False),
+        ]
+    )
+    monkeypatch.setattr(compile_mod, "_compile_latex", lambda _tex, **_kw: next(results))
+    client = fake_llm(["fixed source"])
+
+    assert compile_with_fixes(
+        client, "broken source", max_pages=2, return_page_count=True
+    ) == (True, b"TWO", "fixed source", 2)
+
+
 def test_compile_with_fixes_accepts_known_one_page_result(monkeypatch, fake_llm):
     monkeypatch.setattr(
         compile_mod,
@@ -228,6 +243,98 @@ def test_compile_with_fixes_accepts_known_one_page_result(monkeypatch, fake_llm)
     assert compile_with_fixes(fake_llm([]), "source") == (True, b"PDF", "source")
 
 
+def test_compile_with_fixes_accepts_a_verified_page_count_within_explicit_limit(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex, **_kw: CompileResult(True, b"TWO", "", 2, False),
+    )
+
+    assert compile_with_fixes(
+        fake_llm([]), "source", max_pages=2, return_page_count=True
+    ) == (
+        True, b"TWO", "source", 2,
+    )
+
+
+def test_compile_with_fixes_shrinks_only_when_page_count_exceeds_explicit_limit(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex, **_kw: CompileResult(True, b"THREE", "", 3, False),
+    )
+    monkeypatch.setattr(
+        onepage_mod,
+        "_shrink_to_page_limit",
+        lambda tex, pdf, pages, max_pages, **_kw: (b"TWO", "shrunk", 2),
+    )
+
+    assert compile_with_fixes(
+        fake_llm([]), "source", max_pages=2, return_page_count=True
+    ) == (
+        True, b"TWO", "shrunk", 2,
+    )
+
+
+def test_compile_with_fixes_reports_the_verified_count_when_shrink_is_exhausted(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex, **_kw: CompileResult(True, b"THREE", "", 3, False),
+    )
+    monkeypatch.setattr(
+        onepage_mod,
+        "_shrink_to_page_limit",
+        lambda tex, pdf, pages, max_pages, **_kw: (b"THREE", "shrunk", 3),
+    )
+
+    assert compile_with_fixes(
+        fake_llm([]), "source", max_pages=2, return_page_count=True
+    ) == (False, None, "shrunk", 3)
+
+
+def test_compiler_preserves_the_actual_verified_page_count(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "compile_with_fixes",
+        lambda *args, **kwargs: (True, b"TWO", "final", 2),
+    )
+
+    result = compile_mod.LatexCompiler().compile(fake_llm([]), "source", max_pages=2)
+
+    assert result.ok is True
+    assert result.page_count == 2
+    assert result.tex_source == "final"
+
+
+@pytest.mark.parametrize("max_pages", (True, False, 0, -1, 1.5, "2"))
+def test_compile_base_rejects_invalid_explicit_page_limits_before_compiling(monkeypatch, max_pages):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not compile")),
+    )
+
+    with pytest.raises(ValueError, match="max_pages"):
+        compile_mod.LatexCompiler().compile_base("source", max_pages=max_pages)
+
+
+@pytest.mark.parametrize("page_count", (None, 0, -1, True, False))
+def test_compile_base_rejects_invalid_verified_page_counts(monkeypatch, page_count):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda *_args, **_kwargs: CompileResult(True, b"PDF", "", page_count, False, "source"),
+    )
+
+    result = compile_mod.LatexCompiler().compile_base("source", max_pages=1)
+
+    assert result.ok is False
+    assert result.pdf_bytes is None
+    assert result.page_count == page_count
+    assert "verified page count" in result.error_excerpt
+
+
 def test_compile_with_fixes_rejects_unrecoverable_multi_page_result(monkeypatch, fake_llm):
     monkeypatch.setattr(
         compile_mod,
@@ -236,8 +343,8 @@ def test_compile_with_fixes_rejects_unrecoverable_multi_page_result(monkeypatch,
     )
     monkeypatch.setattr(
         onepage_mod,
-        "_shrink_to_one_page",
-        lambda tex, pdf, pages, **_kw: (b"STILL_TWO", "shrunk", 2),
+        "_shrink_to_page_limit",
+        lambda tex, pdf, pages, max_pages, **_kw: (b"STILL_TWO", "shrunk", 2),
     )
 
     assert compile_with_fixes(fake_llm([]), "source") == (False, None, "shrunk")

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -25,7 +26,7 @@ class SuccessfulCompiler:
     def __init__(self):
         self.sources = []
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         self.sources.append(tex_source)
         return CompileResult(True, b"PDF", "", 1, False, tex_source)
 
@@ -37,12 +38,39 @@ class FailFastBaseCompiler:
         self.tex_source = tex_source
         self.base_calls = []
 
-    def compile_base(self, source):
+    def compile_base(self, source, *, max_pages=1):
         self.base_calls.append(source)
         return CompileResult(True, b"BASE-PDF", "", 1, False, self.tex_source)
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         raise AssertionError("base rendering must not enter repair/shrink compilation")
+
+
+class LimitRecordingCompiler:
+    executable = "fake"
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
+        self.calls.append(("tailored", max_pages, tex_source))
+        return CompileResult(True, b"PDF", "", self.pages, False, tex_source)
+
+    def compile_base(self, tex_source, *, max_pages=1):
+        self.calls.append(("base", max_pages, tex_source))
+        return CompileResult(True, b"BASE", "", self.pages, False, tex_source)
+
+
+class PerLimitCompiler:
+    executable = "fake"
+
+    def __init__(self):
+        self.calls = []
+
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
+        self.calls.append(max_pages)
+        return CompileResult(True, b"PDF", "", max_pages, False, tex_source)
 
 
 class SelectionLLM:
@@ -170,6 +198,66 @@ def test_default_base_renderer_uses_fail_fast_compile_and_validates_source():
         unsafe_renderer.render_base(SelectionLLM())
 
 
+def test_tailored_renderer_resolves_one_immutable_job_page_limit():
+    compiler = LimitRecordingCompiler(pages=2)
+    profile = CandidateProfile(max_pages_by_country={"DE": 2})
+    renderer = DefaultCVRenderer(PipelineConfig(), profile, compiler=compiler)
+
+    artifact = renderer.render_tailored(
+        SelectingLLM(),
+        Job(title="iOS", company="Acme", location="Germany", description="Swift role. " * 20),
+    )
+
+    assert artifact.content == b"PDF"
+    assert [(kind, limit) for kind, limit, _source in compiler.calls] == [("tailored", 2)]
+
+
+def test_renderer_rejects_a_successful_result_above_the_resolved_limit():
+    from job_search.pipeline.stages import CVPreparationError
+
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), CandidateProfile(max_pages_by_country={"DE": 2}),
+        compiler=LimitRecordingCompiler(pages=3),
+    )
+
+    with pytest.raises(CVPreparationError, match="within 2 pages"):
+        renderer.render_tailored(
+            SelectingLLM(),
+            Job(title="iOS", company="Acme", location="Germany", description="Swift role. " * 20),
+        )
+
+
+def test_base_renderer_uses_fallback_limit_without_repair_or_shrink():
+    compiler = LimitRecordingCompiler(pages=2)
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), CandidateProfile(max_pages=2), compiler=compiler
+    )
+
+    artifact = renderer.render_base(SelectionLLM())
+
+    assert artifact.content == b"BASE"
+    assert [(kind, limit) for kind, limit, _source in compiler.calls] == [("base", 2)]
+
+
+def test_concurrent_tailoring_keeps_each_jobs_resolved_limit():
+    compiler = PerLimitCompiler()
+    renderer = DefaultCVRenderer(
+        PipelineConfig(),
+        CandidateProfile(max_pages_by_country={"DE": 2, "FR": 3}),
+        compiler=compiler,
+    )
+    jobs = (
+        Job(title="iOS", company="Berlin", location="Germany", description="Swift role. " * 20),
+        Job(title="iOS", company="Paris", location="France", description="Swift role. " * 20),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        artifacts = list(pool.map(lambda job: renderer.render_tailored(SelectingLLM(), job), jobs))
+
+    assert [artifact.content for artifact in artifacts] == [b"PDF", b"PDF"]
+    assert sorted(compiler.calls) == [2, 3]
+
+
 def test_digest_entries_accept_generic_artifacts_and_keep_pdf_compatibility():
     artifact = CVArtifact("candidate.txt", "text/plain", b"hello")
 
@@ -236,6 +324,28 @@ def test_render_base_command_output_path_overrides_default_renderers_profile(
     assert out.read_bytes() == b"ADA"
 
 
+def test_render_base_reports_a_verified_pdf_without_claiming_one_page(monkeypatch, tmp_path, capsys):
+    from job_search.latex import render_base
+
+    output = tmp_path / "base.pdf"
+
+    class Renderer:
+        def render_base(self, llm=None):
+            return CVArtifact("base.pdf", "application/pdf", b"PDF")
+
+    monkeypatch.setattr(
+        render_base,
+        "build_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(cv_renderer=Renderer(), llm=object()),
+    )
+
+    assert render_base.main(PipelineConfig(rendered_base_file=str(output))) == 0
+
+    message = capsys.readouterr().out
+    assert "1 page" not in message
+    assert "verified PDF" in message
+
+
 # --- behaviors that used to live on stages.prepare_fit -----------------------
 # The tailoring/compilation/validation guarantees moved onto DefaultCVRenderer
 # when the pipeline lost its second, legacy preparation path. They are asserted
@@ -245,7 +355,7 @@ def test_render_base_command_output_path_overrides_default_renderers_profile(
 class FailingCompiler:
     executable = "fake"
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         return CompileResult(False, None, "compilation failed", 0, False, tex_source)
 
 
@@ -257,7 +367,7 @@ class RepairingCompiler:
     def __init__(self, repaired):
         self.repaired = repaired
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         return CompileResult(True, b"PDF", "", 1, False, self.repaired)
 
 

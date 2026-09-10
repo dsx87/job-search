@@ -13,6 +13,9 @@ class BaseSource(object):
     # registered (the drift guard counts them) but only run when explicitly
     # enabled via SOURCES_ENABLE / --sources <name>. See sources.fetch.select_sources.
     default_enabled = True
+    # A role-specific board may stay in the historic default scrape yet must be
+    # named explicitly by a reusable profile.
+    generic_default_enabled = True
 
     def __init__(self):
         self._attempts = 0
@@ -43,6 +46,46 @@ class BaseSource(object):
 
     def fetch(self, verbose=False):
         raise NotImplementedError
+
+
+def configured_search_terms(source, fallback=()):
+    """Return generic configured terms, or a source's legacy terms.
+
+    A supplied search object deliberately does not fall back to embedded terms:
+    that is the boundary which prevents a reusable profile from issuing an iOS
+    or Israel query it did not request.
+    """
+    search = getattr(source, "search", None)
+    if search is None:
+        return tuple(fallback)
+    return tuple(
+        str(value).strip()
+        for value in getattr(search, "search_terms", ())
+        if str(value).strip()
+    )
+
+
+def configured_query_locations(source, fallback=()):
+    """Return generic configured locations, or a source's legacy locations."""
+    search = getattr(source, "search", None)
+    if search is None:
+        return tuple(fallback)
+    return tuple(
+        str(value).strip()
+        for value in getattr(search, "query_locations", ())
+        if str(value).strip()
+    )
+
+
+def configured_results_per_query(source, fallback):
+    """Read a positive generic result count, retaining a safe source default."""
+    search = getattr(source, "search", None)
+    value = getattr(search, "results_per_query", fallback) if search is not None else fallback
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
 
 
 # name -> source class, in registration order.

@@ -8,7 +8,11 @@ ScraperConfig wrapper existed here until 2026-07-25 but was never constructed
 outside its own test, so it was removed rather than left as decoration.
 """
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Mapping, Tuple
+
+from .settings import ConfigValidationError, load_settings
 
 
 class ConfigurationError(ValueError):
@@ -17,6 +21,103 @@ class ConfigurationError(ValueError):
     Lives here, not in runtime.py, so llm.clients can raise it (an invalid
     auth-mode combination) without importing back up into the package.
     """
+
+
+@dataclass(frozen=True)
+class SearchConfig:
+    """Provider-neutral search preferences loaded from ``[search]``."""
+
+    sources_enable: Tuple[str, ...] = ()
+    sources_disable: Tuple[str, ...] = ()
+    role_include_terms: Tuple[str, ...] = ()
+    role_exclude_terms: Tuple[str, ...] = ()
+    skill_include_groups: Tuple[Tuple[str, ...], ...] = ()
+    location_exclude_terms: Tuple[str, ...] = ()
+    relocation_regions: Tuple[str, ...] = ("eu", "ca", "us")
+    max_age_days: int = 30
+    remote_allowed: bool = True
+    relocation_allowed: bool = True
+    search_terms: Tuple[str, ...] = ()
+    query_locations: Tuple[str, ...] = ()
+    results_per_query: int = 15
+
+    def __post_init__(self):
+        for name in (
+            "sources_enable", "sources_disable", "role_include_terms",
+            "role_exclude_terms", "location_exclude_terms", "relocation_regions",
+            "search_terms", "query_locations",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        object.__setattr__(
+            self, "skill_include_groups",
+            tuple(tuple(group) for group in self.skill_include_groups),
+        )
+
+
+@dataclass(frozen=True)
+class CandidateConfig:
+    """Candidate identity, private-template mapping, and CV page limits."""
+
+    max_pages: int = 1
+    max_pages_by_country: Mapping[str, int] = field(default_factory=dict)
+    max_pages_by_region: Mapping[str, int] = field(default_factory=dict)
+    display_name: str = "Igor Pivnyk"
+    filename_prefix: str = "igor_pivnyk_cv"
+    base_tex_file: str = "igor_pivnyk_cv_base_updated.tex"
+    rendered_base_file: str = "igor_pivnyk_cv_base_updated.pdf"
+    employer_order: Tuple[str, ...] = (
+        "Check Point", "Applitools", "Shutterfly", "CNOGA",
+    )
+    forbidden_claim_patterns: Tuple[str, ...] = (
+        r"banking", r"\bbank\b", r"fintech", r"financial services",
+        r"insurance", r"e-?commerce", r"\bgaming\b", r"advertising",
+        r"StoreKit", r"WidgetKit", r"SwiftData", r"HealthKit", r"\bFDA\b",
+        r"HIPAA", r"develop\w* c\+\+",
+    )
+    private_placeholders: Mapping[str, str] = field(
+        default_factory=lambda: {"((PHONE))": "CV_PHONE"}
+    )
+    residency_countries: Tuple[str, ...] = ("IL",)
+    work_authorization_countries: Tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "max_pages_by_country", MappingProxyType(dict(self.max_pages_by_country)))
+        object.__setattr__(self, "max_pages_by_region", MappingProxyType(dict(self.max_pages_by_region)))
+        object.__setattr__(self, "private_placeholders", MappingProxyType(dict(self.private_placeholders)))
+        for name in (
+            "employer_order", "forbidden_claim_patterns", "residency_countries",
+            "work_authorization_countries",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+
+
+@dataclass(frozen=True)
+class PolicyConfig:
+    """Data-only policy controls loaded from ``[policy]``."""
+
+    check_order: Tuple[str, ...] = (
+        "language", "role_match", "excluded_industry", "excluded_platform_focus",
+        "minimum_seniority", "local_office_attendance",
+        "remote_location_residency", "nonremote_nonpermanent_employment",
+        "remote_fact_residency", "nonremote_work_authorization",
+        "nonremote_sponsorship", "nonremote_arrangement",
+    )
+    require_english: bool = True
+    local_language_exempt: bool = True
+    excluded_industries: Tuple[str, ...] = ()
+    excluded_platform_focuses: Tuple[str, ...] = ()
+    rejected_seniority: Tuple[str, ...] = ()
+    max_local_office_days: int = 5
+    allow_sponsorship_override: bool = True
+    allowed_languages: Tuple[str, ...] = ("english",)
+    preferred_working_hours: Tuple[str, ...] = ()
+
+    def __post_init__(self):
+        for name in (
+            "check_order", "excluded_industries", "excluded_platform_focuses",
+            "rejected_seniority", "allowed_languages", "preferred_working_hours",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
 
 
 # ── Scraper defaults ──────────────────────────────────────────────────────────
@@ -283,6 +384,7 @@ class PipelineConfig:
     telegram_chat_id: str = ""
     eval_workers: int = EVAL_WORKERS
     tailor_workers: int = TAILOR_WORKERS
+    scrape_budget_seconds: int = SCRAPE_BUDGET_SECONDS
     seen_jobs_file: str = SEEN_JOBS_FILE
     criteria_file: str = CRITERIA_FILE
     cv_tailoring_prompt_file: str = CV_TAILORING_PROMPT_FILE
@@ -319,58 +421,160 @@ class PipelineConfig:
     # does one where encryption or an upload fails. Layers under
     # DIGEST_DELIVERY: the legacy per-job path never consults it.
     telegraph_access_token: str = ""
+    # Versioned settings-file provenance. Empty preserves legacy no-file runs.
+    settings_file: str = ""
+    setting_origins: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    search: SearchConfig = field(default_factory=SearchConfig)
+    candidate: CandidateConfig = field(default_factory=CandidateConfig)
+    policy: PolicyConfig = field(default_factory=PolicyConfig)
+
+    def __post_init__(self):
+        object.__setattr__(self, "setting_origins", MappingProxyType(
+            {key: MappingProxyType(dict(value)) for key, value in self.setting_origins.items()}
+        ))
 
     @classmethod
     def from_env(cls) -> "PipelineConfig":
+        selected_settings_file = os.environ.get("JOB_SEARCH_SETTINGS_FILE", "").strip()
+        loader_environ = os.environ
+        # Legacy worker aliases were intentionally forgiving. Preserve that
+        # behavior for no-file runs while TOML-selected configurations remain
+        # strictly typed.
+        if not selected_settings_file:
+            loader_environ = dict(os.environ)
+            for worker_name in ("EVAL_WORKERS", "TAILOR_WORKERS"):
+                raw = loader_environ.get(worker_name, "").strip()
+                try:
+                    valid = not raw or int(raw) > 0
+                except ValueError:
+                    valid = False
+                if not valid:
+                    loader_environ.pop(worker_name, None)
+        loaded = load_settings(environ=loader_environ)
+        values = loaded.values
+        effective_origins = dict(loaded.origins)
+        # A run without a versioned TOML retains its established personal
+        # behavior. A selected TOML receives catalog defaults, making its
+        # profile explicit and reusable from day one.
+        legacy = loaded.path is None
+
+        def configured(name, fallback):
+            if legacy and loaded.origins[name].kind == "default":
+                effective_origins[name] = {
+                    "kind": "legacy-default",
+                    "source": "legacy PipelineConfig compatibility default",
+                }
+                return fallback
+            return values[name]
+
+        search = SearchConfig(
+            sources_enable=values["sources_enable"],
+            sources_disable=values["sources_disable"],
+            role_include_terms=values["role_include_terms"],
+            role_exclude_terms=values["role_exclude_terms"],
+            skill_include_groups=values["skill_include_groups"],
+            location_exclude_terms=values["location_exclude_terms"],
+            relocation_regions=values["relocation_regions"],
+            max_age_days=values["max_age_days"],
+            remote_allowed=values["remote_allowed"],
+            relocation_allowed=values["relocation_allowed"],
+            search_terms=values["search_terms"],
+            query_locations=values["query_locations"],
+            results_per_query=values["results_per_query"],
+        )
+        candidate = CandidateConfig(
+            max_pages=values["max_pages"],
+            max_pages_by_country=values["max_pages_by_country"],
+            max_pages_by_region=values["max_pages_by_region"],
+            display_name=configured("display_name", CV_DISPLAY_NAME),
+            filename_prefix=configured("filename_prefix", CV_FILENAME_PREFIX),
+            base_tex_file=configured("base_tex_file", BASE_TEX_FILE),
+            rendered_base_file=configured("rendered_base_file", OUT_PDF_FILE),
+            employer_order=configured("employer_order", CandidateConfig().employer_order),
+            forbidden_claim_patterns=configured(
+                "forbidden_claim_patterns", CandidateConfig().forbidden_claim_patterns
+            ),
+            private_placeholders=configured(
+                "private_placeholders", CandidateConfig().private_placeholders
+            ),
+            residency_countries=configured("residency_countries", ("IL",)),
+            work_authorization_countries=values["work_authorization_countries"],
+        )
+        policy = PolicyConfig(
+            check_order=values["check_order"],
+            require_english=values["require_english"],
+            local_language_exempt=values["local_language_exempt"],
+            excluded_industries=values["excluded_industries"],
+            excluded_platform_focuses=values["excluded_platform_focuses"],
+            rejected_seniority=values["rejected_seniority"],
+            max_local_office_days=values["max_local_office_days"],
+            allow_sponsorship_override=values["allow_sponsorship_override"],
+            allowed_languages=values["allowed_languages"],
+            preferred_working_hours=values["preferred_working_hours"],
+        )
+        state_sync = values["state_sync"]
+        digest_delivery = values["digest_delivery"]
+        if legacy:
+            # Preserve historic environment spellings exactly for old runners.
+            if "STATE_SYNC" in os.environ:
+                state_sync = os.environ.get("STATE_SYNC", "") == "1"
+            if "DIGEST_DELIVERY" in os.environ:
+                digest_delivery = os.environ.get("DIGEST_DELIVERY", "1") != "0"
         return cls(
             # New LLM_* vars win; fall back to the legacy GEMINI_*/OPENAI_* names
             # so nothing hard-breaks mid-migration. Blank api_base → scheme
             # default (resolved in the provider factory).
-            llm_primary_scheme=_non_empty_env("LLM_PRIMARY_SCHEME", LLM_PRIMARY_SCHEME),
-            llm_primary_model=_non_empty_env(
-                "LLM_PRIMARY_MODEL", _non_empty_env("GEMINI_MODEL", LLM_PRIMARY_MODEL)
+            llm_primary_scheme=values["llm_primary_scheme"].lower(),
+            llm_primary_model=values["llm_primary_model"],
+            llm_primary_api_key=values["llm_primary_api_key"],
+            llm_primary_api_base=values["llm_primary_api_base"],
+            llm_primary_auth_mode=values["llm_primary_auth_mode"].lower(),
+            llm_fallback_scheme=values["llm_fallback_scheme"].lower(),
+            llm_fallback_model=values["llm_fallback_model"],
+            llm_fallback_api_key=values["llm_fallback_api_key"],
+            llm_fallback_api_base=values["llm_fallback_api_base"],
+            llm_fallback_auth_mode=values["llm_fallback_auth_mode"].lower(),
+            telegram_bot_token=values["telegram_bot_token"],
+            telegram_chat_id=values["telegram_chat_id"],
+            seen_jobs_file=values["seen_jobs_file"],
+            criteria_file=values["criteria_file"],
+            cv_tailoring_prompt_file=values["cv_tailoring_prompt_file"],
+            base_tex_file=candidate.base_tex_file,
+            rendered_base_file=candidate.rendered_base_file,
+            sections_file=values["sections_file"],
+            cv_display_name=candidate.display_name,
+            cv_filename_prefix=candidate.filename_prefix,
+            output_mode=values["output_mode"].lower(),
+            output_dir=values["output_dir"],
+            output_cv_mode=values["output_cv_mode"].lower(),
+            prompt_dir=values["prompt_dir"],
+            prompt_revision=values["prompt_revision"],
+            latex_engine=values["latex_engine"],
+            eval_workers=(
+                _positive_int_env("EVAL_WORKERS", EVAL_WORKERS)
+                if legacy else values["eval_workers"]
             ),
-            llm_primary_api_key=_non_empty_env(
-                "LLM_PRIMARY_API_KEY", os.environ.get("GEMINI_API_KEY", "")
+            tailor_workers=(
+                _positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS)
+                if legacy else values["tailor_workers"]
             ),
-            llm_primary_api_base=_non_empty_env(
-                "LLM_PRIMARY_API_BASE", _non_empty_env("GEMINI_API_BASE", "")
-            ),
-            llm_primary_auth_mode=_non_empty_env("LLM_PRIMARY_AUTH_MODE", "bearer").lower(),
-            llm_fallback_scheme=_non_empty_env("LLM_FALLBACK_SCHEME", LLM_FALLBACK_SCHEME),
-            llm_fallback_model=_non_empty_env("LLM_FALLBACK_MODEL", LLM_FALLBACK_MODEL),
-            llm_fallback_api_key=_non_empty_env(
-                "LLM_FALLBACK_API_KEY", os.environ.get("OPENAI_API_KEY", "")
-            ),
-            llm_fallback_api_base=_non_empty_env("LLM_FALLBACK_API_BASE", ""),
-            llm_fallback_auth_mode=_non_empty_env("LLM_FALLBACK_AUTH_MODE", "bearer").lower(),
-            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
-            seen_jobs_file=_non_empty_env("SEEN_JOBS_FILE", SEEN_JOBS_FILE),
-            criteria_file=_non_empty_env("CRITERIA_FILE", CRITERIA_FILE),
-            cv_tailoring_prompt_file=_non_empty_env(
-                "CV_TAILORING_PROMPT_FILE", CV_TAILORING_PROMPT_FILE
-            ),
-            base_tex_file=_non_empty_env("BASE_TEX_FILE", BASE_TEX_FILE),
-            rendered_base_file=_non_empty_env("OUT_PDF_FILE", OUT_PDF_FILE),
-            sections_file=_non_empty_env("SECTIONS_FILE", SECTIONS_FILE),
-            cv_display_name=_non_empty_env("CV_DISPLAY_NAME", CV_DISPLAY_NAME),
-            cv_filename_prefix=_non_empty_env(
-                "CV_FILENAME_PREFIX", CV_FILENAME_PREFIX
-            ),
-            output_mode=_non_empty_env("OUTPUT_MODE", OUTPUT_MODE).lower(),
-            output_dir=_non_empty_env("OUTPUT_DIR", OUTPUT_DIR),
-            output_cv_mode=_non_empty_env("OUTPUT_CV_MODE", OUTPUT_CV_MODE).lower(),
-            prompt_dir=_non_empty_env("PROMPT_DIR", PROMPT_DIR),
-            prompt_revision=_non_empty_env("PROMPT_REVISION", PROMPT_REVISION),
-            latex_engine=_non_empty_env("LATEX_ENGINE", LATEX_ENGINE),
-            eval_workers=_positive_int_env("EVAL_WORKERS", EVAL_WORKERS),
-            tailor_workers=_positive_int_env("TAILOR_WORKERS", TAILOR_WORKERS),
-            sources_enable=_split_csv(os.environ.get("SOURCES_ENABLE", "")),
-            sources_disable=_split_csv(os.environ.get("SOURCES_DISABLE", "")),
-            state_sync=os.environ.get("STATE_SYNC", "") == "1",
-            digest_delivery=os.environ.get("DIGEST_DELIVERY", "1") != "0",
-            telegraph_access_token=os.environ.get("TELEGRAPH_ACCESS_TOKEN", ""),
+            scrape_budget_seconds=values["scrape_budget_seconds"],
+            sources_enable=search.sources_enable,
+            sources_disable=search.sources_disable,
+            state_sync=state_sync,
+            digest_delivery=digest_delivery,
+            telegraph_access_token=values["telegraph_access_token"],
+            settings_file=str(loaded.path or ""),
+            setting_origins={
+                key: (
+                    origin if isinstance(origin, dict)
+                    else {"kind": origin.kind, "source": origin.source}
+                )
+                for key, origin in effective_origins.items()
+            },
+            search=search,
+            candidate=candidate,
+            policy=policy,
         )
 
 
