@@ -21,6 +21,7 @@ from ..config import (
     load_base_tex,
     load_criteria,
     load_tailoring_instructions,
+    require_search_configured,
 )
 from ..runtime import ConfigurationError, build_runtime
 from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
@@ -240,12 +241,19 @@ def _build_runtime(cfg, command):
     return build_runtime(cfg, command=command, llm=llm, telegram=telegram)
 
 
-def _evaluate_candidate(llm, criteria, job, prompts=None):
+def _evaluation_options(settings):
+    if not getattr(settings, "settings_file", ""):
+        return {}
+    return {"search": settings.search, "candidate": settings.candidate,
+            "policy": settings.policy}
+
+
+def _evaluate_candidate(llm, criteria, job, prompts=None, settings=None):
     """Evaluate a candidate only when its cleaned description is sufficient."""
     if not ensure_job_description(job):
         return None
     from ..llm.eval import evaluate_job
-    return evaluate_job(llm, criteria, job, prompts=prompts)
+    return evaluate_job(llm, criteria, job, prompts=prompts, **_evaluation_options(settings))
 
 
 def _prepare_with_renderer(renderer, llm, job, evaluation=None):
@@ -333,10 +341,16 @@ def _deferred_markers(job) -> set[str]:
 
 
 def _fetch_for_pipeline(cfg):
+    require_search_configured(cfg)
     kwargs = {
-        "source_names": select_sources(cfg.sources_enable, cfg.sources_disable),
+        "source_names": (select_sources(cfg.sources_enable, cfg.sources_disable, generic=True)
+                         if getattr(cfg, "settings_file", "")
+                         else select_sources(cfg.sources_enable, cfg.sources_disable)),
         "verbose": True,
     }
+    if getattr(cfg, "settings_file", ""):
+        kwargs.update(search=cfg.search, candidate=cfg.candidate,
+                      budget_seconds=getattr(cfg, "scrape_budget_seconds", None))
     if _seen_file(cfg) != SEEN_JOBS_FILE:
         kwargs["seen_jobs_file"] = _seen_file(cfg)
     report = fetch_jobs_with_health(**kwargs)
@@ -348,6 +362,7 @@ def _fetch_for_pipeline(cfg):
 
 def run_seed(cfg) -> int:
     """Mark all currently fetched jobs as seen without evaluating."""
+    require_search_configured(cfg)
     _build_runtime(cfg, command="seed")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
@@ -370,6 +385,7 @@ def run_seed(cfg) -> int:
 
 def run_list(cfg) -> int:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
+    require_search_configured(cfg)
     _build_runtime(cfg, command="list")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
@@ -604,6 +620,7 @@ def _deliver_digest(
 
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
+    require_search_configured(cfg)
     rt = _build_runtime(cfg, command="daily")
     llm = rt.llm
     # See the matching comment in _deliver_digest.
@@ -633,9 +650,13 @@ def run_daily(cfg, test: bool = False) -> int:
                     flush=True,
                 )
         criteria = load_criteria(getattr(cfg, "criteria_file", CRITERIA_FILE))
-        crit_ver = criteria_fingerprint(
-            criteria, getattr(rt.prompts, "revision", "")
-        )
+        prompt_revision = getattr(rt.prompts, "revision", "")
+        if getattr(cfg, "settings_file", ""):
+            from ..policy import evaluation_configuration_revision
+            prompt_revision += "\n" + evaluation_configuration_revision(
+                cfg.search, cfg.candidate, cfg.policy
+            )
+        crit_ver = criteria_fingerprint(criteria, prompt_revision)
         # Preflight the files the built-in renderer opens, before state sync or
         # fetch. runtime.preflight already checked they exist; this reads them,
         # which is what catches an unreadable or empty one. The values are
@@ -701,7 +722,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 print("Done.", flush=True)
                 return 0
             from ..llm.eval import evaluate_job
-            evaluation = evaluate_job(llm, criteria, d, prompts=rt.prompts)
+            evaluation = evaluate_job(llm, criteria, d, prompts=rt.prompts, **_evaluation_options(cfg))
             if not evaluation.get("fit"):
                 print("    Skip — {}".format(evaluation.get("reason", "")))
                 print("Done.", flush=True)
@@ -834,7 +855,7 @@ def run_daily(cfg, test: bool = False) -> int:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
                     pool.submit(
-                        _evaluate_candidate, llm, criteria, job, rt.prompts
+                        _evaluate_candidate, llm, criteria, job, rt.prompts, cfg
                     ): (job, retry_state)
                     for job, retry_state in evaluation_jobs
                 }

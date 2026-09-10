@@ -9,11 +9,27 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from string import Template
+from types import MappingProxyType
 from typing import Mapping, Sequence, Tuple
 
 from .config import BASE_TEX_FILE, CV_DISPLAY_NAME, CV_FILENAME_PREFIX, OUT_PDF_FILE
 from .profile import EXPECTED_JOB_ORDER, FORBIDDEN_TERM_PATTERNS
 from .latex.compile import LatexCompiler
+
+
+def _positive_page_count(value, name):
+    """Return a policy page count, rejecting values that can silently mislead."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("{} must be a positive integer".format(name))
+    return value
+
+
+@dataclass(frozen=True)
+class CVPageLimit:
+    """The explicit, immutable page policy for one rendered document."""
+
+    max_pages: int
+    origin: str
 
 
 @dataclass(frozen=True)
@@ -26,20 +42,83 @@ class CandidateProfile:
     cv_filename_prefix: str = CV_FILENAME_PREFIX
     employer_order: Tuple[str, ...] = tuple(EXPECTED_JOB_ORDER)
     forbidden_claim_patterns: Tuple[str, ...] = tuple(FORBIDDEN_TERM_PATTERNS)
-    private_placeholders: Mapping[str, str] = field(
-        default_factory=lambda: {"((PHONE))": "CV_PHONE"}
-    )
+    private_placeholders: Mapping[str, str] = field(default_factory=dict)
+    max_pages: int = 1
+    max_pages_by_country: Mapping[str, int] = field(default_factory=dict)
+    max_pages_by_region: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Freeze and validate page-policy inputs at the configuration boundary."""
+        from .location.countries import ISO_COUNTRY_CODES
+
+        max_pages = _positive_page_count(self.max_pages, "max_pages")
+        country_limits = self._normalized_page_limits(
+            self.max_pages_by_country, "max_pages_by_country", ISO_COUNTRY_CODES
+        )
+        region_limits = self._normalized_page_limits(
+            self.max_pages_by_region, "max_pages_by_region", frozenset(("EU",))
+        )
+        object.__setattr__(self, "max_pages", max_pages)
+        object.__setattr__(self, "max_pages_by_country", MappingProxyType(country_limits))
+        object.__setattr__(self, "max_pages_by_region", MappingProxyType(region_limits))
+
+    @staticmethod
+    def _normalized_page_limits(values, name, allowed):
+        if not isinstance(values, Mapping):
+            raise ValueError("{} must be a mapping".format(name))
+        normalized = {}
+        for raw_key, raw_value in values.items():
+            key = str(raw_key or "").strip().upper()
+            if key not in allowed:
+                raise ValueError("{} has unsupported key {!r}".format(name, raw_key))
+            normalized[key] = _positive_page_count(raw_value, "{}[{}]".format(name, key))
+        return normalized
 
     @classmethod
     def from_settings(cls, settings: object) -> "CandidateProfile":
+        candidate = getattr(settings, "candidate", None)
+        source = candidate if candidate is not None else settings
         return cls(
-            display_name=getattr(settings, "cv_display_name", CV_DISPLAY_NAME),
-            base_tex_path=getattr(settings, "base_tex_file", BASE_TEX_FILE),
-            rendered_base_path=getattr(settings, "rendered_base_file", OUT_PDF_FILE),
+            display_name=getattr(source, "display_name", getattr(settings, "cv_display_name", CV_DISPLAY_NAME)),
+            base_tex_path=getattr(source, "base_tex_file", getattr(settings, "base_tex_file", BASE_TEX_FILE)),
+            rendered_base_path=getattr(source, "rendered_base_file", getattr(settings, "rendered_base_file", OUT_PDF_FILE)),
             cv_filename_prefix=getattr(
-                settings, "cv_filename_prefix", CV_FILENAME_PREFIX
+                source, "filename_prefix", getattr(settings, "cv_filename_prefix", CV_FILENAME_PREFIX)
             ),
+            employer_order=tuple(getattr(source, "employer_order", EXPECTED_JOB_ORDER)),
+            forbidden_claim_patterns=tuple(
+                getattr(source, "forbidden_claim_patterns", FORBIDDEN_TERM_PATTERNS)
+            ),
+            private_placeholders=getattr(source, "private_placeholders", {}),
+            max_pages=getattr(source, "max_pages", 1),
+            max_pages_by_country=getattr(source, "max_pages_by_country", {}),
+            max_pages_by_region=getattr(source, "max_pages_by_region", {}),
         )
+
+    def page_limit_for(self, job: object) -> CVPageLimit:
+        """Resolve one job's allowed page count without retaining mutable state.
+
+        Each advertised location independently prefers its country rule over its
+        region rule, then the fallback. A multi-location posting uses the
+        smallest resulting limit, so one stricter advertised target cannot be
+        accidentally bypassed by another location.
+        """
+        from .location.countries import advertised_locations
+
+        location = getattr(job, "location", None)
+        if location is None and hasattr(job, "get"):
+            location = job.get("location", "")
+        resolved = []
+        for advertised in advertised_locations(str(location or "")):
+            country = str(advertised.country or "").upper()
+            region = str(advertised.region or "").upper()
+            if country in self.max_pages_by_country:
+                resolved.append(CVPageLimit(self.max_pages_by_country[country], "country:" + country))
+            elif region in self.max_pages_by_region:
+                resolved.append(CVPageLimit(self.max_pages_by_region[region], "region:" + region))
+            else:
+                resolved.append(CVPageLimit(self.max_pages, "fallback"))
+        return min(resolved or [CVPageLimit(self.max_pages, "fallback")], key=lambda item: item.max_pages)
 
     def resolve_private_placeholders(
         self, text: str, environ: Mapping[str, str] = None
@@ -315,17 +394,28 @@ class DefaultCVRenderer:
         instructions = load_tailoring_instructions(
             getattr(self.settings, "cv_tailoring_prompt_file", "cv_tailoring_prompt.md")
         )
+        page_limit = self.profile.page_limit_for(job)
         try:
             tex_source = tailor_resume(
                 llm, instructions, base, job,
                 prompts=self.prompts, profile=self.profile,
             )
-            result = self.compiler.compile(llm, tex_source)
+            result = self.compiler.compile(
+                llm, tex_source, max_pages=page_limit.max_pages
+            )
         except Exception as exc:
             raise CVPreparationError("CV rendering failed: {}".format(exc)) from exc
-        if not result.ok or not result.pdf_bytes or result.page_count != 1:
+        if (
+            not result.ok
+            or not result.pdf_bytes
+            or result.page_count is None
+            or not 1 <= result.page_count <= page_limit.max_pages
+        ):
             raise CVPreparationError(
-                result.error_excerpt or "CV compilation did not produce a verified one-page PDF"
+                result.error_excerpt
+                or "CV compilation did not produce a verified PDF within {} pages ({})".format(
+                    page_limit.max_pages, page_limit.origin
+                )
             )
         final_tex = getattr(result, "tex_source", "") or tex_source
         violations = self.profile.validate_tex(final_tex)
@@ -347,15 +437,24 @@ class DefaultCVRenderer:
         from .pipeline.stages import CVPreparationError
 
         source = load_base_tex(self.profile.base_tex_path)
+        page_limit = CVPageLimit(self.profile.max_pages, "fallback")
         compile_base = getattr(self.compiler, "compile_base", None)
         result = (
-            compile_base(source)
+            compile_base(source, max_pages=page_limit.max_pages)
             if callable(compile_base)
-            else self.compiler.compile(llm, source)
+            else self.compiler.compile(llm, source, max_pages=page_limit.max_pages)
         )
-        if not result.ok or not result.pdf_bytes or result.page_count != 1:
+        if (
+            not result.ok
+            or not result.pdf_bytes
+            or result.page_count is None
+            or not 1 <= result.page_count <= page_limit.max_pages
+        ):
             raise CVPreparationError(
-                result.error_excerpt or "base CV did not compile to exactly one page"
+                result.error_excerpt
+                or "base CV did not compile to a verified PDF within {} pages".format(
+                    page_limit.max_pages
+                )
             )
         final_tex = getattr(result, "tex_source", "") or source
         violations = self.profile.validate_tex(final_tex)
@@ -495,7 +594,7 @@ def _default_prompts(settings: object) -> object:
 
 
 __all__ = [
-    "CVArtifact",
+    "CVArtifact", "CVPageLimit",
     "CandidateProfile", "DefaultCVRenderer", "DefaultOutputBackend",
     "DefaultOutputRenderer", "DefaultPromptSet", "DeliveryOutcome",
     "DigestOutcome", "FilePromptSet", "LatexCompiler",

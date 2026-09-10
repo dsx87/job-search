@@ -6,7 +6,7 @@ registry builds) even when Playwright/Chromium is not installed.
 """
 from ..filters.rules import dedup
 from ..http import build_url
-from .base import BaseSource, register
+from .base import BaseSource, configured_search_terms, register
 from .parsers import parse_link_jobs
 
 
@@ -20,6 +20,7 @@ class SecretTelAvivSource(BaseSource):
     # drive a real headless Chromium via Playwright (verified to get HTTP 200).
     # Skips automatically if Playwright/Chromium isn't installed.
     name = "secrettelaviv"
+    generic_default_enabled = False
     BASE_URL = "https://jobs.secrettelaviv.com"
     SEARCH_URL = BASE_URL + "/list/find/"
     QUERIES = ["ios", "swift", "macos", "mobile developer"]
@@ -29,6 +30,10 @@ class SecretTelAvivSource(BaseSource):
     )
 
     def fetch(self, verbose=False):
+        queries = configured_search_terms(self, self.QUERIES)
+        if getattr(self, "search", None) is not None and not queries:
+            self._skip("configured search requires search_terms")
+            return []
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -43,7 +48,7 @@ class SecretTelAvivSource(BaseSource):
                 browser = p.chromium.launch(headless=True)
                 context = browser.new_context(user_agent=self.USER_AGENT, locale="en-US")
                 try:
-                    for query in self.QUERIES:
+                    for query in queries:
                         url = build_url(self.SEARCH_URL, params={"q": query})
                         page = context.new_page()
                         try:

@@ -1,0 +1,328 @@
+# Complete, fictional settings file for AI Job Hunter.
+#
+# Copy this file into a private, commit-pinned configuration repository, replace
+# the Avery Example values, and select it with JOB_SEARCH_SETTINGS_FILE.
+# Fetching needs this selected file plus at least one explicit [search] setting.
+#
+# Values in this file are data only. Credentials and a few host controls are
+# environment-only and are deliberately shown as comments. Every active option
+# below is accepted by `python -m job_search --validate-config job_search.toml`.
+
+[settings]
+# settings.version — type: format version; default/allowed: 1; env: none.
+# Identifies this file format. It is required and must remain 1.
+# settings.version | purpose: Settings file format version. | type: version | default: 1 | allowed: 1 | env: none | dependencies: must be 1 for this parser | effect: selects schema parser
+version = 1
+
+# settings.llm_primary_scheme — type: string; default: "gemini";
+# env: LLM_PRIMARY_SCHEME; allowed: gemini, openai, anthropic. Selects the
+# primary provider wire protocol.
+# settings.llm_primary_scheme | purpose: Primary LLM wire protocol. | type: string | default: "gemini" | allowed: anthropic, gemini, openai | env: LLM_PRIMARY_SCHEME | dependencies: must match primary model, credential, base, and auth | effect: selects primary request protocol
+llm_primary_scheme = "openai"
+# settings.llm_primary_model — type: string; default: "gemini-2.5-flash";
+# env: LLM_PRIMARY_MODEL (legacy GEMINI_MODEL). The primary model identifier.
+# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "gemini-2.5-flash" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
+llm_primary_model = "fictional-platform-model"
+# settings.llm_primary_api_key — type: string; default: empty;
+# env only: LLM_PRIMARY_API_KEY (legacy GEMINI_API_KEY); sensitive. Never put a
+# credential in TOML; set it in the host environment or an Actions secret.
+# settings.llm_primary_api_key | purpose: Primary LLM credential. | type: string | default: "" | allowed: any string | env: LLM_PRIMARY_API_KEY / GEMINI_API_KEY | dependencies: required by authenticated primary; host secret only | effect: authenticates primary requests
+# llm_primary_api_key = "environment-only"
+# settings.llm_primary_api_base — type: string; default: scheme endpoint;
+# env: LLM_PRIMARY_API_BASE (legacy GEMINI_API_BASE). Empty uses the scheme
+# endpoint; an OpenAI-compatible host can set an absolute HTTPS URL here.
+# settings.llm_primary_api_base | purpose: Primary LLM endpoint override. | type: string | default: "" | allowed: any string | env: LLM_PRIMARY_API_BASE / GEMINI_API_BASE | dependencies: must be compatible with selected scheme | effect: redirects primary endpoint
+llm_primary_api_base = "https://llm.example.test/v1"
+# settings.llm_primary_auth_mode — type: string; default: "bearer";
+# env: LLM_PRIMARY_AUTH_MODE; allowed: bearer, none. `none` needs an explicit,
+# trusted local HTTP(S) API base and omits Authorization.
+# settings.llm_primary_auth_mode | purpose: Primary LLM authentication mode. | type: string | default: "bearer" | allowed: bearer, none | env: LLM_PRIMARY_AUTH_MODE | dependencies: none requires explicit trusted local compatible base | effect: controls primary Authorization header
+llm_primary_auth_mode = "bearer"
+
+# settings.llm_fallback_scheme — type: string; default: "openai";
+# env: LLM_FALLBACK_SCHEME; allowed: gemini, openai, anthropic. Used when the
+# primary cannot serve a request.
+# settings.llm_fallback_scheme | purpose: Fallback LLM wire protocol. | type: string | default: "openai" | allowed: anthropic, gemini, openai | env: LLM_FALLBACK_SCHEME | dependencies: must match fallback model, credential, base, and auth | effect: selects failover request protocol
+llm_fallback_scheme = "openai"
+# settings.llm_fallback_model — type: string; default: "gpt-5.4-mini";
+# env: LLM_FALLBACK_MODEL. Fallback model identifier.
+# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "gpt-5.4-mini" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
+llm_fallback_model = "fictional-fallback-model"
+# settings.llm_fallback_api_key — type: string; default: empty;
+# env only: LLM_FALLBACK_API_KEY (legacy OPENAI_API_KEY); sensitive.
+# settings.llm_fallback_api_key | purpose: Fallback LLM credential. | type: string | default: "" | allowed: any string | env: LLM_FALLBACK_API_KEY / OPENAI_API_KEY | dependencies: required by authenticated fallback; host secret only | effect: authenticates fallback requests
+# llm_fallback_api_key = "environment-only"
+# settings.llm_fallback_api_base — type: string; default: scheme endpoint;
+# env: LLM_FALLBACK_API_BASE. Empty uses the scheme endpoint.
+# settings.llm_fallback_api_base | purpose: Fallback LLM endpoint override. | type: string | default: "" | allowed: any string | env: LLM_FALLBACK_API_BASE | dependencies: must be compatible with selected scheme | effect: redirects fallback endpoint
+llm_fallback_api_base = "https://backup-llm.example.test/v1"
+# settings.llm_fallback_auth_mode — type: string; default: "bearer";
+# env: LLM_FALLBACK_AUTH_MODE; allowed: bearer, none. Same trusted-local-host
+# restriction as the primary auth mode.
+# settings.llm_fallback_auth_mode | purpose: Fallback LLM authentication mode. | type: string | default: "bearer" | allowed: bearer, none | env: LLM_FALLBACK_AUTH_MODE | dependencies: none requires explicit trusted local compatible base | effect: controls fallback Authorization header
+llm_fallback_auth_mode = "bearer"
+
+# settings.telegram_bot_token — type: string; default: empty;
+# env only: TELEGRAM_BOT_TOKEN; sensitive. Required for OUTPUT_MODE=telegram.
+# settings.telegram_bot_token | purpose: Telegram delivery credential. | type: string | default: "" | allowed: any string | env: TELEGRAM_BOT_TOKEN | dependencies: requires chat ID for telegram output; host secret only | effect: authenticates Telegram delivery
+# telegram_bot_token = "environment-only"
+# settings.telegram_chat_id — type: string; default: empty;
+# env only: TELEGRAM_CHAT_ID; sensitive. Required for OUTPUT_MODE=telegram and
+# limits control-bot commands to this chat.
+# settings.telegram_chat_id | purpose: Telegram destination chat. | type: string | default: "" | allowed: any string | env: TELEGRAM_CHAT_ID | dependencies: requires bot token for telegram output; host secret only | effect: selects delivery and control chat
+# telegram_chat_id = "environment-only"
+# settings.eval_workers — type: positive integer; default: 12; env: EVAL_WORKERS.
+# Concurrent LLM evaluation calls; lower it for a small host or provider limit.
+# settings.eval_workers | purpose: Concurrent evaluation workers. | type: positive_int | default: 12 | allowed: integer at least 1 | env: EVAL_WORKERS | dependencies: shares host and provider capacity with tailor workers | effect: caps concurrent LLM calls
+eval_workers = 4
+# settings.tailor_workers — type: positive integer; default: 8; env: TAILOR_WORKERS.
+# Concurrent CV-tailoring calls; this does not raise the LaTeX concurrency cap.
+# settings.tailor_workers | purpose: Concurrent tailoring workers. | type: positive_int | default: 8 | allowed: integer at least 1 | env: TAILOR_WORKERS | dependencies: CV output and host capacity set practical value | effect: caps concurrent tailoring calls
+tailor_workers = 2
+# settings.latex_max_workers — type: positive integer; default: 2;
+# env only: LATEX_MAX_WORKERS (legacy XELATEX_MAX_WORKERS). Limits compilations.
+# settings.latex_max_workers | purpose: Concurrent LaTeX workers. | type: positive_int | default: 2 | allowed: integer at least 1 | env: LATEX_MAX_WORKERS / XELATEX_MAX_WORKERS | dependencies: CV output requires LaTeX host; environment-only compatibility control | effect: caps LaTeX compilations
+# latex_max_workers = 1
+# settings.llm_breaker_threshold — type: positive integer; default: 2;
+# env only: LLM_BREAKER_THRESHOLD. Consecutive primary 429/503 failures before
+# the run moves to fallback.
+# settings.llm_breaker_threshold | purpose: Primary LLM circuit-break threshold. | type: positive_int | default: 2 | allowed: integer at least 1 | env: LLM_BREAKER_THRESHOLD | dependencies: working fallback makes breaker failover useful | effect: sets failures before primary failover
+# llm_breaker_threshold = 2
+# settings.anthropic_max_tokens — type: positive integer; default: 4096;
+# env only: ANTHROPIC_MAX_TOKENS. Sent only by the Anthropic protocol.
+# settings.anthropic_max_tokens | purpose: Anthropic response token limit. | type: positive_int | default: 4096 | allowed: integer at least 1 | env: ANTHROPIC_MAX_TOKENS | dependencies: used only by Anthropic scheme; environment-only host control | effect: sets Anthropic token cap
+# anthropic_max_tokens = 4096
+# settings.scrape_budget_seconds — type: positive integer; default: 600;
+# env: SCRAPE_BUDGET_SECONDS. Whole fetch-stage wall-clock ceiling.
+# settings.scrape_budget_seconds | purpose: Fetch-stage wall-clock limit. | type: positive_int | default: 600 | allowed: integer at least 1 | env: SCRAPE_BUDGET_SECONDS | dependencies: covers complete fetch stage | effect: stops slow fetch at deadline
+scrape_budget_seconds = 600
+# settings.seen_jobs_file — type: path string; default: "seen_jobs.json";
+# env: SEEN_JOBS_FILE. Output/state path, resolved from the run working directory.
+# settings.seen_jobs_file | purpose: Persistent job-state file. | type: string | default: "seen_jobs.json" | allowed: any string | env: SEEN_JOBS_FILE | dependencies: state sync and daily run use this path | effect: selects dedupe and retry state
+seen_jobs_file = "state/seen_jobs.json"
+# settings.criteria_file — type: path string; default: "criteria.md";
+# env: CRITERIA_FILE. Required compatibility input, resolved from this TOML file.
+# Its prose changes only the reopen fingerprint; it is neither LLM context nor
+# executable policy.
+# settings.criteria_file | purpose: Evaluation criteria input file. | type: string | default: "criteria.md" | allowed: any string | env: CRITERIA_FILE | dependencies: criteria edits change reopen fingerprint | effect: validates compatibility input and changes reevaluation fingerprint
+criteria_file = "criteria.md"
+# settings.cv_tailoring_prompt_file — type: path string;
+# default: "cv_tailoring_prompt.md"; env: CV_TAILORING_PROMPT_FILE. Legacy input.
+# It is parsed for compatibility validation when CV work is enabled; its
+# instruction text is ignored. Use prompt_dir/cv_bullet_selection.txt instead.
+# settings.cv_tailoring_prompt_file | purpose: Tailoring-instructions input file. | type: string | default: "cv_tailoring_prompt.md" | allowed: any string | env: CV_TAILORING_PROMPT_FILE | dependencies: CV work parses its legacy format; prompt_dir supplies active overrides | effect: validates legacy compatibility without changing tailoring instructions
+cv_tailoring_prompt_file = "cv_tailoring_prompt.md"
+# settings.sections_file — type: path string; default: "sections.py";
+# env: SECTIONS_FILE. Optional presentation-only digest grouping input.
+# settings.sections_file | purpose: Optional digest sections input file. | type: string | default: "sections.py" | allowed: any string | env: SECTIONS_FILE | dependencies: optional presentation input; broken file falls back ungrouped | effect: selects digest grouping
+sections_file = "sections.py"
+# settings.prompt_dir — type: path string; default: empty; env: PROMPT_DIR.
+# Input directory for conventional prompt overrides; requires prompt_revision.
+# cv_bullet_selection.txt is the active CV-tailoring replacement; other files
+# are fact_extraction.txt, job_summary.txt, and compiler_repair.txt.
+# settings.prompt_dir | purpose: Prompt override directory. | type: string | default: "" | allowed: any string | env: PROMPT_DIR | constraints: prompt_revision must be nonempty when this path is set | dependencies: requires prompt_revision when nonempty | effect: selects active per-prompt overrides
+prompt_dir = ""
+# settings.prompt_revision — type: string; default: empty; env: PROMPT_REVISION.
+# Required when prompt_dir is nonempty; it participates in rejected-job reopening.
+# settings.prompt_revision | purpose: Prompt override revision. | type: string | default: "" | allowed: any string | env: PROMPT_REVISION | dependencies: required whenever prompt_dir is nonempty | effect: adds prompt version to reopen logic
+prompt_revision = ""
+# settings.output_mode — type: string; default: "telegram"; env: OUTPUT_MODE;
+# allowed: telegram, html, plain. Chooses delivery/backend behavior.
+# settings.output_mode | purpose: Output backend mode. | type: string | default: "telegram" | allowed: html, plain, telegram | env: OUTPUT_MODE | constraints: telegram requires settings.output_cv_mode=required | dependencies: telegram requires credentials and required CV output | effect: selects Telegram, HTML, or plain delivery
+output_mode = "plain"
+# Alternative delivery modes (choose one value above):
+# output_mode = "telegram" # requires Telegram credentials and output_cv_mode=required
+# output_mode = "html"     # writes escaped HTML under output_dir
+# settings.output_dir — type: path string; default: empty; env: OUTPUT_DIR.
+# Used only by html/plain output and resolved from the run working directory.
+# settings.output_dir | purpose: Filesystem output directory. | type: string | default: "" | allowed: any string | env: OUTPUT_DIR | dependencies: used only by html or plain output | effect: selects filesystem digest destination
+output_dir = "generated"
+# settings.output_cv_mode — type: string; default: "required";
+# env: OUTPUT_CV_MODE; allowed: required, disabled. `disabled` skips all CV
+# tailoring/compilation and is incompatible with output_mode=telegram.
+# settings.output_cv_mode | purpose: CV output mode. | type: string | default: "required" | allowed: disabled, required | env: OUTPUT_CV_MODE | dependencies: telegram permits required only | effect: enables or skips CV work
+output_cv_mode = "disabled"
+# Alternative CV mode (choose one value above):
+# output_cv_mode = "required" # a fit is incomplete unless its CV is delivered
+# settings.latex_engine — type: executable name; default: "pdflatex";
+# env: LATEX_ENGINE. Must be on PATH whenever output_cv_mode=required.
+# settings.latex_engine | purpose: LaTeX executable. | type: string | default: "pdflatex" | allowed: any string | env: LATEX_ENGINE | dependencies: must resolve on PATH when CV output required | effect: selects compiler executable
+latex_engine = "pdflatex"
+# settings.state_sync — type: boolean; default: false; env: STATE_SYNC.
+# `true` git-syncs seen-job state around a daily run.
+# settings.state_sync | purpose: Synchronize state with git. | type: bool | default: false | allowed: true or false | env: STATE_SYNC | dependencies: requires configured state branch and git access | effect: syncs seen-job state with git
+state_sync = false
+# settings.digest_delivery — type: boolean; default: true; env: DIGEST_DELIVERY.
+# `true` sends one digest/archive per run; false restores legacy per-job delivery.
+# settings.digest_delivery | purpose: Deliver a digest archive. | type: bool | default: true | allowed: true or false | env: DIGEST_DELIVERY | dependencies: Telegraph archive behavior applies only when enabled | effect: selects archive or per-job delivery
+digest_delivery = true
+# settings.telegraph_access_token — type: string; default: empty;
+# env only: TELEGRAPH_ACCESS_TOKEN; sensitive. With digest_delivery=true,
+# publishes a Telegraph page and encrypted CV archive; failures fall back to ZIP.
+# settings.telegraph_access_token | purpose: Telegraph credential. | type: string | default: "" | allowed: any string | env: TELEGRAPH_ACCESS_TOKEN | dependencies: used only with digest delivery; host secret only | effect: enables Telegraph archive publishing
+# telegraph_access_token = "environment-only"
+
+[search]
+# search.sources_enable — type: array of source names; default: []; env: SOURCES_ENABLE
+# (comma list). Forces default-off sources on; each name must be listed by --list-sources.
+# search.sources_enable | purpose: Sources explicitly enabled. | type: string_tuple | default: [] | allowed: array of known source names | env: SOURCES_ENABLE | constraints: values are unique known sources and cannot overlap sources_disable | dependencies: known source names cannot conflict with sources_disable | effect: forces default-off sources on
+sources_enable = []
+# search.sources_disable — type: array of source names; default: []; env: SOURCES_DISABLE
+# (comma list). Removes default-on sources. Do not name the same source in both lists.
+# search.sources_disable | purpose: Sources explicitly disabled. | type: string_tuple | default: [] | allowed: array of known source names | env: SOURCES_DISABLE | constraints: values are unique known sources and cannot overlap sources_enable | dependencies: known source names cannot conflict with sources_enable | effect: forces default-on sources off
+sources_disable = []
+# search.role_include_terms — type: array of strings; default: []. A title must
+# contain one term when this is nonempty; this fictional query searches platform roles.
+# search.role_include_terms | purpose: Role-title terms to include. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: works with role exclude and LLM role-match checks | effect: keeps matching titles
+role_include_terms = ["platform engineer", "backend engineer"]
+# search.role_exclude_terms — type: array of strings; default: []. Matching title
+# terms reject a result before LLM evaluation.
+# search.role_exclude_terms | purpose: Role-title terms to exclude. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: runs before role include and LLM evaluation | effect: drops matching titles
+role_exclude_terms = ["intern", "principal"]
+# search.skill_include_groups — type: array of string arrays; default: []. Every
+# group needs one matching term, so this means (Python OR Go) AND Kubernetes.
+# search.skill_include_groups | purpose: Required skill alternatives. | type: string_tuple_tuple | default: [] | allowed: array of nonempty string arrays | env: none | constraints: every inner skill-alternative group has at least one term | dependencies: every group needs a match; feeds LLM required-skill checks | effect: requires term from each group
+skill_include_groups = [["python", "go"], ["kubernetes"]]
+# search.location_exclude_terms — type: array of strings; default: []. Matching
+# advertised-location text rejects the posting before evaluation.
+# search.location_exclude_terms | purpose: Location terms to exclude. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: evaluates advertised location before LLM work | effect: drops matching advertised locations
+location_exclude_terms = ["bangalore"]
+# search.relocation_regions — type: array of strings; default: ["eu", "ca", "us"].
+# allowed current region identifiers: eu, ca, au, us. Used only when relocation is allowed.
+# search.relocation_regions | purpose: Relocation regions. | type: string_tuple | default: ["eu","ca","us"] | allowed: au, ca, eu, us | env: none | dependencies: used only when relocation_allowed is true | effect: limits relocation matches
+relocation_regions = ["eu", "ca"]
+# search.max_age_days — type: nonnegative integer; default: 30. 0 means no age cutoff.
+# search.max_age_days | purpose: Maximum posting age. | type: nonnegative_int | default: 30 | allowed: integer at least 0 | env: none | dependencies: applies after source retrieval; zero removes cutoff | effect: drops old postings
+max_age_days = 14
+# search.remote_allowed — type: boolean; default: true. Enables the remote gate;
+# it does not exclude an explicitly authorized local role.
+# search.remote_allowed | purpose: Include remote jobs. | type: bool | default: true | allowed: true or false | env: none | dependencies: combine with relocation_allowed for opportunity scope | effect: includes remote opportunities
+remote_allowed = true
+# search.relocation_allowed — type: boolean; default: true. Enables qualifying
+# relocation opportunities in relocation_regions; it does not exclude an
+# explicitly authorized local role.
+# search.relocation_allowed | purpose: Include relocation jobs. | type: bool | default: true | allowed: true or false | env: none | dependencies: uses relocation_regions when true | effect: includes relocation opportunities
+relocation_allowed = true
+# To narrow a remote or relocation gate, set its switch false. An explicitly local
+# role stays eligible when its country is in both candidate country lists:
+# remote_allowed = false
+# relocation_allowed = true
+# search.search_terms — type: array of strings; default: []. Provider-neutral
+# source query terms; use the same non-iOS target vocabulary as role filtering.
+# Selected generic query sources do not fall back to legacy terms when it is empty.
+# search.search_terms | purpose: General provider-neutral search terms. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: generic query-capable sources use it when TOML selected | effect: dispatches generic source queries
+search_terms = ["platform engineer", "backend engineer"]
+# search.query_locations — type: array of strings; default: []. Provider-neutral
+# source query locations. Empty creates no location loops, so generic query
+# sources skip with a diagnostic rather than searching their normal legacy scope.
+# search.query_locations | purpose: General provider-neutral query locations. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: generic query-capable sources pair it with search_terms | effect: limits generic query locations
+query_locations = ["Germany", "Remote"]
+# search.results_per_query — type: positive integer; default: 15. Requested
+# source results per query; providers can return fewer.
+# search.results_per_query | purpose: Requested results per provider query. | type: positive_int | default: 15 | allowed: integer at least 1 | env: none | dependencies: generic query-capable sources may return fewer results | effect: requests results per generic query
+results_per_query = 20
+
+[candidate]
+# candidate.max_pages — type: positive integer; default: 1; env: CV_MAX_PAGES.
+# Fallback CV page limit when no advertised-country or EU rule applies.
+# candidate.max_pages | purpose: Default tailored-CV page limit. | type: positive_int | default: 1 | allowed: integer at least 1 | env: CV_MAX_PAGES | dependencies: fallback after country and EU rules; env override is CV_MAX_PAGES | effect: sets fallback page limit
+max_pages = 1
+# candidate.max_pages_by_country — type: table of ISO 3166-1 alpha-2 codes to
+# positive integers; default: {}. Keys accept either case and normalize to
+# uppercase; exact advertised country rules outrank EU.
+# candidate.max_pages_by_country | purpose: Country-specific tailored-CV page limits. | type: country_limit_map | default: {} | allowed: table of ISO alpha-2 keys to positive integers | env: none | constraints: keys are valid ISO 3166-1 alpha-2 codes, canonicalized uppercase; XK/ZZ reject; values are positive integers | dependencies: exact ISO country outranks EU and fallback | effect: sets country CV limits
+max_pages_by_country = { DE = 2, FR = 2 }
+# candidate.max_pages_by_region — type: table; default: {}; allowed key: EU only.
+# Used for an advertised EU country without an exact country rule, or `Remote - EU`.
+# UK, Switzerland, and Norway are non-EU and use the fallback unless separately
+# configured by country.
+# candidate.max_pages_by_region | purpose: EU-only region tailored-CV page limits. | type: eu_region_limit_map | default: {} | allowed: table with only EU key and positive integer | env: none | constraints: only EU is a valid key and values are positive integers | dependencies: only EU is allowed and follows exact country rule | effect: sets EU fallback CV limits
+max_pages_by_region = { EU = 2 }
+# candidate.display_name — type: string; default: empty; env: CV_DISPLAY_NAME.
+# It supplies tailoring-prompt context only. The rendered CV identity belongs
+# to base_tex_file and is not changed by this setting.
+# candidate.display_name | purpose: Candidate name supplied to tailoring prompts. | type: string | default: "" | allowed: any string | env: CV_DISPLAY_NAME | dependencies: used only as tailoring prompt context; base TeX owns rendered identity | effect: supplies tailoring candidate context
+display_name = "Avery Example"
+# candidate.filename_prefix — type: string; default: empty; env: CV_FILENAME_PREFIX.
+# Prefix for generated tailored-PDF filenames.
+# candidate.filename_prefix | purpose: Tailored-CV filename prefix. | type: string | default: "" | allowed: any string | env: CV_FILENAME_PREFIX | dependencies: used with CV-output filename generation | effect: prefixes tailored PDF names
+filename_prefix = "avery_example_cv"
+# candidate.base_tex_file — type: input path string; default: empty; env: BASE_TEX_FILE.
+# Resolved from this TOML file when configured here.
+# candidate.base_tex_file | purpose: Base CV LaTeX input. | type: string | default: "" | allowed: any string | env: BASE_TEX_FILE | dependencies: must be input file when CV output required | effect: selects base CV source
+base_tex_file = "avery_example_base.tex"
+# candidate.rendered_base_file — type: output path string; default: empty; env: OUT_PDF_FILE.
+# Resolved from the run working directory.
+# candidate.rendered_base_file | purpose: Rendered base-CV output. | type: string | default: "" | allowed: any string | env: OUT_PDF_FILE | dependencies: written when base CV rendering requested | effect: selects base-CV output
+rendered_base_file = "build/avery_example_base.pdf"
+# candidate.employer_order — type: array of strings; default: []. Fixed reverse
+# chronology expected in tailored CVs; list the employers in the base template.
+# candidate.employer_order | purpose: Fixed CV employment order. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: must match employer headings in base CV | effect: guards employment order
+employer_order = ["Example Labs", "Sample Systems"]
+# candidate.forbidden_claim_patterns — type: array of valid regex strings;
+# default: []. Any matching claim blocks the tailored CV.
+# candidate.forbidden_claim_patterns | purpose: Patterns forbidden in tailored CVs. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: patterns must be valid regexes for tailored CV text | effect: blocks matching fabricated claims
+forbidden_claim_patterns = ["\\bmedical device\\b", "\\bfintech\\b"]
+# candidate.private_placeholders — type: table mapping CV placeholders to env-var
+# names; default: {}. Values must match ^[A-Z_][A-Z0-9_]*$;
+# the map is non-secret, but each resolved host-environment value is sensitive.
+# candidate.private_placeholders | purpose: CV placeholders mapped to environment variables. | type: string_map | default: {} | allowed: table mapping placeholders to environment-variable names | env: none | constraints: values match ^[A-Z_][A-Z0-9_]*$; resolved values are sensitive while the map is non-secret | dependencies: values name protected host environment variables | effect: substitutes host-only private values
+private_placeholders = { "((EMAIL))" = "CV_EMAIL", "((PHONE))" = "CV_PHONE" }
+# candidate.residency_countries — type: ISO alpha-2 array; default: []. Candidate
+# residency controls remote-location eligibility and local-role treatment.
+# candidate.residency_countries | purpose: Countries of legal residency. | type: country_tuple | default: [] | allowed: array of ISO alpha-2 codes | env: none | dependencies: ISO codes drive remote eligibility and local treatment | effect: accepts eligible remote/local locations
+residency_countries = ["DE"]
+# candidate.work_authorization_countries — type: ISO alpha-2 array; default: [].
+# Satisfies explicit authorization requirements independently of residency,
+# including for remote roles.
+# candidate.work_authorization_countries | purpose: Countries with work authorization. | type: country_tuple | default: [] | allowed: array of ISO alpha-2 codes | env: none | dependencies: explicit authorization is independent of residency and arrangement | effect: satisfies eligible authorization requirements for remote or local locations
+work_authorization_countries = ["DE", "NL"]
+
+[policy]
+# policy.check_order — type: array of unique check identifiers; default: the
+# complete ordered list below. Allowed IDs are language, role_match,
+# excluded_industry, excluded_platform_focus, minimum_seniority,
+# local_office_attendance, remote_location_residency,
+# nonremote_nonpermanent_employment, remote_fact_residency,
+# nonremote_work_authorization, nonremote_sponsorship, nonremote_arrangement.
+# This selects and orders built-in checks; it cannot execute criteria.md prose.
+# `nonremote_work_authorization` is a compatibility name: it checks explicit
+# authorization requirements across remote and non-remote arrangements.
+# policy.check_order | purpose: Ordered policy check identifiers. | type: check_order | default: ["language","role_match","excluded_industry","excluded_platform_focus","minimum_seniority","local_office_attendance","remote_location_residency","nonremote_nonpermanent_employment","remote_fact_residency","nonremote_work_authorization","nonremote_sponsorship","nonremote_arrangement"] | allowed: array of unique supported check IDs | env: none | constraints: identifiers are known and unique | dependencies: only unique supported built-in check IDs allowed | effect: runs selected handlers in order
+check_order = ["language", "role_match", "excluded_industry", "excluded_platform_focus", "minimum_seniority", "local_office_attendance", "remote_location_residency", "nonremote_nonpermanent_employment", "remote_fact_residency", "nonremote_work_authorization", "nonremote_sponsorship", "nonremote_arrangement"]
+# policy.require_english — type: boolean; default: true. Makes English the
+# effective language requirement when allowed_languages is empty.
+# policy.require_english | purpose: Require English job descriptions. | type: bool | default: true | allowed: true or false | env: none | dependencies: works with allowed_languages and local_language_exempt | effect: enforces English default
+require_english = true
+# policy.local_language_exempt — type: boolean; default: true. Local roles in a
+# candidate residency country bypass language policy.
+# policy.local_language_exempt | purpose: Exempt local roles from language policy. | type: bool | default: true | allowed: true or false | env: none | dependencies: applies only to roles in residency_countries | effect: bypasses language check for local roles
+local_language_exempt = true
+# policy.excluded_industries — type: string array; default: [].
+# LLM-grounded matches are non-fits; unverified claims go to review.
+# policy.excluded_industries | purpose: Industries rejected by policy. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: model evidence must be grounded before rejection | effect: rejects grounded excluded industries
+excluded_industries = ["crypto", "web3"]
+# policy.excluded_platform_focuses — type: string array; default: []. Examples:
+# cross_platform, other, ios_macos. Use values reported by fact extraction.
+# policy.excluded_platform_focuses | purpose: Platform focuses rejected by policy. | type: string_tuple | default: [] | allowed: cross_platform, ios_macos, other, unknown | env: none | dependencies: only fact-extraction platform-focus values allowed | effect: rejects grounded platform focus
+excluded_platform_focuses = ["cross_platform"]
+# policy.rejected_seniority — type: string array; default: []. Allowed fact
+# values: senior, mid, junior, lead, unknown. Listed grounded levels are non-fits.
+# policy.rejected_seniority | purpose: Seniority levels rejected by policy. | type: string_tuple | default: [] | allowed: junior, lead, mid, senior, unknown | env: none | dependencies: only fact-extraction seniority values allowed | effect: rejects grounded seniority
+rejected_seniority = ["junior", "mid"]
+# policy.max_local_office_days — type: integer 0..7; default: 5. Local roles
+# requiring more office days are excluded when grounded in the posting.
+# policy.max_local_office_days | purpose: Maximum local onsite days per week. | type: office_days | default: 5 | allowed: integer 0 through 7 | env: none | dependencies: applies only to locally advertised roles | effect: rejects excess local attendance
+max_local_office_days = 3
+# policy.allow_sponsorship_override — type: boolean; default: true. Grounded visa
+# sponsorship can override remote residency restrictions.
+# policy.allow_sponsorship_override | purpose: Allow sponsorship to override residency restrictions. | type: bool | default: true | allowed: true or false | env: none | dependencies: requires grounded sponsorship evidence | effect: permits sponsorship override
+allow_sponsorship_override = true
+# policy.allowed_languages — type: string array; default: ["english"]. Allowed
+# description languages; empty with require_english=true means English.
+# policy.allowed_languages | purpose: Allowed job-description languages. | type: string_tuple | default: ["english"] | allowed: array of nonempty strings | env: none | dependencies: empty with require_english=true means English | effect: accepts configured languages
+allowed_languages = ["english", "german"]
+# policy.preferred_working_hours — type: string array; default: []. Informational
+# timezone preferences; US-hour requirements are flagged for human review.
+# policy.preferred_working_hours | purpose: Preferred working-hours notes. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: adds review context when US hours found | effect: adds timezone review note
+preferred_working_hours = ["Europe/Berlin business hours"]

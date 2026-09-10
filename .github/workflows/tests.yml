@@ -12,6 +12,13 @@ on:
       - tests/**
       - job_search_config.py
       - job_search_config.example.py
+      - job_search.example.toml
+      - avery_example_base.tex
+      - deployment.env.example
+      - sections.example.py
+      - README.md
+      - docs/**
+      - .claude/skills/job-searcher/skills/configure/**
       # scripts/ is part of the shipped runtime (run_pipeline.sh, the Pi setup
       # scripts) and was missing from this filter, so changes there ran no tests.
       - scripts/**
@@ -43,7 +50,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: pip install pytest 'pyzipper~=0.4.0'
+        run: pip install pytest 'pyzipper~=0.4.0' 'tomli>=2.0,<2.4; python_version < "3.11"'
 
       - name: Run offline characterization suite
         run: pytest

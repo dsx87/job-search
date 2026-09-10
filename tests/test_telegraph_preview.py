@@ -215,11 +215,11 @@ def test_upload_publishes_pages_carrying_real_urls(monkeypatch, capsys):
     secret = password[0].rsplit(" ", 1)[-1]
     with pyzipper.AESZipFile(io.BytesIO(host.uploads[0][1])) as archive:
         assert archive.namelist() == [
-            "igor_pivnyk_cv_acme.pdf",
-            "igor_pivnyk_cv_delta_sons.pdf",
-            "igor_pivnyk_cv_epsilon.pdf",
-            "igor_pivnyk_cv_beta_gmbh.pdf",
-            "igor_pivnyk_cv_zeta.pdf",
+            "avery_example_cv_acme.pdf",
+            "avery_example_cv_delta_sons.pdf",
+            "avery_example_cv_epsilon.pdf",
+            "avery_example_cv_beta_gmbh.pdf",
+            "avery_example_cv_zeta.pdf",
         ]
         assert all(archive.read(name, pwd=secret.encode()).startswith(b"%PDF")
                    for name in archive.namelist())

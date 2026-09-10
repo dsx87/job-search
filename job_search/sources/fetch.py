@@ -31,16 +31,20 @@ def parse_sources(value):
     return valid
 
 
-def default_source_names():
+def default_source_names(generic=False):
     """Names of the default-on sources, in registry order.
 
     A source is default-on unless it registered with ``default_enabled=False``.
     Uses ``getattr(..., True)`` so bare fake classes (as tests monkeypatch onto
     ALL_SOURCES) are treated as on."""
-    return [name for name, cls in ALL_SOURCES.items() if getattr(cls, "default_enabled", True)]
+    return [
+        name for name, cls in ALL_SOURCES.items()
+        if getattr(cls, "default_enabled", True)
+        and (not generic or getattr(cls, "generic_default_enabled", True))
+    ]
 
 
-def select_sources(enable=(), disable=()):
+def select_sources(enable=(), disable=(), *, generic=False):
     """Resolve which sources to run from enable/disable name lists.
 
     A source runs when it is explicitly enabled, or when it is default-on and
@@ -61,7 +65,11 @@ def select_sources(enable=(), disable=()):
     disabled_set = set(disable)
     selected = []
     for name, cls in ALL_SOURCES.items():
-        if name in enabled_set or (getattr(cls, "default_enabled", True) and name not in disabled_set):
+        if name in enabled_set or (
+            getattr(cls, "default_enabled", True)
+            and (not generic or getattr(cls, "generic_default_enabled", True))
+            and name not in disabled_set
+        ):
             selected.append(name)
     return selected
 
@@ -92,10 +100,16 @@ def regions_for_display(regions):
     return ",".join(reverse[region] for region in ordered if region in regions)
 
 
-def _fetch_source_with_diagnostics(source_name, source_cls, verbose, seen_jobs_file=None):
+def _fetch_source_with_diagnostics(
+    source_name, source_cls, verbose, seen_jobs_file=None, search=None, candidate=None,
+):
     source = source_cls()
     if seen_jobs_file is not None:
         source.seen_jobs_file = seen_jobs_file
+    # Sources remain constructor-compatible; query-capable sources read these
+    # optional immutable settings in fetch().
+    source.search = search
+    source.candidate = candidate
     if verbose:
         print("[{}] fetching...".format(source_name), flush=True)
     try:
@@ -150,8 +164,8 @@ def _source_health(name, jobs, error, source):
 
 
 def fetch_jobs_with_health(
-    source_names=None, relocation_regions=None, max_age=30, verbose=False,
-    budget_seconds=None, seen_jobs_file=None,
+    source_names=None, relocation_regions=None, max_age=None, verbose=False,
+    budget_seconds=None, seen_jobs_file=None, search=None, candidate=None,
 ):
     """Fetch and filter jobs, returning the list of Job objects.
 
@@ -163,7 +177,17 @@ def fetch_jobs_with_health(
     """
     if budget_seconds is None:
         budget_seconds = _budget_seconds_from_env(SCRAPE_BUDGET_SECONDS)
-    selected_names = source_names or default_source_names()
+    if source_names is None:
+        if search is None:
+            selected_names = default_source_names()
+        else:
+            selected_names = select_sources(
+                getattr(search, "sources_enable", ()),
+                getattr(search, "sources_disable", ()),
+                generic=True,
+            )
+    else:
+        selected_names = source_names
     selected = [(name, ALL_SOURCES[name]) for name in selected_names if name in ALL_SOURCES]
 
     if not selected:
@@ -182,7 +206,9 @@ def fetch_jobs_with_health(
     def worker(name, source_cls):
         with limiter:
             results.put(
-                _fetch_source_with_diagnostics(name, source_cls, verbose, seen_jobs_file)
+                _fetch_source_with_diagnostics(
+                    name, source_cls, verbose, seen_jobs_file, search, candidate
+                )
             )
 
     for name, source_cls in selected:
@@ -228,10 +254,18 @@ def fetch_jobs_with_health(
     if verbose:
         print("Raw jobs collected: {}".format(len(raw_jobs)), flush=True)
 
+    effective_max_age = (
+        getattr(search, "max_age_days", 30) if search is not None else 30
+    ) if max_age is None else max_age
+    effective_regions = (
+        DEFAULT_RELOCATION_REGIONS if relocation_regions is None else relocation_regions
+    )
     filtered = run_pipeline(
         raw_jobs,
-        max_age_days=max_age,
-        relocation_regions=relocation_regions or DEFAULT_RELOCATION_REGIONS,
+        max_age_days=effective_max_age,
+        relocation_regions=effective_regions,
+        search=search,
+        candidate=candidate,
     )
 
     if verbose:
@@ -242,8 +276,8 @@ def fetch_jobs_with_health(
 
 
 def fetch_jobs(
-    source_names=None, relocation_regions=None, max_age=30, verbose=False,
-    budget_seconds=None, seen_jobs_file=None,
+    source_names=None, relocation_regions=None, max_age=None, verbose=False,
+    budget_seconds=None, seen_jobs_file=None, search=None, candidate=None,
 ):
     """Compatibility wrapper returning only the filtered job list."""
     return list(fetch_jobs_with_health(
@@ -253,11 +287,25 @@ def fetch_jobs(
         verbose=verbose,
         budget_seconds=budget_seconds,
         seen_jobs_file=seen_jobs_file,
+        search=search,
+        candidate=candidate,
     ).jobs)
 
 
-def run_scraper(source_names=None, relocation_regions=None, max_age=30, as_json=False, verbose=False):
-    selected_names = source_names or default_source_names()
+def run_scraper(
+    source_names=None, relocation_regions=None, max_age=None, as_json=False,
+    verbose=False, search=None, candidate=None, budget_seconds=None,
+):
+    if source_names is None:
+        selected_names = (
+            default_source_names() if search is None else select_sources(
+                getattr(search, "sources_enable", ()),
+                getattr(search, "sources_disable", ()),
+                generic=True,
+            )
+        )
+    else:
+        selected_names = source_names
     selected = [(name, ALL_SOURCES[name]) for name in selected_names if name in ALL_SOURCES]
 
     if not selected:
@@ -272,6 +320,9 @@ def run_scraper(source_names=None, relocation_regions=None, max_age=30, as_json=
         relocation_regions=relocation_regions,
         max_age=max_age,
         verbose=verbose,
+        budget_seconds=budget_seconds,
+        search=search,
+        candidate=candidate,
     )
 
     print(format_source_health(report), file=sys.stderr)
@@ -327,8 +378,9 @@ def render_jobs(jobs, as_json=False):
         print("")
 
 
-def print_sources():
+def print_sources(generic=False):
+    enabled = set(default_source_names(generic=generic))
     print("Available sources:")
     for name in ALL_SOURCES:
-        marker = "" if getattr(ALL_SOURCES[name], "default_enabled", True) else "  (default: off)"
+        marker = "" if name in enabled else "  (default: off)"
         print("  {:18} {}{}".format(name, SOURCE_DESCRIPTIONS.get(name, ""), marker))

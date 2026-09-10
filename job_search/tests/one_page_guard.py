@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """CI self-test for the single-page CV guard (requires pdflatex).
 
-Verifies the two halves of the one-page guarantee:
-  1. The hand-tuned base CV compiles to exactly one page.
+Verifies the two halves of the one-page guarantee using an explicit fictional
+fixture:
+  1. The supplied base CV compiles to exactly one page.
   2. A malformed source that still emits a PDF is rejected on nonzero exit.
   3. latex.onepage._shrink_to_one_page deterministically pulls an overflowing CV
      back to exactly one page.
@@ -14,11 +15,15 @@ to recover it. Exits non-zero on any failure so CI fails loudly.
 
 Run with: python -m job_search.tests.one_page_guard
 """
+import argparse
 import sys
+from pathlib import Path
 
-from ..config import BASE_TEX_FILE
 from ..latex.compile import _compile_latex
 from ..latex.onepage import _shrink_to_one_page
+
+
+DEFAULT_FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "fictional_candidate.tex"
 
 
 def _blow_up(tex: str) -> str:
@@ -29,17 +34,26 @@ def _blow_up(tex: str) -> str:
     real body size, plus the \\cvitemsep/\\cvtopsep list lengths) so the shrink
     ladder — which re-issues those same knobs after this block — can recover it."""
     blow = (
-        "\\renewcommand{\\cvbasefont}{\\fontsize{13pt}{16pt}\\selectfont}\n"
-        "\\geometry{top=2.2cm,bottom=2.2cm}\n"
-        "\\setstretch{1.3}\n"
-        "\\setlength{\\cvitemsep}{6pt}\\setlength{\\cvtopsep}{8pt}\n"
+        "\\renewcommand{\\cvbasefont}{\\fontsize{16pt}{20pt}\\selectfont}\n"
+        "\\geometry{top=10cm,bottom=10cm}\n"
+        "\\setstretch{1.4}\n"
+        "\\setlength{\\cvitemsep}{10pt}\\setlength{\\cvtopsep}{12pt}\n"
     )
     return tex.replace("\\begin{document}", blow + "\\begin{document}", 1)
 
 
-def main() -> int:
-    with open(BASE_TEX_FILE, encoding="utf-8") as f:
-        tex = f.read()
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--fixture", type=Path, default=DEFAULT_FIXTURE,
+        help="fictional LaTeX fixture to compile (default: %(default)s)",
+    )
+    args = parser.parse_args(argv)
+    try:
+        tex = args.fixture.read_text(encoding="utf-8")
+    except OSError as exc:
+        print("FAIL: cannot read fixture {}: {}".format(args.fixture, exc), file=sys.stderr)
+        return 1
 
     # 1. Base CV must be exactly one page.
     result = _compile_latex(tex)
@@ -49,7 +63,7 @@ def main() -> int:
     if result.page_count != 1:
         print(f"FAIL: base CV is {result.page_count} pages, expected exactly 1.", file=sys.stderr)
         return 1
-    print("PASS: base CV compiles to exactly 1 page.")
+    print("PASS: fictional base CV compiles to exactly 1 page.")
 
     # 2. Nonstop mode can emit a PDF despite compiler errors. The wrapper must
     # reject that artifact based on the nonzero return code.

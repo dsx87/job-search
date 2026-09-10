@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 # --- modules under test (repoint on migration) ---
-from job_search.profile import validate_tailored_cv, EXPECTED_JOB_ORDER
+from job_search.profile import validate_tailored_cv
 from job_search.latex import compile as compile_mod
 from job_search.latex import onepage as onepage_mod
 from job_search.latex.compile import (
@@ -20,7 +20,10 @@ from job_search.latex.compile import (
 from job_search.latex.onepage import _apply_density_overrides, ONE_PAGE_SHRINK_LADDER
 
 
-def _cv(order=("Check Point", "Applitools", "Shutterfly", "CNOGA"), extra=""):
+EMPLOYERS = ("Example Labs", "Sample Systems")
+
+
+def _cv(order=EMPLOYERS, extra=""):
     headers = "\n".join(f"\\jobheader{{{c} Ltd}}" for c in order)
     return (
         "\\documentclass[9.5pt]{article}\n"
@@ -47,33 +50,42 @@ def test_strip_latex_fences_passthrough_when_no_document():
 
 
 def test_validate_tailored_cv_clean():
-    assert validate_tailored_cv(_cv()) == []
+    assert validate_tailored_cv(_cv(), expected_job_order=EMPLOYERS) == []
 
 
 def test_validate_tailored_cv_out_of_order():
-    v = validate_tailored_cv(_cv(order=("Check Point", "Shutterfly", "Applitools", "CNOGA")))
+    v = validate_tailored_cv(
+        _cv(order=("Sample Systems", "Example Labs")), expected_job_order=EMPLOYERS
+    )
     assert len(v) == 1
     assert "out of order" in v[0]
 
 
 def test_validate_tailored_cv_missing_job():
-    v = validate_tailored_cv(_cv(order=("Check Point", "Applitools", "Shutterfly")))
+    v = validate_tailored_cv(_cv(order=("Example Labs",)), expected_job_order=EMPLOYERS)
     assert any("missing job" in x for x in v)
 
 
 def test_validate_tailored_cv_forbidden_term():
-    v = validate_tailored_cv(_cv(extra="Deep experience in banking systems."))
-    assert any("forbidden term present: 'banking'" == x for x in v)
+    v = validate_tailored_cv(
+        _cv(extra="A forbidden claim."), forbidden_term_patterns=(r"forbidden claim",)
+    )
+    assert any("forbidden term present: 'forbidden claim'" == x for x in v)
 
 
 def test_validate_tailored_cv_forbidden_cpp_development():
-    v = validate_tailored_cv(_cv(extra="Developed C++ shared libraries at Check Point."))
+    v = validate_tailored_cv(
+        _cv(extra="Developed C++ shared libraries."),
+        forbidden_term_patterns=(r"develop\w* c\+\+",),
+    )
     assert any(x.startswith("forbidden term present:") and "C++" in x for x in v)
 
 
 def test_validate_tailored_cv_allows_cpp_interop():
-    # Swift/C++ interop is truthful and must not be flagged.
-    assert validate_tailored_cv(_cv(extra="Used Swift/C++ interop; C++ Interop.")) == []
+    assert validate_tailored_cv(
+        _cv(extra="Used Swift/C++ interop; C++ Interop."),
+        forbidden_term_patterns=(r"develop\w* c\+\+",),
+    ) == []
 
 
 def testpdf_pages_from_log(tmp_path):
@@ -112,8 +124,8 @@ def test_apply_density_overrides_inserts_block_with_tunable_macros():
     assert "\\renewcommand{\\arraystretch}{0.95}" in out
 
 
-def test_expected_job_order_constant():
-    assert EXPECTED_JOB_ORDER == ["Check Point", "Applitools", "Shutterfly", "CNOGA"]
+def test_default_validator_has_no_candidate_specific_guard():
+    assert validate_tailored_cv(_cv(extra="A forbidden claim.")) == []
 
 
 def _fake_pdflatex(monkeypatch, returncodes, pdf_bytes=b"PDF", log_text=None):
@@ -218,6 +230,21 @@ def test_compile_with_fixes_repairs_compiler_failure(monkeypatch, fake_llm):
     assert len(client.prompts) == 1
 
 
+def test_compile_with_fixes_keeps_the_explicit_limit_after_a_repair(monkeypatch, fake_llm):
+    results = iter(
+        [
+            CompileResult(False, None, "undefined control sequence", None, True),
+            CompileResult(True, b"TWO", "", 2, False),
+        ]
+    )
+    monkeypatch.setattr(compile_mod, "_compile_latex", lambda _tex, **_kw: next(results))
+    client = fake_llm(["fixed source"])
+
+    assert compile_with_fixes(
+        client, "broken source", max_pages=2, return_page_count=True
+    ) == (True, b"TWO", "fixed source", 2)
+
+
 def test_compile_with_fixes_accepts_known_one_page_result(monkeypatch, fake_llm):
     monkeypatch.setattr(
         compile_mod,
@@ -228,6 +255,98 @@ def test_compile_with_fixes_accepts_known_one_page_result(monkeypatch, fake_llm)
     assert compile_with_fixes(fake_llm([]), "source") == (True, b"PDF", "source")
 
 
+def test_compile_with_fixes_accepts_a_verified_page_count_within_explicit_limit(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex, **_kw: CompileResult(True, b"TWO", "", 2, False),
+    )
+
+    assert compile_with_fixes(
+        fake_llm([]), "source", max_pages=2, return_page_count=True
+    ) == (
+        True, b"TWO", "source", 2,
+    )
+
+
+def test_compile_with_fixes_shrinks_only_when_page_count_exceeds_explicit_limit(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex, **_kw: CompileResult(True, b"THREE", "", 3, False),
+    )
+    monkeypatch.setattr(
+        onepage_mod,
+        "_shrink_to_page_limit",
+        lambda tex, pdf, pages, max_pages, **_kw: (b"TWO", "shrunk", 2),
+    )
+
+    assert compile_with_fixes(
+        fake_llm([]), "source", max_pages=2, return_page_count=True
+    ) == (
+        True, b"TWO", "shrunk", 2,
+    )
+
+
+def test_compile_with_fixes_reports_the_verified_count_when_shrink_is_exhausted(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda _tex, **_kw: CompileResult(True, b"THREE", "", 3, False),
+    )
+    monkeypatch.setattr(
+        onepage_mod,
+        "_shrink_to_page_limit",
+        lambda tex, pdf, pages, max_pages, **_kw: (b"THREE", "shrunk", 3),
+    )
+
+    assert compile_with_fixes(
+        fake_llm([]), "source", max_pages=2, return_page_count=True
+    ) == (False, None, "shrunk", 3)
+
+
+def test_compiler_preserves_the_actual_verified_page_count(monkeypatch, fake_llm):
+    monkeypatch.setattr(
+        compile_mod,
+        "compile_with_fixes",
+        lambda *args, **kwargs: (True, b"TWO", "final", 2),
+    )
+
+    result = compile_mod.LatexCompiler().compile(fake_llm([]), "source", max_pages=2)
+
+    assert result.ok is True
+    assert result.page_count == 2
+    assert result.tex_source == "final"
+
+
+@pytest.mark.parametrize("max_pages", (True, False, 0, -1, 1.5, "2"))
+def test_compile_base_rejects_invalid_explicit_page_limits_before_compiling(monkeypatch, max_pages):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not compile")),
+    )
+
+    with pytest.raises(ValueError, match="max_pages"):
+        compile_mod.LatexCompiler().compile_base("source", max_pages=max_pages)
+
+
+@pytest.mark.parametrize("page_count", (None, 0, -1, True, False))
+def test_compile_base_rejects_invalid_verified_page_counts(monkeypatch, page_count):
+    monkeypatch.setattr(
+        compile_mod,
+        "_compile_latex",
+        lambda *_args, **_kwargs: CompileResult(True, b"PDF", "", page_count, False, "source"),
+    )
+
+    result = compile_mod.LatexCompiler().compile_base("source", max_pages=1)
+
+    assert result.ok is False
+    assert result.pdf_bytes is None
+    assert result.page_count == page_count
+    assert "verified page count" in result.error_excerpt
+
+
 def test_compile_with_fixes_rejects_unrecoverable_multi_page_result(monkeypatch, fake_llm):
     monkeypatch.setattr(
         compile_mod,
@@ -236,8 +355,8 @@ def test_compile_with_fixes_rejects_unrecoverable_multi_page_result(monkeypatch,
     )
     monkeypatch.setattr(
         onepage_mod,
-        "_shrink_to_one_page",
-        lambda tex, pdf, pages, **_kw: (b"STILL_TWO", "shrunk", 2),
+        "_shrink_to_page_limit",
+        lambda tex, pdf, pages, max_pages, **_kw: (b"STILL_TWO", "shrunk", 2),
     )
 
     assert compile_with_fixes(fake_llm([]), "source") == (False, None, "shrunk")

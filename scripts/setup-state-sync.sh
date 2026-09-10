@@ -10,7 +10,7 @@ mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
 
 # 1. Deploy keypair (ed25519, no passphrase -> usable from unattended systemd).
 if [ ! -f "$KEY" ]; then
-  ssh-keygen -t ed25519 -N "" -f "$KEY" -C "rpi-igor job-search state deploy key" >/dev/null
+  ssh-keygen -t ed25519 -N "" -f "$KEY" -C "rpi job-search state deploy key" >/dev/null
   echo "generated $KEY"
 else
   echo "key already exists: $KEY"
@@ -54,8 +54,8 @@ else
   echo ".state already exists"
 fi
 git -C "$REPO/.state" remote set-url origin "git@github-state:dsx87/job-search.git"
-git -C "$REPO/.state" config user.name  "RPi-Igor"
-git -C "$REPO/.state" config user.email "consul87@gmail.com"
+git -C "$REPO/.state" config user.name "Job Search State"
+git -C "$REPO/.state" config user.email "job-search-state@users.noreply.github.com"
 echo "state remote -> $(git -C "$REPO/.state" remote get-url origin)"
 
 # 5. Keep .state out of the main repo's git status.

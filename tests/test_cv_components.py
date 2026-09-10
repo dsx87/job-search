@@ -1,14 +1,36 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from job_search.components import CVArtifact, CandidateProfile, DefaultCVRenderer, LatexCompiler
-from job_search.config import PipelineConfig, load_base_tex
+from job_search.config import PipelineConfig
 from job_search.digest.model import FitEntry, ReviewEntry
 from job_search.latex import compile as compile_mod
 from job_search.latex.compile import CompileResult
 from job_search.models import Job
 from job_search.llm.tailor import tailor_resume
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "fictional_candidate.tex"
+
+
+def _base_tex():
+    return FIXTURE.read_text(encoding="utf-8")
+
+
+def _avery_profile(**overrides):
+    values = {
+        "display_name": "Avery Example",
+        "base_tex_path": str(FIXTURE),
+        "rendered_base_path": "avery_example_base.pdf",
+        "cv_filename_prefix": "avery_example_cv",
+        "employer_order": ("Example Labs", "Sample Systems"),
+        "forbidden_claim_patterns": (),
+    }
+    values.update(overrides)
+    return CandidateProfile(**values)
 
 
 class SelectingLLM:
@@ -25,7 +47,7 @@ class SuccessfulCompiler:
     def __init__(self):
         self.sources = []
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         self.sources.append(tex_source)
         return CompileResult(True, b"PDF", "", 1, False, tex_source)
 
@@ -37,12 +59,39 @@ class FailFastBaseCompiler:
         self.tex_source = tex_source
         self.base_calls = []
 
-    def compile_base(self, source):
+    def compile_base(self, source, *, max_pages=1):
         self.base_calls.append(source)
         return CompileResult(True, b"BASE-PDF", "", 1, False, self.tex_source)
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         raise AssertionError("base rendering must not enter repair/shrink compilation")
+
+
+class LimitRecordingCompiler:
+    executable = "fake"
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
+        self.calls.append(("tailored", max_pages, tex_source))
+        return CompileResult(True, b"PDF", "", self.pages, False, tex_source)
+
+    def compile_base(self, tex_source, *, max_pages=1):
+        self.calls.append(("base", max_pages, tex_source))
+        return CompileResult(True, b"BASE", "", self.pages, False, tex_source)
+
+
+class PerLimitCompiler:
+    executable = "fake"
+
+    def __init__(self):
+        self.calls = []
+
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
+        self.calls.append(max_pages)
+        return CompileResult(True, b"PDF", "", max_pages, False, tex_source)
 
 
 class SelectionLLM:
@@ -130,11 +179,7 @@ def test_latex_compiler_uses_configured_executable_for_both_passes(monkeypatch, 
 
 def test_default_cv_renderer_returns_profile_named_artifact():
     compiler = SuccessfulCompiler()
-    profile = CandidateProfile(
-        display_name="Ada Example",
-        base_tex_path="igor_pivnyk_cv_base_updated.tex",
-        cv_filename_prefix="ada_example_cv",
-    )
+    profile = _avery_profile()
     renderer = DefaultCVRenderer(
         PipelineConfig(), profile, compiler=compiler
     )
@@ -146,7 +191,7 @@ def test_default_cv_renderer_returns_profile_named_artifact():
     artifact = renderer.render_tailored(SelectingLLM(), job)
 
     assert artifact == CVArtifact(
-        "ada_example_cv_example_labs.pdf", "application/pdf", b"PDF"
+        "avery_example_cv_example_labs.pdf", "application/pdf", b"PDF"
     )
     assert compiler.sources and profile.validate_tex(compiler.sources[0]) == []
 
@@ -154,9 +199,9 @@ def test_default_cv_renderer_returns_profile_named_artifact():
 def test_default_base_renderer_uses_fail_fast_compile_and_validates_source():
     from job_search.pipeline.stages import CVPreparationError
 
-    base_source = load_base_tex()
+    base_source = _base_tex()
     compiler = FailFastBaseCompiler(base_source)
-    profile = CandidateProfile()
+    profile = _avery_profile()
     renderer = DefaultCVRenderer(PipelineConfig(), profile, compiler=compiler)
 
     artifact = renderer.render_base(SelectionLLM())
@@ -165,9 +210,70 @@ def test_default_base_renderer_uses_fail_fast_compile_and_validates_source():
     assert compiler.base_calls == [base_source]
 
     unsafe = FailFastBaseCompiler(base_source + " banking")
-    unsafe_renderer = DefaultCVRenderer(PipelineConfig(), profile, compiler=unsafe)
+    guarded_profile = _avery_profile(forbidden_claim_patterns=(r"banking",))
+    unsafe_renderer = DefaultCVRenderer(PipelineConfig(), guarded_profile, compiler=unsafe)
     with pytest.raises(CVPreparationError, match="validation"):
         unsafe_renderer.render_base(SelectionLLM())
+
+
+def test_tailored_renderer_resolves_one_immutable_job_page_limit():
+    compiler = LimitRecordingCompiler(pages=2)
+    profile = _avery_profile(max_pages_by_country={"DE": 2})
+    renderer = DefaultCVRenderer(PipelineConfig(), profile, compiler=compiler)
+
+    artifact = renderer.render_tailored(
+        SelectingLLM(),
+        Job(title="iOS", company="Acme", location="Germany", description="Swift role. " * 20),
+    )
+
+    assert artifact.content == b"PDF"
+    assert [(kind, limit) for kind, limit, _source in compiler.calls] == [("tailored", 2)]
+
+
+def test_renderer_rejects_a_successful_result_above_the_resolved_limit():
+    from job_search.pipeline.stages import CVPreparationError
+
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), _avery_profile(max_pages_by_country={"DE": 2}),
+        compiler=LimitRecordingCompiler(pages=3),
+    )
+
+    with pytest.raises(CVPreparationError, match="within 2 pages"):
+        renderer.render_tailored(
+            SelectingLLM(),
+            Job(title="iOS", company="Acme", location="Germany", description="Swift role. " * 20),
+        )
+
+
+def test_base_renderer_uses_fallback_limit_without_repair_or_shrink():
+    compiler = LimitRecordingCompiler(pages=2)
+    renderer = DefaultCVRenderer(
+        PipelineConfig(), _avery_profile(max_pages=2), compiler=compiler
+    )
+
+    artifact = renderer.render_base(SelectionLLM())
+
+    assert artifact.content == b"BASE"
+    assert [(kind, limit) for kind, limit, _source in compiler.calls] == [("base", 2)]
+
+
+def test_concurrent_tailoring_keeps_each_jobs_resolved_limit():
+    compiler = PerLimitCompiler()
+    renderer = DefaultCVRenderer(
+        PipelineConfig(),
+        _avery_profile(max_pages_by_country={"DE": 2, "FR": 3}),
+        compiler=compiler,
+    )
+    jobs = (
+        Job(title="iOS", company="Berlin", location="Germany", description="Swift role. " * 20),
+        Job(title="iOS", company="Paris", location="France", description="Swift role. " * 20),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        artifacts = list(pool.map(lambda job: renderer.render_tailored(SelectingLLM(), job), jobs))
+
+    assert [artifact.content for artifact in artifacts] == [b"PDF", b"PDF"]
+    assert sorted(compiler.calls) == [2, 3]
 
 
 def test_digest_entries_accept_generic_artifacts_and_keep_pdf_compatibility():
@@ -192,10 +298,10 @@ def test_render_base_command_writes_to_configured_output_path(monkeypatch, tmp_p
     from job_search.latex import render_base
 
     monkeypatch.chdir(tmp_path)
-    out = tmp_path / "configured-base.pdf"
+    out = tmp_path / "nested" / "configured-base.pdf"
     manifest = tmp_path / "rendered-path.txt"
     monkeypatch.setenv("JOB_SEARCH_RENDER_BASE_MANIFEST", str(manifest))
-    settings = PipelineConfig(rendered_base_file=str(out))
+    settings = PipelineConfig(base_tex_file="configured.tex", rendered_base_file=str(out))
     calls = []
 
     class Renderer:
@@ -213,6 +319,70 @@ def test_render_base_command_writes_to_configured_output_path(monkeypatch, tmp_p
     assert calls == [llm]
 
 
+def test_render_base_command_rejects_missing_cv_paths(monkeypatch, capsys):
+    from job_search.latex import render_base
+
+    monkeypatch.setattr(
+        render_base,
+        "build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not build runtime")),
+    )
+
+    assert render_base.main(PipelineConfig(base_tex_file="", rendered_base_file="")) == 1
+    assert "base_tex_file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failure", ("parent", "manifest"))
+def test_render_base_command_reports_output_write_failures(monkeypatch, tmp_path, capsys, failure):
+    from job_search.latex import render_base
+
+    class Renderer:
+        def render_base(self, llm=None):
+            return CVArtifact("base.pdf", "application/pdf", b"PDF")
+
+    monkeypatch.setattr(
+        render_base,
+        "build_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(cv_renderer=Renderer(), llm=object()),
+    )
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    output = blocked / "base.pdf" if failure == "parent" else tmp_path / "base.pdf"
+    if failure == "manifest":
+        manifest_directory = tmp_path / "manifest-directory"
+        manifest_directory.mkdir()
+        monkeypatch.setenv("JOB_SEARCH_RENDER_BASE_MANIFEST", str(manifest_directory))
+
+    assert render_base.main(
+        PipelineConfig(base_tex_file=str(FIXTURE), rendered_base_file=str(output))
+    ) == 1
+    assert "output write failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "configuration_error",
+    ("base_tex_path does not name a readable file: missing.tex", "LaTeX executable is unavailable"),
+)
+def test_render_base_command_reports_runtime_configuration_errors(
+    monkeypatch, tmp_path, capsys, configuration_error
+):
+    from job_search.config import ConfigurationError
+    from job_search.latex import render_base
+
+    monkeypatch.setattr(
+        render_base,
+        "build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ConfigurationError(configuration_error)),
+    )
+
+    assert render_base.main(
+        PipelineConfig(base_tex_file=str(FIXTURE), rendered_base_file=str(tmp_path / "base.pdf"))
+    ) == 1
+    error = capsys.readouterr().err
+    assert "ERROR: base CV rendering failed" in error
+    assert configuration_error in error
+
+
 def test_render_base_command_output_path_overrides_default_renderers_profile(
     monkeypatch, tmp_path
 ):
@@ -221,8 +391,8 @@ def test_render_base_command_output_path_overrides_default_renderers_profile(
     from job_search.latex import render_base
 
     out = tmp_path / "ada-base.pdf"
-    settings = PipelineConfig(rendered_base_file=str(out))
-    profile = CandidateProfile(
+    settings = PipelineConfig(base_tex_file=str(FIXTURE), rendered_base_file=str(out))
+    profile = _avery_profile(
         rendered_base_path=str(tmp_path / "ignored-profile-path.pdf")
     )
     renderer = DefaultCVRenderer(settings, profile, compiler=SuccessfulCompiler())
@@ -236,6 +406,30 @@ def test_render_base_command_output_path_overrides_default_renderers_profile(
     assert out.read_bytes() == b"ADA"
 
 
+def test_render_base_reports_a_verified_pdf_without_claiming_one_page(monkeypatch, tmp_path, capsys):
+    from job_search.latex import render_base
+
+    output = tmp_path / "base.pdf"
+
+    class Renderer:
+        def render_base(self, llm=None):
+            return CVArtifact("base.pdf", "application/pdf", b"PDF")
+
+    monkeypatch.setattr(
+        render_base,
+        "build_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(cv_renderer=Renderer(), llm=object()),
+    )
+
+    assert render_base.main(
+        PipelineConfig(base_tex_file=str(FIXTURE), rendered_base_file=str(output))
+    ) == 0
+
+    message = capsys.readouterr().out
+    assert "1 page" not in message
+    assert "verified PDF" in message
+
+
 # --- behaviors that used to live on stages.prepare_fit -----------------------
 # The tailoring/compilation/validation guarantees moved onto DefaultCVRenderer
 # when the pipeline lost its second, legacy preparation path. They are asserted
@@ -245,7 +439,7 @@ def test_render_base_command_output_path_overrides_default_renderers_profile(
 class FailingCompiler:
     executable = "fake"
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         return CompileResult(False, None, "compilation failed", 0, False, tex_source)
 
 
@@ -257,7 +451,7 @@ class RepairingCompiler:
     def __init__(self, repaired):
         self.repaired = repaired
 
-    def compile(self, llm, tex_source, max_attempts=3):
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
         return CompileResult(True, b"PDF", "", 1, False, self.repaired)
 
 
@@ -273,7 +467,7 @@ def test_cv_renderer_requires_verified_pdf():
     from job_search.pipeline.stages import CVPreparationError
 
     renderer = DefaultCVRenderer(
-        PipelineConfig(), CandidateProfile(), compiler=FailingCompiler()
+        PipelineConfig(), _avery_profile(), compiler=FailingCompiler()
     )
 
     with pytest.raises(CVPreparationError):
@@ -284,8 +478,8 @@ def test_cv_renderer_revalidates_compiler_repair_output():
     """A repair pass that adds a fabricated claim must not reach delivery."""
     from job_search.pipeline.stages import CVPreparationError
 
-    profile = CandidateProfile()
-    clean = load_base_tex()
+    profile = _avery_profile(forbidden_claim_patterns=(r"banking",))
+    clean = _base_tex()
     repaired_with_false_claim = clean.replace(
         "\\end{document}", "Built consumer banking systems.\\end{document}"
     )
@@ -306,7 +500,7 @@ def test_cv_renderer_accepts_a_raw_scraped_mapping():
     a correctly named artifact rather than an attribute error."""
     compiler = SuccessfulCompiler()
     renderer = DefaultCVRenderer(
-        PipelineConfig(), CandidateProfile(), compiler=compiler
+        PipelineConfig(), _avery_profile(), compiler=compiler
     )
 
     artifact = renderer.render_tailored(
@@ -314,8 +508,8 @@ def test_cv_renderer_accepts_a_raw_scraped_mapping():
         {"title": "iOS", "company": "Example Labs", "description": "Swift role. " * 40},
     )
 
-    assert artifact.filename == "igor_pivnyk_cv_example_labs.pdf"
-    assert compiler.sources and CandidateProfile().validate_tex(compiler.sources[0]) == []
+    assert artifact.filename == "avery_example_cv_example_labs.pdf"
+    assert compiler.sources and _avery_profile().validate_tex(compiler.sources[0]) == []
 
     # A posting with no company still yields a usable name, and the name does
     # not depend on the URL (it used to carry a hash of it).
@@ -324,7 +518,7 @@ def test_cv_renderer_accepts_a_raw_scraped_mapping():
         {"title": "iOS", "company": "", "url": "https://x/1?ref=2",
          "description": "Swift role. " * 40},
     )
-    assert unnamed.filename == "igor_pivnyk_cv_unknown.pdf"
+    assert unnamed.filename == "avery_example_cv_unknown.pdf"
 
 
 def test_tailor_resume_canonicalizes_its_job_argument(monkeypatch):
@@ -336,9 +530,9 @@ def test_tailor_resume_canonicalizes_its_job_argument(monkeypatch):
     )
 
     tailor_resume(
-        SelectingLLM(), "instr", load_base_tex(),
+        SelectingLLM(), "instr", _base_tex(),
         {"title": "iOS", "company": "Acme", "description": "Swift role. " * 40},
-        CandidateProfile(),
+        _avery_profile(),
     )
 
     assert isinstance(received[0], Job)

@@ -1,7 +1,7 @@
 """Deterministic one-page auto-shrink ladder for tailored CVs."""
 import sys
 
-from .compile import _compile_latex
+from .compile import _compile_latex, _positive_max_pages
 
 # Progressive density steps, gentlest first. Each step holds ABSOLUTE target
 # values (applied to the original tailored .tex, never stacked) so the first
@@ -53,17 +53,21 @@ def _apply_density_overrides(tex_source: str, step: dict) -> str:
     return tex_source  # malformed; leave untouched so the caller keeps the original
 
 
-def _shrink_to_one_page(
-    tex_source: str, pdf_bytes: bytes, page_count: int, compile_fn=None
+def _shrink_to_page_limit(
+    tex_source: str, pdf_bytes: bytes, page_count: int, max_pages: int, compile_fn=None
 ) -> tuple:
-    """Force a compiled-but-overflowing CV down to a single page.
+    """Bring a compiled-but-overflowing CV within ``max_pages`` if possible.
 
     Walks ONE_PAGE_SHRINK_LADDER (gentlest first), recompiling each candidate,
-    and returns the first that renders as exactly one page. If none reaches one
-    page, returns the fewest-page candidate seen (or the original). Returns
+    and returns the first that renders within the explicit limit. If none does,
+    returns the fewest-page candidate seen (or the original). Returns
     (pdf_bytes, final_tex, page_count).
     """
-    print(f"    PDF is {page_count} pages — auto-shrinking density to fit one page...", flush=True)
+    max_pages = _positive_max_pages(max_pages)
+    print(
+        f"    PDF is {page_count} pages — auto-shrinking density to fit {max_pages} pages...",
+        flush=True,
+    )
     compile_fn = compile_fn or _compile_latex
     best = (pdf_bytes, tex_source, page_count)
     for i, step in enumerate(ONE_PAGE_SHRINK_LADDER, 1):
@@ -73,12 +77,25 @@ def _shrink_to_one_page(
             continue
         if result.page_count < best[2]:
             best = (result.pdf_bytes, candidate, result.page_count)
-        if result.page_count == 1:
-            print(f"    Auto-shrink fit one page at step {i}/{len(ONE_PAGE_SHRINK_LADDER)}.", flush=True)
-            return result.pdf_bytes, candidate, 1
+        if 1 <= result.page_count <= max_pages:
+            print(
+                f"    Auto-shrink fit {result.page_count} pages at step "
+                f"{i}/{len(ONE_PAGE_SHRINK_LADDER)}.",
+                flush=True,
+            )
+            return result.pdf_bytes, candidate, result.page_count
     print(
-        f"    Auto-shrink could not reach one page (best {best[2]} pages) — "
+        f"    Auto-shrink could not reach {max_pages} pages (best {best[2]} pages) — "
         f"blocking delivery.",
         file=sys.stderr,
     )
     return best
+
+
+def _shrink_to_one_page(
+    tex_source: str, pdf_bytes: bytes, page_count: int, compile_fn=None
+) -> tuple:
+    """Compatibility wrapper for the established one-page guard."""
+    return _shrink_to_page_limit(
+        tex_source, pdf_bytes, page_count, 1, compile_fn=compile_fn
+    )

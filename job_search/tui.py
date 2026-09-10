@@ -6,13 +6,15 @@ import curses
 import threading
 import webbrowser
 
+from .config import PipelineConfig, require_search_configured
 from .sources.fetch import fetch_jobs_with_health
 from .sources.health import format_source_health
 from .state.job_store import JobStore
 
 
 class JobTUI:
-    def __init__(self):
+    def __init__(self, settings=None):
+        self.settings = settings
         self.store = JobStore()
         self.jobs = []
         self.cursor = 0
@@ -152,7 +154,13 @@ class JobTUI:
 
         def worker():
             try:
-                report = fetch_jobs_with_health(verbose=False)
+                settings = getattr(self, "settings", None) or PipelineConfig.from_env()
+                require_search_configured(settings)
+                options = {}
+                if getattr(settings, "settings_file", ""):
+                    options.update(search=settings.search, candidate=settings.candidate,
+                                   budget_seconds=settings.scrape_budget_seconds)
+                report = fetch_jobs_with_health(verbose=False, **options)
                 if not report.has_usable_source:
                     raise RuntimeError("No usable job source completed")
                 self.store.merge(report.jobs, incomplete_sources=report.incomplete_sources)

@@ -3,6 +3,7 @@ import datetime
 import io
 import json
 import urllib.error
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 # --- modules under test (repoint on migration) ---
 import job_search.llm.clients as clients_module
 from job_search.components import CandidateProfile
-from job_search.config import ConfigurationError, load_base_tex
+from job_search.config import ConfigurationError
 from job_search.latex.tailor_render import extract_job_bullets
 from job_search.llm.clients import (
     SCHEME_DEFAULT_BASE,
@@ -25,7 +26,25 @@ from job_search.llm.cv_edits import CV_EDIT_SCHEMA, select_cv_bullets
 from job_search.llm.eval import evaluate_job
 from job_search.llm.facts import FACT_SCHEMA, _normalize_facts, extract_facts
 from job_search.llm.tailor import CVValidationError, tailor_resume
-from job_search.profile import EXPECTED_JOB_ORDER, validate_tailored_cv
+from job_search.profile import validate_tailored_cv
+
+
+CV_FIXTURE = Path(__file__).parent / "fixtures" / "fictional_candidate.tex"
+CV_EMPLOYERS = ("Example Labs", "Sample Systems")
+
+
+def _cv_base():
+    return CV_FIXTURE.read_text(encoding="utf-8")
+
+
+def _avery_profile():
+    return CandidateProfile(
+        display_name="Avery Example",
+        base_tex_path=str(CV_FIXTURE),
+        cv_filename_prefix="avery_example_cv",
+        employer_order=CV_EMPLOYERS,
+        forbidden_claim_patterns=(),
+    )
 
 
 def _http_error(code):
@@ -1236,22 +1255,22 @@ def test_evaluate_job_extracts_for_israeli_non_english_posting():
 
 
 def test_select_cv_bullets_request_contract_and_selection():
-    client = _RecordingClient(['{"jobs":[{"company":"Check Point","keep_bullets":[0,1]}]}'])
+    client = _RecordingClient(['{"jobs":[{"company":"Example Labs","keep_bullets":[0,1]}]}'])
 
     selection = select_cv_bullets(
         client,
-        load_base_tex(),
+        _cv_base(),
         {"title": "iOS", "company": "Acme", "description": "We build iOS apps."},
-        CandidateProfile(),
+        _avery_profile(),
     )
 
     # the CV-edit schema is threaded through to the model
     assert client.kwargs[0]["response_schema"] == CV_EDIT_SCHEMA
     # the prompt enumerates the company and at least one of its bullets
-    assert "Check Point" in client.prompts[0]
-    assert "Trusted Network Detection" in client.prompts[0]
+    assert "Example Labs" in client.prompts[0]
+    assert "Implemented release automation" in client.prompts[0]
     # the parsed selection maps the company to its kept bullet indices
-    assert selection["Check Point"] == [0, 1]
+    assert selection["Example Labs"] == [0, 1]
 
 
 def test_select_cv_bullets_non_json_returns_empty_selection():
@@ -1259,9 +1278,9 @@ def test_select_cv_bullets_non_json_returns_empty_selection():
 
     selection = select_cv_bullets(
         client,
-        load_base_tex(),
+        _cv_base(),
         {"title": "iOS", "company": "Acme", "description": "desc"},
-        CandidateProfile(),
+        _avery_profile(),
     )
 
     assert selection == {}
@@ -1277,34 +1296,34 @@ def test_select_cv_bullets_prompt_surfaces_late_restriction():
     assert len(long_desc) > 7000
     assert "US residents only" not in long_desc[:7000]
 
-    client = _RecordingClient(['{"jobs":[{"company":"Check Point","keep_bullets":[0]}]}'])
+    client = _RecordingClient(['{"jobs":[{"company":"Example Labs","keep_bullets":[0]}]}'])
     select_cv_bullets(
         client,
-        load_base_tex(),
+        _cv_base(),
         {"title": "iOS", "company": "Acme", "description": long_desc},
-        CandidateProfile(),
+        _avery_profile(),
     )
 
     assert "US residents only" in client.prompts[0]
 
 
 def test_tailor_resume_renders_selected_bullets():
-    client = _RecordingClient(['{"jobs":[{"company":"Check Point","keep_bullets":[0]}]}'])
+    client = _RecordingClient(['{"jobs":[{"company":"Example Labs","keep_bullets":[0]}]}'])
 
     out = tailor_resume(
         client,
         "instr",
-        load_base_tex(),
+        _cv_base(),
         {"title": "iOS", "company": "Acme", "description": "d"},
-        CandidateProfile(),
+        _avery_profile(),
     )
 
-    assert validate_tailored_cv(out) == []
-    for company in EXPECTED_JOB_ORDER:
+    assert validate_tailored_cv(out, expected_job_order=CV_EMPLOYERS) == []
+    for company in CV_EMPLOYERS:
         assert company in out
-    rendered = {job["company"]: job for job in extract_job_bullets(out)}
-    assert len(rendered["Check Point"]["bullets"]) == 1
-    assert "((PHONE))" in out
+    rendered = {job["company"]: job for job in extract_job_bullets(out, CV_EMPLOYERS)}
+    assert len(rendered["Example Labs"]["bullets"]) == 1
+    assert "Avery Example" in out
 
 
 def test_tailor_resume_falls_back_on_bad_selection():
@@ -1313,15 +1332,15 @@ def test_tailor_resume_falls_back_on_bad_selection():
     out = tailor_resume(
         client,
         "instr",
-        load_base_tex(),
+        _cv_base(),
         {"title": "iOS", "company": "Acme", "description": "d"},
-        CandidateProfile(),
+        _avery_profile(),
     )
 
-    assert validate_tailored_cv(out) == []
-    jobs = extract_job_bullets(out)
-    assert [job["company"] for job in jobs] == EXPECTED_JOB_ORDER
-    assert [len(job["bullets"]) for job in jobs] == [6, 3, 3, 4]
+    assert validate_tailored_cv(out, expected_job_order=CV_EMPLOYERS) == []
+    jobs = extract_job_bullets(out, CV_EMPLOYERS)
+    assert [job["company"] for job in jobs] == list(CV_EMPLOYERS)
+    assert [len(job["bullets"]) for job in jobs] == [2, 2]
 
 
 def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
@@ -1330,12 +1349,14 @@ def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
     from job_search.llm.cv_edits import _parse_selection
 
     assert _parse_selection('{"jobs": 5}') == {}
-    assert _parse_selection('{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}') == {
-        "Check Point": []
+    assert _parse_selection(
+        '{"jobs": [{"company": "Example Labs", "keep_bullets": 3}]}', CV_EMPLOYERS
+    ) == {
+        "Example Labs": []
     }
-    client = _RecordingClient(['{"jobs": [{"company": "Check Point", "keep_bullets": 3}]}'])
+    client = _RecordingClient(['{"jobs": [{"company": "Example Labs", "keep_bullets": 3}]}'])
     out = tailor_resume(
-        client, "instr", load_base_tex(),
-        {"title": "iOS", "company": "Acme", "description": "d"}, CandidateProfile(),
+        client, "instr", _cv_base(),
+        {"title": "iOS", "company": "Acme", "description": "d"}, _avery_profile(),
     )
-    assert validate_tailored_cv(out) == []
+    assert validate_tailored_cv(out, expected_job_order=CV_EMPLOYERS) == []

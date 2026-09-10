@@ -1,0 +1,43 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1.7cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{setspace}
+\setlength{\parindent}{0pt}
+\newcommand{\cvbasefont}{\fontsize{10pt}{12pt}\selectfont}
+\newlength{\cvsecbefore}
+\newlength{\cvsecafter}
+\newlength{\cvitemsep}
+\newlength{\cvtopsep}
+\newlength{\cvparsep}
+\setlength{\cvsecbefore}{7pt}
+\setlength{\cvsecafter}{3pt}
+\setlength{\cvitemsep}{2pt}
+\setlength{\cvtopsep}{2pt}
+\setlength{\cvparsep}{0pt}
+\newcommand{\jobheader}[4]{\textbf{#1} \hfill #4\\#2 \hfill #3\\[-2pt]}
+\newcommand{\cvsection}[1]{\vspace{\cvsecbefore}\textbf{#1}\par\vspace{\cvsecafter}}
+\AtBeginDocument{\cvbasefont}
+
+\begin{document}
+\begin{center}
+  {\Large Avery Example}\\
+  \small Platform engineer focused on dependable developer infrastructure
+\end{center}
+
+\cvsection{Experience}
+\jobheader{Example Labs}{Platform Engineer}{Remote}{2022--Present}
+\begin{itemize}
+  \item Implemented release automation for Python services with repeatable deployment checks.
+  \item Legacy monitoring cleanup for an internal developer portal.
+\end{itemize}
+
+\jobheader{Sample Systems}{Infrastructure Engineer}{Remote}{2019--2022}
+\begin{itemize}
+  \item Created a shared incident handbook for distributed engineering teams.
+  \item Introduced reproducible infrastructure with Terraform modules and reviewable plans.
+\end{itemize}
+
+\cvsection{Skills}
+Python, Terraform, Linux, CI/CD, incident response
+
+\end{document}

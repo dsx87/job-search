@@ -1,21 +1,24 @@
 name: Verify CV one-page guard
 
-# Proves the single-page guarantee end-to-end with a real pdflatex compile:
-# the base CV is exactly one page, and the pipeline's auto-shrink recovers an
-# overflowing CV back to one page. Runs on changes to the guard's moving parts.
+# Proves page-limit enforcement using synthetic documents and a fictional
+# candidate fixture. It never loads private deployment configuration.
 on:
   workflow_dispatch:
   push:
     paths:
       - job_search/latex/**
       - job_search/llm/tailor.py
-      - igor_pivnyk_cv_base_updated.tex
+      - avery_example_base.tex
+      - tests/fixtures/fictional_candidate.tex
       - job_search/tests/one_page_guard.py
+      - job_search/tests/page_limit_guard.py
       - .github/workflows/verify_cv_one_page.yml
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repo
@@ -26,6 +29,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install test dependencies
+        run: pip install pytest 'pyzipper~=0.4.0'
+
       - name: Install LaTeX
         run: |
           sudo apt-get update -qq
@@ -33,5 +39,11 @@ jobs:
             texlive-latex-recommended \
             texlive-fonts-recommended
 
-      - name: Run one-page guard self-test
-        run: python3 -m job_search.tests.one_page_guard
+      - name: Run synthetic page-limit guard
+        run: python3 -m job_search.tests.page_limit_guard
+
+      - name: Run root fictional one-page shrink guard
+        run: python3 -m job_search.tests.one_page_guard --fixture avery_example_base.tex
+
+      - name: Run fictional candidate PDF flow
+        run: pytest tests/test_fictional_candidate_flow.py

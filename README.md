@@ -5,25 +5,48 @@
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-An autonomous, self-hosted job-search agent. Every morning it scrapes ~20 job
-boards, filters the results against my personal criteria with an LLM, tailors my
-résumé to each matching role, compiles it to PDF, and delivers the matches —
-with custom CVs attached — to Telegram.
+An autonomous, self-hosted job-search agent. It can scrape job boards, filter
+results against a configuration-owned policy with an LLM, tailor a configured
+CV to matching roles, compile it to PDF, and deliver the matches to Telegram.
 
 **The same pipeline runs in two very different places:** a free **GitHub Actions**
 cron (zero infrastructure) *and* a self-hosted **Raspberry Pi 1** — the original
 700 MHz ARMv6 board with 512 MB of RAM. It runs on the Pi because the whole
 application is **pure Python standard library**: there is nothing to compile and
-zero pip packages to install for the core path.
+no optional scraper packages required for the core path. Versioned TOML
+configuration uses `tomli` on Python 3.9/3.10 and the standard-library
+`tomllib` on Python 3.11+.
 
-> Built to run my own job search end-to-end. It's a working system, not a demo.
+> The public repository contains reusable code and fictional fixtures. A
+> separately pinned private configuration repository holds each deployment's
+> TOML, CV, prompts, and sections.
+
+## Configure search and CV policy
+
+Select a commented TOML file with `JOB_SEARCH_SETTINGS_FILE`. The complete
+[job_search.example.toml](job_search.example.toml) covers search terms, sources,
+candidate eligibility, deterministic evaluation checks, and country-aware CV
+page limits. [Configuration documentation](docs/configuration.md) explains
+precedence, paths, trusted customization, and the complementary
+[environment example](deployment.env.example).
+
+```bash
+python -m job_search --describe-config
+python -m job_search --validate-config job_search.example.toml
+JOB_SEARCH_SETTINGS_FILE=/path/to/job_search.toml python -m job_search.pipeline --check-config
+```
+
+Discovery and TOML validation are data-only. `--check-config` executes trusted
+customization code and checks the host. A CV's advertised job location selects
+its maximum pages; the fallback remains one page, with optional country and EU
+overrides. Changing page limits preserves delivery history.
 
 ## Deploy it two ways
 
 | | ☁️ GitHub Actions | 🍓 Raspberry Pi 1 (ARMv6) |
 |---|---|---|
 | **What** | A daily cron on GitHub's free runners | A self-hosted box on your desk |
-| **Setup** | Add repo secrets, that's it | `bash scripts/setup-rpi.sh` |
+| **Setup** | Private config repository, three variables, a read-only deploy-key secret, delivery secrets, and one-time state initialization | `bash scripts/setup-rpi.sh` after preparing `.deployment.env` |
 | **Cost / infra** | Free, no server to operate | Your own hardware + home power |
 | **Sources** | All ~20 (incl. JobSpy + Chromium) | ~16 of 20 (stdlib-only path) |
 | **Trigger** | Daily cron + manual dispatch | systemd timer + Telegram `/run` |
@@ -52,14 +75,14 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
 1. **Fetch** — pulls listings concurrently from ~20 sources (Remotive, RemoteOK,
    Jobicy, Arbeitnow, The Muse, Himalayas, We Work Remotely, Arc, Working
    Nomads, SwissDevJobs, Relocate.me, JobSpy, LinkedIn, and a Playwright-driven
-   Cloudflare-fronted Israeli board, among others).
+   Cloudflare-fronted regional boards, among others).
 2. **Deduplicate** — `seen_jobs.json` tracks everything already processed so each
    role is only ever evaluated and notified once.
-3. **Filter** — an LLM scores each new role against [`criteria.md`](criteria.md)
-   (stack fit, seniority, remote/relocation, industry exclusions, timezone) and
-   explains its verdict.
+3. **Filter** — an LLM extracts structured facts from each new role, then the
+   configured policy applies stack fit, seniority, remote/relocation, industry,
+   and timezone rules before producing its verdict.
 4. **Tailor** — for every match and every job flagged for review, the model
-   rewrites my base LaTeX résumé to emphasize the relevant experience. A
+   rewrites the configured base LaTeX CV to emphasize the relevant experience. A
    factual-content guard validates it, pdflatex compiles it, and the page guard
    verifies exactly one page.
 5. **Notify** — each run is bundled into **one ZIP digest** delivered to Telegram:
@@ -84,8 +107,9 @@ So the core has **none of them**:
   — no `google-generativeai`, no `anthropic`, no `openai`, no `requests`. Each
   provider is a small wire-protocol *scheme* (`gemini`/`openai`/`anthropic`), so
   the SDKs never enter the tree. LaTeX is a `subprocess` call to `pdflatex`. The
-  fetch → filter → tailor → private-Telegram path needs **zero pip installs**;
-  only optional Telegraph archive hosting adds the small `pyzipper` dependency.
+  fetch → filter → tailor → private-Telegram path needs no provider SDKs. Python
+  3.9/3.10 installs the small `tomli` parser; optional Telegraph archive hosting
+  adds `pyzipper`.
 - **Optional sources are lazily imported.** JobSpy (`python-jobspy`) and the
   Chromium/Playwright source are imported *inside* `fetch()`, so when their
   dependencies are absent the registry silently drops just those sources and
@@ -123,19 +147,20 @@ So the core has **none of them**:
   injected from a `CV_PHONE` secret only at compile time (see [Privacy](#privacy)).
 - **Pluggable sources** — every board is a small `BaseSource` subclass behind a
   `@register` decorator, so adding a provider is one class.
-- **Configured by environment, not by code** — every realistic knob (output
-  mode, prompts, candidate identity, sources, LaTeX engine, ...) is an
-  environment variable read once at startup. One optional trusted
-  `job_search_config.py` survives as a deliberately unvalidated escape hatch
-  for the rare thing that genuinely needs code, such as a pre-LLM candidate
-  filter.
+- **Commented TOML configuration** — search, candidate profile, evaluation
+  policy, CV page limits, and runtime settings share a versioned configuration.
+  Nonempty environment variables override file values; credentials remain in
+  environment variables. A trusted Python escape hatch supports custom code.
 
 ## Customize the runtime
 
-Start with `python -m job_search.pipeline --check-config` to see every
-effective setting and validate your environment. Most deployments only need
-environment variables — see [`docs/configuration.md`](docs/configuration.md)
-for the full settings table.
+Start with [job_search.example.toml](job_search.example.toml), select it with
+`JOB_SEARCH_SETTINGS_FILE`, and run
+`python -m job_search.pipeline --validate-config job_search.example.toml` for
+an offline, data-only check. `--describe-config` returns the option catalog;
+`--check-config` shows effective settings and origins, executes trusted
+customization, and checks runtime requirements. See
+[`docs/configuration.md`](docs/configuration.md) for precedence and examples.
 
 For the rare thing that genuinely needs code, copy the tested example and
 validate it before running:
@@ -149,7 +174,9 @@ The default file is optional, so existing users need no migration. Set
 `JOB_SEARCH_CONFIG_FILE` for another path. The module is trusted executable
 code, deliberately unvalidated — a mistake in it surfaces as that file's own
 traceback — and must not contain secrets; continue to provide credentials and
-private CV placeholders through the environment.
+private CV placeholders through the environment. The private Actions checkout
+loads TOML only and does not discover a Python hook; keep hooks local to a
+trusted host and configure their explicit path there.
 
 [`docs/configuration.md`](docs/configuration.md) documents every setting plus
 `--check-config`, output modes, custom prompts, the `criteria.md` reopen
@@ -178,9 +205,32 @@ README rather than a second copy of them. See
 
 ## ☁️ Deploy on GitHub Actions
 
-The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
-(11:00 UTC / 14:00 Israel) and on manual dispatch. Fork the repo, then add these
-**Actions secrets**:
+The [`Daily Job Search`](.github/workflows/job_search.yml) workflow has a
+scheduled trigger, but scheduled personal runs are inert until
+`PERSONAL_RUNS_ENABLED` is exactly `true`. Manual dispatches perform the same
+configuration checks and fail with an actionable error when setup is incomplete.
+Until these workflow changes are manually merged to the deployment branch, the
+currently deployed workflows and hosts remain unchanged.
+
+Create a private configuration repository, commit its TOML, CV, supporting
+files, and sections, then pin it to a full lowercase 40-character SHA. Keep
+credentials and personal delivery values out of that repository and out of this
+public checkout. Configure these **Actions variables**:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PERSONAL_RUNS_ENABLED` | for schedules | set exactly `true` to permit scheduled personal runs |
+| `CONFIG_REPOSITORY` | ✅ | private `owner/repository` configuration repository |
+| `CONFIG_REF` | ✅ | immutable lowercase 40-character commit SHA in that repository |
+
+Add `CONFIG_DEPLOY_KEY` as an **Actions secret**. It must be a read-only deploy
+key authorized only for the private configuration repository. The daily and
+tailor workflows check out that repository into
+`.private-config/job-search-config`, disable persisted checkout credentials, and
+verify the resolved `HEAD` equals `CONFIG_REF` before loading
+`job_search.toml`.
+
+Then add the delivery/provider secrets required by your selected TOML:
 
 | Secret | Required | Purpose |
 |---|---|---|
@@ -190,7 +240,6 @@ The [`Daily Job Search`](.github/workflows/job_search.yml) workflow runs daily
 | `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 | `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it uploads one AES-256 protected CV archive to [x0.at](https://x0.at); its password is sent in the Telegram message. Without ZIP-encryption support, the run safely sends the Telegram ZIP instead |
-| `JOB_SEARCH_CONFIG_PY` | optional | multiline trusted escape-hatch source materialized as `job_search_config.py`; deliberately unvalidated, so keep credentials in the other secrets, not in this code |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
@@ -198,12 +247,9 @@ scheme at `gemini-2.5-flash`; the default fallback is the `openai` scheme at
 `gpt-5.4-mini` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
 include API access).
 
-A tracked `job_search_config.py` is loaded automatically. If the
-`JOB_SEARCH_CONFIG_PY` secret is present it is materialized after checkout and
-takes precedence over the tracked file. The daily, manual-tailor, and
-base-render workflows all use the same convention. Install imports needed by a
-custom module in the workflow yourself. A GitHub-hosted runner cannot connect
-to an LLM server bound only to your laptop's loopback interface.
+The private TOML is data-only and is validated before any personal pipeline
+work. A GitHub-hosted runner cannot connect to an LLM server bound only to your
+laptop's loopback interface.
 
 > ⚠️ **`gemini-2.5-flash` is scheduled for shutdown on 2026-10-16.** It is kept
 > as the default deliberately (2.5 proved steadier than the 3.x lineage on this
@@ -220,8 +266,7 @@ providers is config only — no code change. Override any of these optional
 Variables): `LLM_PRIMARY_SCHEME`, `LLM_PRIMARY_MODEL`, `LLM_PRIMARY_API_BASE`,
 `LLM_PRIMARY_AUTH_MODE`, `LLM_FALLBACK_SCHEME`, `LLM_FALLBACK_MODEL`,
 `LLM_FALLBACK_API_BASE`, `LLM_FALLBACK_AUTH_MODE`. Unset or blank variables use
-the application defaults. `SECTIONS_PY` is a variable too — see
-[digest sections](#group-the-digest-into-your-own-sections). Worked examples
+the application defaults. Worked examples
 (the `openai` scheme covers any OpenAI-compatible endpoint via `api_base`):
 
 | Provider | Scheme | `…_API_BASE` | Example model |
@@ -233,23 +278,47 @@ the application defaults. `SECTIONS_PY` is a variable too — see
 To make one primary, swap the `LLM_PRIMARY_*` block (and its key) for the
 `LLM_FALLBACK_*` values.
 
-The workflow keeps dedup state on an orphan **`state`** branch (see [layout](#repository-layout)),
-installs a right-sized pdflatex + Chromium, runs the pipeline, and commits the
-updated `seen_jobs.json` back to `state`. No server to operate.
+The workflow keeps dedup state on an orphan **`state`** branch (see
+[layout](#repository-layout)), installs a right-sized pdflatex + Chromium, and
+uses the existing union-merge retry when persisting state. The public render and
+page-limit workflows use fictional fixtures, upload artifacts, and never write
+PDFs back to Git.
+
+Before enabling or manually dispatching the personal workflow, initialize the
+`state` branch once in a disposable clone. This avoids changing any working
+tree you use for development:
+
+```bash
+git clone --no-checkout <public-repository-url> job-search-state-init
+cd job-search-state-init
+git switch --orphan state
+git read-tree --empty
+printf '[]\n' > seen_jobs.json
+git add seen_jobs.json
+git commit -m "chore: initialize seen-job state"
+git push origin state
+```
 
 ## 🍓 Deploy on a Raspberry Pi 1
 
-One script provisions everything — packages, swap, timezone, a `.env` template,
-seeded dedup state, a pre-warmed pdflatex cache, and the systemd service + timer +
-control bot:
+One script provisions packages, swap, timezone, a `.env` template, the pinned
+private configuration checkout, state seeding, a pre-warmed configured CV, and
+systemd unit files. It preserves the existing timer and bot state:
 
 ```bash
 git clone https://github.com/dsx87/job-search.git ~/job-search
 cd ~/job-search
-bash scripts/setup-rpi.sh          # idempotent; safe to re-run
-nano .env                          # fill in GEMINI_API_KEY, TELEGRAM_* (mode 600)
-sudo systemctl enable --now job-search.timer job-search-bot.service
+cp deployment.env.example .deployment.env
+# Set CONFIG_REPOSITORY, CONFIG_REF, and CONFIG_SSH_KEY; chmod 600 .deployment.env
+bash scripts/setup-rpi.sh
+nano .env                          # fill in provider and delivery secrets (mode 600)
 ```
+
+Use `scripts/prepare-private-config.sh --sync` only when deliberately moving
+the configuration pin; `--check-only` verifies a clean exact checkout without
+network access. Roll back by changing the public code revision and
+`CONFIG_REF` together to a known compatible pair, then run `--sync`. Setup does
+not start, stop, enable, restart, or disable the timer or bot.
 
 The full walkthrough — hardware notes, run-time expectations on a 700 MHz core,
 seeding the dedup state to avoid the multi-hour first run, and troubleshooting —
@@ -335,7 +404,7 @@ production one — unless you deliberately set `TELEGRAPH_PREVIEW_TOKEN` equal t
 
 Add `--upload` to make the archive link live. The password is printed to the
 terminal; download the ZIP, confirm a wrong password fails, then extract it and
-open the ordinary `igor_pivnyk_cv_<company>.pdf` files.
+open the ordinary configured CV PDF files.
 
 ```bash
 python scripts/telegraph_preview.py --days 1 --upload
@@ -386,19 +455,11 @@ grow an operator every time you wanted a new kind of rule.
   a warning strip at the top of the dashboard says what was wrong, and Telegram
   alerts you. A typo like `e.job.is_remot` is caught while the file is loaded,
   not mid-render.
-- **`sections.py` stays untracked.** It's per-host local config — only
-  `sections.example.py` is in git, so `git add sections.py` is refused without
-  `-f`. On a host deployed by `git pull` (the Raspberry Pi), create it directly
-  on the host.
-- **On GitHub Actions, use the `SECTIONS_PY` repository variable.** A runner
-  only ever sees what is committed, so an untracked `sections.py` is never
-  there. Paste the file's *contents* into the variable (Settings → Secrets and
-  variables → Actions → Variables) and the workflow writes it out before the
-  run. Leave it unset and CI simply doesn't group. The Actions log prints the
-  section names it parsed, so a typo shows up there as a warning annotation
-  rather than only as a Telegram alert.
-- **`SECTIONS_FILE`** overrides the path the config is read from, so a host can
-  point somewhere else entirely.
+- **Keep sections with the selected configuration.** Put the sections file in
+  the private configuration repository and select it from that repository's
+  TOML. The Actions and Pi use the same pinned revision.
+- **`SECTIONS_FILE`** is a host override for an explicit path when required;
+  place that non-secret override in `.deployment.env`.
 
 ### Helper vocabulary
 
@@ -444,7 +505,7 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `cv_tailoring_prompt.md` | Compatibility artifact; deterministic bullet selection no longer consumes its instruction block |
 | `job_search_config.example.py` | no-op template for the `job_search_config.py` escape hatch |
 | `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |
-| `igor_pivnyk_cv_base_updated.tex` | Base résumé the LLM tailors per role |
+| `avery_example_base.tex` | Fictional public base CV fixture used for artifact rendering |
 | `.github/workflows/` | Daily cron + manual CV-render + on-demand tailor workflows |
 | `.claude/skills/job-searcher/` | Checked-in Claude Code skills: `/job-searcher:configure`, `:deploy`, `:explain` |
 
@@ -458,7 +519,8 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 This repo is public, so it carries **no** secrets and no personal phone number.
 The résumé's phone is a `((PHONE))` placeholder that is replaced at compile time
 from the `CV_PHONE` secret — it is never committed and never sent to the LLM. The
-committed sample PDF is rendered with the placeholder empty.
+public fictional sample is rendered as an Actions artifact with the placeholder
+empty; PDFs are never committed by that workflow.
 
 The telegra.ph delivery path puts two things where a URL is the only thing
 guarding them, and both are handled deliberately:

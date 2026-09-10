@@ -9,10 +9,10 @@
 #   1. Installs Python 3, git, and a right-sized pdflatex + Helvetica font set
 #   2. Bumps swap (pandas/pdflatex/pip spike past 512 MB)
 #   3. Sets the timezone
-#   4. Creates a .env secrets template (never overwrites an existing one)
+#   4. Requires a pinned private configuration checkout and preserves .env secrets
 #   5. Seeds seen_jobs.json from the origin/state branch (avoids the first-run trap)
 #   6. Pre-warms pdflatex so the first timed compile isn't the cold one
-#   7. Installs a systemd service + timer for the daily run
+#   7. Writes systemd units without changing timer or bot state
 #
 # What it does NOT do: flash the OS, put your secrets in, or run the (possibly
 # multi-hour) first pipeline. You do those — see the printed next steps.
@@ -49,6 +49,8 @@ die()  { echo -e "${c_red}ERROR: $*${c_off}" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$SCRIPT_DIR")"
 [ -f "$REPO/pyproject.toml" ] && [ -d "$REPO/job_search" ] || die "Can't find the repo root (expected $REPO to contain job_search/ and pyproject.toml)."
+DEPLOYMENT_ENV="$REPO/.deployment.env"
+[ -f "$DEPLOYMENT_ENV" ] || die "Missing $DEPLOYMENT_ENV. Copy deployment.env.example, set the private repository, full commit SHA, and deploy-key path before setup."
 
 # Run privileged bits with sudo; run user-owned bits as the human, not root.
 if [ "$(id -u)" -eq 0 ]; then
@@ -60,6 +62,19 @@ else
   REAL_USER="$USER"
 fi
 REAL_HOME="$(eval echo "~$REAL_USER")"
+readonly REPO DEPLOYMENT_ENV REAL_USER REAL_HOME
+
+# Fail before mutating the host when the requested private configuration is
+# incomplete. The helper repeats and fully verifies this after git is present.
+set -a
+. "$DEPLOYMENT_ENV"
+set +a
+CONFIG_REPOSITORY="${CONFIG_REPOSITORY:-}"
+CONFIG_REF="${CONFIG_REF:-}"
+CONFIG_SSH_KEY="${CONFIG_SSH_KEY:-$REAL_HOME/.ssh/job_search_config_ed25519}"
+[[ "$CONFIG_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "CONFIG_REPOSITORY in .deployment.env must be owner/repository."
+[[ "$CONFIG_REF" =~ ^[0-9a-f]{40}$ ]] || die "CONFIG_REF in .deployment.env must be a lowercase full 40-character commit SHA."
+[ -f "$CONFIG_SSH_KEY" ] && [ -r "$CONFIG_SSH_KEY" ] || die "CONFIG_SSH_KEY in .deployment.env must name a readable private key."
 
 step "Provisioning for user '$REAL_USER' — repo at $REPO"
 if grep -qiE 'ARMv6|BCM2835' /proc/cpuinfo 2>/dev/null; then
@@ -119,53 +134,9 @@ TELEGRAM_CHAT_ID=REPLACE_ME
 # --- Optional fallback provider (served when the primary trips its breaker) ---
 LLM_FALLBACK_API_KEY=                  # e.g. a prepaid OpenAI key for gpt-5.4-mini
 CV_PHONE=
-# --- Optional provider overrides (blank/unset = application defaults) ---
-# A provider = scheme (gemini | openai | anthropic) + model + key (+ optional base).
-# Switching providers is a config edit only — no code change.
-# Primary defaults:  scheme=gemini  model=gemini-2.5-flash
-# LLM_PRIMARY_SCHEME=gemini
-# LLM_PRIMARY_MODEL=gemini-2.5-flash
-# LLM_PRIMARY_API_BASE=
-# LLM_PRIMARY_AUTH_MODE=bearer
-# Fallback defaults: scheme=openai  model=gpt-5.4-mini
-# LLM_FALLBACK_SCHEME=openai
-# LLM_FALLBACK_MODEL=gpt-5.4-mini
-# LLM_FALLBACK_API_BASE=
-# LLM_FALLBACK_AUTH_MODE=bearer
-# Worked examples (openai scheme covers any OpenAI-compatible endpoint via api_base):
-#   Groq:      LLM_FALLBACK_SCHEME=openai     LLM_FALLBACK_API_BASE=https://api.groq.com/openai/v1
-#   xAI Grok:  LLM_FALLBACK_SCHEME=openai     LLM_FALLBACK_API_BASE=https://api.x.ai/v1     (e.g. grok-4.3)
-#   Anthropic: LLM_FALLBACK_SCHEME=anthropic  LLM_FALLBACK_MODEL=claude-haiku-4-5
-# Local OpenAI-compatible server (for example LM Studio on this Pi/host):
-# LLM_PRIMARY_SCHEME=openai
-# LLM_PRIMARY_MODEL=your-loaded-model-id
-# LLM_PRIMARY_API_BASE=http://127.0.0.1:1234/v1
-# LLM_PRIMARY_AUTH_MODE=none
-# --- Optional output / prompts / LaTeX overrides (blank = current Telegram behavior) ---
-# OUTPUT_MODE=telegram        # telegram (default) | html | plain
-# OUTPUT_DIR=                 # filesystem destination for html/plain modes
-# OUTPUT_CV_MODE=required     # required (default) | disabled; telegram requires required
-# PROMPT_DIR=                 # directory of file-backed prompt overrides
-# PROMPT_REVISION=            # required whenever PROMPT_DIR is set
-# LATEX_ENGINE=pdflatex       # e.g. xelatex
-# --- Optional escape hatch: job_search_config.py, trusted executable Python for
-#     the rare thing that genuinely needs code (unvalidated; a mistake in it
-#     surfaces as that file's own traceback). Missing/unset uses an optional
-#     job_search_config.py in this repo, then built-ins. An explicitly-set-but-
-#     empty value is an error, not "disabled". Keep secrets here in .env, never
-#     inside that module. ---
-# JOB_SEARCH_CONFIG_FILE=/absolute/path/to/job_search_config.py
-# --- Pi tuning (single core / 512 MB) ---
-EVAL_WORKERS=${EVAL_WORKERS}
-TAILOR_WORKERS=${TAILOR_WORKERS}
-SCRAPE_BUDGET_SECONDS=${SCRAPE_BUDGET_SECONDS}
-# --- Sources: run the stdlib LinkedIn guest source (works on ARMv6) instead of
-#     the jobspy-backed LinkedIn sources it supersedes. ---
-SOURCES_ENABLE=linkedin-guest
-SOURCES_DISABLE=linkedin-global,linkedin-israel
-# --- Dedup-state sync with the orphan 'state' branch. 0 = off; set to 1 AFTER
-#     running scripts/setup-state-sync.sh (creates the .state checkout + deploy key). ---
-STATE_SYNC=0
+TELEGRAPH_ACCESS_TOKEN=
+# Keep non-secret provider, source, output, and host controls in
+# .deployment.env. The private TOML selects the CV and policy files.
 EOF
   chown "$REAL_USER" "$ENV_FILE" 2>/dev/null || true
   chmod 600 "$ENV_FILE"
@@ -176,47 +147,39 @@ fi
 step "Seeding seen_jobs.json from origin/state"
 if [ -f "$REPO/seen_jobs.json" ]; then
   ok "seen_jobs.json already present — leaving your existing dedup history."
-elif sudo -u "$REAL_USER" git -C "$REPO" fetch origin state --depth 1 >/dev/null 2>&1 \
-     && sudo -u "$REAL_USER" git -C "$REPO" show origin/state:seen_jobs.json > "$REPO/seen_jobs.json" 2>/dev/null \
-     && [ -s "$REPO/seen_jobs.json" ]; then
-  chown "$REAL_USER" "$REPO/seen_jobs.json" 2>/dev/null || true
-  ok "Seeded seen_jobs.json ($(wc -c < "$REPO/seen_jobs.json") bytes) — first run will behave like a normal day."
 else
-  rm -f "$REPO/seen_jobs.json"
-  warn "Couldn't fetch origin/state:seen_jobs.json. The FIRST run will treat every job as new"
-  warn "and may take hours. Seed it manually before enabling the timer (see docs/deploy-rpi.md)."
-fi
-
-# ---- 6. Pre-warm pdflatex --------------------------------------------------
-step "Pre-warming pdflatex (builds the format/font cache so the first timed compile isn't cold)"
-if command -v pdflatex >/dev/null 2>&1; then
-  WARM_DIR="$(mktemp -d)"
-  if sudo -u "$REAL_USER" env HOME="$REAL_HOME" pdflatex -interaction=nonstopmode \
-        -output-directory "$WARM_DIR" "$REPO/igor_pivnyk_cv_base_updated.tex" >/dev/null 2>&1 \
-        && [ -f "$WARM_DIR/igor_pivnyk_cv_base_updated.pdf" ]; then
-    ok "Base CV compiled to PDF — the pdflatex toolchain works."
+  SEED_TMP="$(mktemp "$REPO/.seen_jobs.seed.XXXXXX")"
+  if sudo -u "$REAL_USER" git -C "$REPO" fetch origin state --depth 1 >/dev/null 2>&1 \
+     && sudo -u "$REAL_USER" git -C "$REPO" show origin/state:seen_jobs.json > "$SEED_TMP" 2>/dev/null \
+     && [ -s "$SEED_TMP" ]; then
+    mv "$SEED_TMP" "$REPO/seen_jobs.json"
+    chown "$REAL_USER" "$REPO/seen_jobs.json" 2>/dev/null || true
+    ok "Seeded seen_jobs.json ($(wc -c < "$REPO/seen_jobs.json") bytes) — first run will behave like a normal day."
   else
-    warn "Cold pdflatex compile did not produce a PDF. Run it by hand to see the error:"
-    warn "  cd $REPO && pdflatex igor_pivnyk_cv_base_updated.tex"
+    rm -f "$SEED_TMP"
+    warn "Couldn't fetch origin/state:seen_jobs.json. The FIRST run will treat every job as new"
+    warn "and may take hours. Seed it manually before enabling the timer (see docs/deploy-rpi.md)."
   fi
-  rm -rf "$WARM_DIR"
-else
-  warn "pdflatex not on PATH after install — CV PDF generation will fail."
 fi
 
-# ---- 7. Python environment -------------------------------------------------
+# ---- 6. Python environment -------------------------------------------------
 PY_BIN="/usr/bin/python3"
-step "Installing AES ZIP support"
+step "Installing optional TOML and AES ZIP support"
 if sudo -u "$REAL_USER" python3 -m venv "$REPO/.venv" \
-   && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q --upgrade pip \
-   && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q 'pyzipper~=0.4.0'; then
+   && sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q --upgrade pip; then
   PY_BIN="$REPO/.venv/bin/python"
-  ok "AES ZIP support installed — hosted CV archives are enabled."
+  sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q 'tomli>=2.0,<2.4; python_version < "3.11"' \
+    || die "Couldn't install tomli for Python 3.9/3.10 TOML configuration support."
+  if sudo -u "$REAL_USER" "$REPO/.venv/bin/pip" install -q 'pyzipper~=0.4.0'; then
+    ok "TOML and AES ZIP support installed — hosted CV archives are enabled."
+  else
+    warn "TOML support installed; pyzipper failed, so Telegraph runs will safely fall back to Telegram ZIP delivery."
+  fi
 else
-  warn "pyzipper failed to install; Telegraph runs will safely fall back to Telegram ZIP delivery."
+  die "Couldn't create the Python environment required for TOML configuration support."
 fi
 
-# ---- 7a. Optional: attempt JobSpy (pandas) ---------------------------------
+# ---- 6a. Optional: attempt JobSpy (pandas) ---------------------------------
 if [ "$TRY_JOBSPY" = "1" ]; then
   step "Attempting python-jobspy in a venv (adds 3 sources; usually fails on ARMv6)"
   if sudo -u "$REAL_USER" python3 -m venv "$REPO/.venv" \
@@ -229,17 +192,46 @@ if [ "$TRY_JOBSPY" = "1" ]; then
   fi
 fi
 
-# ---- 7b. Run wrapper + logs directory --------------------------------------
+# ---- 6b. Fetch and validate the pinned private configuration ----------------
+step "Synchronizing the pinned private configuration"
+sudo -u "$REAL_USER" env HOME="$REAL_HOME" bash "$REPO/scripts/prepare-private-config.sh" --sync
+sudo -u "$REAL_USER" env HOME="$REAL_HOME" bash "$REPO/scripts/prepare-private-config.sh" --check-only
+CONFIG_SETTINGS_FILE="$REPO/.private-config/job-search-config/job_search.toml"
+sudo -u "$REAL_USER" env HOME="$REAL_HOME" JOB_SEARCH_SETTINGS_FILE="$CONFIG_SETTINGS_FILE" \
+  "$PY_BIN" -m job_search.pipeline --validate-config "$CONFIG_SETTINGS_FILE"
+ok "Private configuration is pinned and TOML validation passed."
+
+# ---- 6c. Pre-warm pdflatex -------------------------------------------------
+step "Pre-warming pdflatex (builds the format/font cache so the first timed compile isn't cold)"
+if command -v pdflatex >/dev/null 2>&1; then
+  WARM_DIR="$(mktemp -d)"
+  BASE_TEX_FILE="$(sudo -u "$REAL_USER" env HOME="$REAL_HOME" JOB_SEARCH_SETTINGS_FILE="$CONFIG_SETTINGS_FILE" \
+    "$PY_BIN" -c 'from job_search.config import PipelineConfig; print(PipelineConfig.from_env().base_tex_file)')"
+  if [ -n "$BASE_TEX_FILE" ] \
+     && sudo -u "$REAL_USER" env HOME="$REAL_HOME" pdflatex -interaction=nonstopmode \
+          -output-directory "$WARM_DIR" "$BASE_TEX_FILE" >/dev/null 2>&1 \
+     && find "$WARM_DIR" -maxdepth 1 -name '*.pdf' -print -quit | grep -q .; then
+    ok "Configured base CV compiled to PDF — the pdflatex toolchain works."
+  else
+    warn "Cold pdflatex compile did not produce a PDF from the configured base CV."
+  fi
+  rm -rf "$WARM_DIR"
+else
+  warn "pdflatex not on PATH after install — CV PDF generation will fail."
+fi
+
+# ---- 6d. Run wrapper + logs directory --------------------------------------
 # Every run (the timer, the bot's /run and /tailor) goes through this one
 # flock'd wrapper so the single core never runs two pipelines at once.
 step "Preparing the run wrapper and logs directory"
 chmod +x "$REPO/scripts/run_pipeline.sh"
+chmod +x "$REPO/scripts/prepare-private-config.sh"
 mkdir -p "$REPO/logs"
 chown "$REAL_USER" "$REPO/logs" 2>/dev/null || true
 ok "run_pipeline.sh is executable; logs/ ready."
 
-# ---- 8. systemd service + timer + control bot ------------------------------
-step "Installing systemd services (daily run + control bot) + timer"
+# ---- 7. systemd service + timer + control bot ------------------------------
+step "Writing systemd services (daily run + control bot) + timer"
 $SUDO tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF
 [Unit]
 Description=AI Job Hunter daily run
@@ -250,8 +242,10 @@ Wants=network-online.target
 Type=oneshot
 User=${REAL_USER}
 WorkingDirectory=${REPO}
+EnvironmentFile=${DEPLOYMENT_ENV}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${REPO}/scripts/run_pipeline.sh timer
+ExecStartPre=${REPO}/scripts/prepare-private-config.sh --check-only
+ExecStart=/usr/bin/env JOB_SEARCH_SETTINGS_FILE=${REPO}/.private-config/job-search-config/job_search.toml ${REPO}/scripts/run_pipeline.sh timer
 Nice=10
 TimeoutStartSec=7200
 EOF
@@ -270,8 +264,10 @@ Restart=always
 RestartSec=30
 User=${REAL_USER}
 WorkingDirectory=${REPO}
+EnvironmentFile=${DEPLOYMENT_ENV}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${PY_BIN} -m job_search.bot
+ExecStartPre=${REPO}/scripts/prepare-private-config.sh --check-only
+ExecStart=/usr/bin/env JOB_SEARCH_SETTINGS_FILE=${REPO}/.private-config/job-search-config/job_search.toml ${PY_BIN} -m job_search.bot
 Nice=10
 
 [Install]
@@ -291,33 +287,13 @@ WantedBy=timers.target
 EOF
 
 $SUDO systemctl daemon-reload
-ok "Installed ${SERVICE_NAME}.service, ${SERVICE_NAME}-bot.service, and ${SERVICE_NAME}.timer."
+ok "Wrote ${SERVICE_NAME}.service, ${SERVICE_NAME}-bot.service, and ${SERVICE_NAME}.timer without changing their state."
 
 # ---- Done: next steps ------------------------------------------------------
 echo
-if grep -q 'REPLACE_ME' "$ENV_FILE"; then
-  step "ALMOST DONE — finish these steps:"
-  echo -e "  ${c_yellow}1.${c_off} Put your real secrets in the .env file:"
-  echo    "        nano $ENV_FILE"
-  echo -e "  ${c_yellow}2.${c_off} Smoke-test the full path (fetch → tailor → PDF → Telegram):"
-  echo    "        cd $REPO && set -a && . ./.env && set +a"
-  echo    "        $PY_BIN -m job_search.pipeline --tailor \\"
-  echo    "          --job-text 'Senior iOS Engineer, remote, Swift/SwiftUI' \\"
-  echo    "          --title 'Senior iOS Developer' --company 'Acme'"
-  echo -e "  ${c_yellow}3.${c_off} Enable the daily timer (fires at ${RUN_TIME} ${TIMEZONE}):"
-  echo    "        $SUDO systemctl enable --now ${SERVICE_NAME}.timer"
-  echo -e "  ${c_yellow}4.${c_off} Enable the Telegram control bot (also after step 1):"
-  echo    "        $SUDO systemctl enable --now ${SERVICE_NAME}-bot.service"
-  warn "Timer & bot NOT enabled yet — do it after step 1, or they fail on the placeholder token."
-else
-  step "Enabling the daily timer (fires at ${RUN_TIME} ${TIMEZONE}) + control bot"
-  $SUDO systemctl enable --now "${SERVICE_NAME}.timer"
-  $SUDO systemctl enable --now "${SERVICE_NAME}-bot.service"
-  ok "Timer and control bot enabled."
-  echo    "  Next scheduled run:   systemctl list-timers ${SERVICE_NAME}.timer"
-fi
-echo
 echo "Operate it:"
+echo "  Setup preserved the existing timer and bot states."
+echo "  Inspect:   systemctl is-enabled ${SERVICE_NAME}.timer; systemctl is-enabled ${SERVICE_NAME}-bot.service"
 echo "  Run now:   $SUDO systemctl start ${SERVICE_NAME}.service"
 echo "  Logs:      journalctl -u ${SERVICE_NAME}.service -f"
 echo "  Bot logs:  journalctl -u ${SERVICE_NAME}-bot.service -f"

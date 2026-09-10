@@ -111,3 +111,23 @@ def match_keywords(text, keywords):
         ):
             matches.append(keyword)
     return matches
+
+
+def match_configured_keywords(text, keywords):
+    """Match user-configured terms without the built-in Apple alias catalog.
+
+    A reusable profile names its own aliases as alternatives in a skill group.
+    This prevents the legacy ``CoreData``/``Combine`` exceptions from changing a
+    non-Apple candidate's matching semantics.
+    """
+    matches = []
+    for keyword in keywords:
+        term = str(keyword or "").strip()
+        if not term:
+            continue
+        pattern = re.compile(
+            r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", re.IGNORECASE
+        )
+        if pattern.search(text):
+            matches.append(keyword)
+    return matches
