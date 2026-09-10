@@ -1,5 +1,6 @@
 """`python -m job_search.pipeline` entry point: argument parsing + dispatch."""
 import argparse
+import json
 import sys
 import urllib.parse
 
@@ -82,13 +83,15 @@ def run_tailor(args, cfg) -> None:
 
 
 def main():
-    cfg = PipelineConfig.from_env()
-
     parser = argparse.ArgumentParser()
+    parser.add_argument("--describe-config", action="store_true",
+                        help="Print versioned configuration metadata without loading hooks.")
+    parser.add_argument("--validate-config", metavar="PATH",
+                        help="Validate TOML data only; no hooks, credentials, services, or state changes.")
     parser.add_argument(
         "--check-config",
         action="store_true",
-        help="Load and validate configuration, print redacted effective settings, and exit.",
+        help="Execute trusted customization code, check runtime/host configuration, and print redacted settings.",
     )
     parser.add_argument(
         "--test",
@@ -119,6 +122,25 @@ def main():
     parser.add_argument("--company", default="", help="Company name (used with --tailor).")
     parser.add_argument("--location", default="", help="Job location (used with --tailor).")
     args = parser.parse_args()
+
+    if args.describe_config:
+        from ..settings import option_metadata
+        print(json.dumps(option_metadata(), indent=2, sort_keys=True))
+        return 0
+    if args.validate_config:
+        from ..settings import validate_settings_path
+        try:
+            validate_settings_path(args.validate_config)
+        except (ValueError, OSError) as exc:
+            print("Error: {}".format(exc), file=sys.stderr)
+            return 2
+        print("Valid configuration: {}".format(args.validate_config))
+        return 0
+    try:
+        cfg = PipelineConfig.from_env()
+    except (ValueError, OSError) as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 2
 
     if args.check_config:
         try:

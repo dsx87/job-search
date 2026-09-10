@@ -32,6 +32,13 @@ class CompileResult:
     tex_source: str = ""
 
 
+def _positive_max_pages(value):
+    """Validate the public page-limit boundary before invoking LaTeX."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("max_pages must be a positive integer")
+    return value
+
+
 def _strip_latex_fences(text: str) -> str:
     text = text.strip()
     m = re.match(r"^```(?:latex)?\n(.*)\n```$", text, re.DOTALL)
@@ -191,33 +198,42 @@ def _fix_latex(client, tex_source: str, error_excerpt: str, prompts=None) -> str
 
 def compile_with_fixes(
     client, tex_source: str, max_attempts: int = 3, *, executable: str = "pdflatex",
-    prompts=None, profile=None,
+    prompts=None, profile=None, max_pages: int = 1, return_page_count: bool = False,
 ) -> tuple:
     """
     Try to compile tex_source, asking the model to fix errors between attempts.
-    On a successful compile that overflows past one page, deterministically
-    shrink the layout until it fits (see _shrink_to_one_page).
-    Returns (success: bool, pdf_bytes: bytes|None, final_tex: str).
+    On a successful compile that exceeds ``max_pages``, deterministically shrink
+    the layout until it fits. The default return preserves the legacy
+    ``(success, pdf_bytes, final_tex)`` shape; internal callers ask for the
+    verified page count explicitly.
     """
-    from .onepage import _shrink_to_one_page
+    from .onepage import _shrink_to_page_limit
+
+    max_pages = _positive_max_pages(max_pages)
+
+    def outcome(ok, pdf_bytes, final_tex, pages):
+        value = (ok, pdf_bytes, final_tex, pages)
+        return value if return_page_count else value[:3]
 
     for attempt in range(1, max_attempts + 1):
         result = _compile_latex(tex_source, executable=executable, profile=profile)
         if result.ok:
-            if result.page_count == 1 and result.pdf_bytes:
-                return True, result.pdf_bytes, tex_source
-            if result.page_count and result.page_count > 1:
-                pdf_bytes, tex_source, pages = _shrink_to_one_page(
+            if result.pdf_bytes and result.page_count is not None and 1 <= result.page_count <= max_pages:
+                return outcome(True, result.pdf_bytes, tex_source, result.page_count)
+            if result.page_count and result.page_count > max_pages:
+                pdf_bytes, tex_source, pages = _shrink_to_page_limit(
                     tex_source,
                     result.pdf_bytes,
                     result.page_count,
+                    max_pages,
                     compile_fn=lambda source: _compile_latex(
                         source, executable=executable, profile=profile
                     ),
                 )
-                if pages == 1 and pdf_bytes:
-                    return True, pdf_bytes, tex_source
-            return False, None, tex_source
+                if pdf_bytes and pages is not None and 1 <= pages <= max_pages:
+                    return outcome(True, pdf_bytes, tex_source, pages)
+                return outcome(False, None, tex_source, pages)
+            return outcome(False, None, tex_source, result.page_count)
         print(
             f"    Compilation failed (attempt {attempt}/{max_attempts}): "
             f"{result.error_excerpt[:120]}",
@@ -236,11 +252,11 @@ def compile_with_fixes(
                 break
         else:
             break
-    return False, None, tex_source
+    return outcome(False, None, tex_source, None)
 
 
 class LatexCompiler:
-    """Two-pass LaTeX compiler with repair, shrink, and one-page enforcement."""
+    """Two-pass LaTeX compiler with repair and an explicit page limit."""
 
     def __init__(self, executable="pdflatex", *, prompts=None, profile=None):
         executable = str(executable or "").strip()
@@ -250,30 +266,61 @@ class LatexCompiler:
         self.prompts = prompts
         self.profile = profile
 
-    def compile(self, llm, tex_source: str, max_attempts: int = 3) -> CompileResult:
-        ok, pdf_bytes, final_tex = compile_with_fixes(
+    def compile(
+        self, llm, tex_source: str, max_attempts: int = 3, *, max_pages: int = 1
+    ) -> CompileResult:
+        ok, pdf_bytes, final_tex, page_count = compile_with_fixes(
             llm,
             tex_source,
             max_attempts=max_attempts,
             executable=self.executable,
             prompts=self.prompts,
             profile=self.profile,
+            max_pages=max_pages,
+            return_page_count=True,
         )
         if ok:
-            return CompileResult(True, pdf_bytes, "", 1, False, final_tex)
+            return CompileResult(True, pdf_bytes, "", page_count, False, final_tex)
         return CompileResult(
             False,
             None,
-            "{} did not produce a verified one-page PDF".format(self.executable),
-            None,
+            "{} did not produce a verified PDF within {} pages".format(
+                self.executable, max_pages
+            ),
+            page_count,
             False,
             final_tex,
         )
 
-    def compile_base(self, tex_source: str) -> CompileResult:
+    def compile_base(self, tex_source: str, *, max_pages: int = 1) -> CompileResult:
         """Compile a base document twice without repair or automatic shrinking."""
-        return _compile_latex(
+        max_pages = _positive_max_pages(max_pages)
+        result = _compile_latex(
             tex_source,
             executable=self.executable,
             profile=self.profile,
         )
+        page_count = result.page_count
+        valid_page_count = (
+            isinstance(page_count, int)
+            and not isinstance(page_count, bool)
+            and 1 <= page_count <= max_pages
+        )
+        if result.ok and not valid_page_count:
+            if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
+                error = "{} produced invalid verified page count {!r}; expected 1..{}".format(
+                    self.executable, page_count, max_pages
+                )
+            else:
+                error = "{} produced {} pages, exceeding the {}-page limit".format(
+                    self.executable, page_count, max_pages
+                )
+            return CompileResult(
+                False,
+                None,
+                error,
+                page_count,
+                False,
+                result.tex_source,
+            )
+        return result

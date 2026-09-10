@@ -251,7 +251,7 @@ def test_the_shipped_example_config_loads_cleanly():
     sections, error = load_sections(str(_REPO_ROOT / "sections.example.py"))
     assert error == ""
     assert [section.name for section in sections] == [
-        "Israel",
+        "Local",
         "Remote — Worldwide",
         "EU relocation",
         "Everything else",

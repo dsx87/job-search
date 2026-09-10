@@ -1,142 +1,142 @@
 ---
 name: configure
-description: Configure the AI Job Hunter — environment variables, LLM providers, search criteria, source selection, digest sections, and the optional job_search_config.py escape hatch. Use when changing what the pipeline searches for, which model it calls, how the digest is grouped, or where results are delivered.
-when_to_use: Triggered by requests like "switch the job search to Groq", "why is it rejecting these roles", "add LinkedIn to the sources", "group the digest by region", "write the digest to disk instead of Telegram", "check my job-search config".
+description: Configure AI Job Hunter with versioned TOML, host environment controls, LLM providers, search and policy data, digest sections, or the rare trusted Python escape hatch. Use for requests that change what is searched, who is eligible, how CVs are limited, which model is called, or how a digest is delivered.
+when_to_use: Triggered by requests like "switch the job search to Groq", "change the candidate's residency", "make EU CVs two pages", "search for platform engineers", "group the digest by region", "write the digest to disk", or "check my job-search config".
 argument-hint: [what to change]
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash(python3 -m job_search*), Bash(python -m job_search*)
 ---
 
 # Configure the job searcher
 
-Four layers, cheapest first. Change the highest layer that does the job.
+Use the least powerful layer that expresses the requested change.
 
-| Layer | File / mechanism | Use for |
+| Layer | Mechanism | Use for |
 |---|---|---|
-| 1. Environment | `.env`, Actions secrets & variables | credentials, provider choice, tuning, on/off switches |
-| 2. Search intent | `criteria.md` | what counts as a match |
-| 3. Presentation | `sections.py` | how the digest dashboard is grouped |
-| 4. Escape hatch | `job_search_config.py` | the rare thing with no setting — unvalidated, rare |
+| 1 | `job_search.toml` | versioned search, candidate, policy, provider, and delivery data |
+| 2 | protected environment / Actions secrets and variables | credentials, host-specific paths, temporary overrides, and environment-only tuning |
+| 3 | `criteria.md` | reopen-fingerprint compatibility input; it does not define evaluator context or policy |
+| 4 | `sections.py` | digest presentation only |
+| 5 | `job_search_config.py` | rare reviewed Python behavior with no catalogued setting |
 
-**Check the settings table first.** Almost everything that once needed layer 4
-is now a plain environment variable: the LaTeX engine (`LATEX_ENGINE`), where
-results go (`OUTPUT_MODE` / `OUTPUT_DIR` / `OUTPUT_CV_MODE`), prompt overrides
-(`PROMPT_DIR` / `PROMPT_REVISION`), and the candidate's identity
-(`CV_DISPLAY_NAME` / `CV_FILENAME_PREFIX`). Only reach for layer 4 when no
-setting exists.
+Start with `job_search.example.toml` and `deployment.env.example`. The TOML
+example has every supported option with type, default, env name, valid values,
+dependencies, and effects. Treat it as the authoritative human reference;
+`--describe-config` is the machine-readable reference.
 
-## Always finish with the checker
+## Read-only discovery and validation
+
+Use the command matching the requested confidence level:
 
 ```bash
+# JSON catalog: no selected settings file, environment, hook, service, state,
+# or host check is loaded.
+python3 -m job_search --describe-config
+
+# Strict data-only validation of exactly this TOML. It ignores environment
+# overrides and never executes hooks, touches state, calls services, or checks
+# toolchains.
+python3 -m job_search --validate-config job_search.toml
+
+# Operational check on the actual deployment host. Loads selected settings and
+# environment, executes trusted job_search_config.py if present, builds the
+# runtime, checks host prerequisites, and redacts secrets in its JSON output.
 python3 -m job_search.pipeline --check-config
 ```
 
-It builds the runtime, runs preflight, prints effective settings plus a
-`runtime` block (collaborator class names, the derived flags, and `config_file`
-— the escape-hatch path that ran, or `null`) as JSON, and redacts keys, tokens,
-and chat ids. It does
-not scrape, call an LLM, compile, mutate state, or deliver. Run it after any
-change on this layer, and treat a non-zero exit as the change being rejected.
+`--describe-config` exposes versioned metadata for every setting: dotted key,
+type, default, description, environment aliases, sensitivity, and whether TOML
+supports it. Its `environment` mapping covers the settings selector and the
+trusted-hook/sections transport controls. `--validate-config` is safe for unreviewed configuration because
+it is pure data validation. Never use `--check-config` to inspect unreviewed
+repositories: it intentionally runs the trusted Python escape hatch.
 
-## Layer 1 — environment
+Without a selected TOML file, the PR1 compatibility path keeps repository
+legacy personal defaults. They differ from the generic TOML catalog shown by
+`--describe-config`; select TOML for reusable defaults and use `--check-config`
+to inspect the effective host configuration.
 
-Read `reference/env-vars.md` in this plugin (`${CLAUDE_PLUGIN_ROOT}/reference/env-vars.md`)
-for the full table: credentials, the eight `LLM_*` provider knobs, file paths,
-source selection, worker counts, and the GitHub Actions secret/variable names.
+## TOML and environment rules
 
-Rules that catch people out:
+`[settings].version = 1` is required. TOML rejects unknown keys, invalid types,
+credentials, and host-only controls. Precedence is explicit programmatic
+override, first nonempty environment alias, TOML, then catalog default. Empty
+environment variables do not replace TOML values.
 
-- A provider is **scheme + model + key (+ base)**. Switching providers is a
-  config edit; never a code change. The `openai` scheme covers any
-  OpenAI-compatible endpoint via `*_API_BASE`.
-- Blank and whitespace-only values fall back to defaults.
-- Configure the **fallback** key. Without it a retired primary model turns every
-  job into an evaluation failure and the run delivers nothing.
-- On GitHub Actions, `LLM_*` and `SECTIONS_PY` are repository **variables**;
-  keys are **secrets**. Local files that are untracked (`sections.py`,
-  `job_search_config.py`) do not exist on a runner — pass their contents through
-  `SECTIONS_PY` / `JOB_SEARCH_CONFIG_PY`.
-- On a Pi, `.env` is mode 600 and loaded by systemd `EnvironmentFile`.
+Input paths in TOML are relative to the TOML file; output paths are relative to
+the process working directory. Credentials, chat IDs, and private template
+values only belong in a protected host environment or Actions Secrets. The
+legacy aliases `GEMINI_MODEL`, `GEMINI_API_KEY`, `GEMINI_API_BASE`,
+`OPENAI_API_KEY`, and `XELATEX_MAX_WORKERS` remain supported during migration.
 
-Source selection: `python3 -m job_search --list-sources` prints the names and
-marks the default-off ones. `SOURCES_ENABLE` forces default-off sources on,
-`SOURCES_DISABLE` forces default-on sources off; both are comma lists.
+For GitHub Actions, store sensitive values in Secrets and normal provider
+controls in Variables. `JOB_SEARCH_CONFIG_PY` and `SECTIONS_PY` are reviewed
+source-transport controls for workflows that explicitly materialize them after
+checkout; they are not secret storage.
 
-## Layer 2 — criteria.md
+## Search, candidate, and policy changes
 
-`criteria.md` is the human-readable rule set the LLM scores each role against,
-and it feeds the built-in evaluator **fingerprint**. Executable defaults live in
-`job_search/policy.py`; the document itself does not execute policy.
+Use `[search]` for title terms, required skill groups, location exclusions,
+source selection, query terms/locations, age, and remote/relocation scope.
+Skill groups are AND across groups and OR inside each group. `remote_allowed`
+and `relocation_allowed` can both be true and govern only those two gates.
+An explicitly local role is still eligible when its advertised country appears
+in both candidate residency and work-authorization lists.
+For selected generic query sources, supply both `search_terms` and
+`query_locations`: empty query locations skip those sources with a diagnostic
+rather than falling back to embedded legacy queries. Run `python3 -m job_search
+--list-sources` before naming a source.
 
-> Changing `criteria.md` changes the fingerprint, which **reopens previously
-> rejected jobs**. The next run re-evaluates them at full LLM cost. Say so
-> before editing it, and prefer one deliberate edit over several small ones.
+Use `[candidate]` for legal residence and work authorization (ISO alpha-2), CV
+identity, private placeholder-to-environment mappings, and page limits. CV page
+limits resolve from exact advertised ISO country, then `EU`, then the fallback
+`max_pages` (default 1); multi-location postings take the smallest result.
+Broad locations such as Europe and EMEA do not imply EU, and the UK,
+Switzerland, and Norway are non-EU. Country keys accept either case and
+canonicalize to uppercase valid ISO alpha-2 codes; `XK` and `ZZ` are rejected.
+Base-CV rendering validates only fallback
+`max_pages`; it does not auto-shrink or apply advertised-location overrides.
 
-## Layer 3 — sections.py
+The retained `nonremote_work_authorization` policy-check identifier now applies
+explicit authorization requirements to every advertised arrangement, including
+remote. Do not infer authorization from residency; configure the two country
+lists independently.
 
-Groups the digest dashboard under headings. Start from `sections.example.py`:
+Use `[policy]` for named, ordered built-in checks. Configuration data cannot run
+arbitrary predicates. A model claim must be grounded in the posting before it
+rejects a job; otherwise it is reviewable.
 
-```bash
-cp sections.example.py sections.py
-```
+`criteria.md` is a required compatibility input whose contents feed only the
+reopen fingerprint. Tell the user that an edit can reopen rejected jobs and
+cause new LLM work, but it never reaches evaluator prompts or changes
+structured `[policy]` behavior. Make a policy edit in TOML instead.
 
-Order is priority — each job appears once, under the first section it matches;
-leftovers go to an automatic "Other". `applies_to` picks which lists a section
-groups (`"fits"`, `"review"`); deferred jobs stay a flat list. Sections are
-presentation only and never change what is scraped, evaluated, or delivered. A
-broken config never costs a run: the digest ships ungrouped with a warning strip
-and a Telegram alert.
+`cv_tailoring_prompt_file` is also compatibility-only: the pipeline parses it
+for legacy file-format validation, then the deterministic tailor ignores its
+instruction text. To change the active CV bullet-selection prompt, set
+`prompt_dir` and `prompt_revision` and add `cv_bullet_selection.txt`; the same
+directory supports `fact_extraction.txt`, `job_summary.txt`, and
+`compiler_repair.txt` with per-file built-in fallbacks.
 
-The helper vocabulary (`all_of`, `any_of`, `not_`, `is_remote`, `in_region`,
-`fact`, `location_contains`, `title_matches`, `on_job`, `days_since_posted`) is
-tabulated in the README section "Group the digest into your own sections", and
-lives in `job_search/digest/sections.py`. `sections.py` stays untracked; on
-Actions use the `SECTIONS_PY` variable.
+## Digest sections and escape hatch
 
-## Layer 4 — job_search_config.py (the escape hatch)
+Copy `sections.example.py` to `sections.py` for optional presentation grouping.
+Section order is priority and each job appears once. A load or definition error
+falls back to an ungrouped digest; a predicate smoke-check error retains valid
+sections and reports a warning. Sections never change search, policy, CVs, or
+delivery.
 
-Reach here only when no setting covers the need — a hand-written job filter, or
-an LLM client the three schemes can't express. A Python module exporting one
-function, mutating the runtime in place:
+Reach for `job_search_config.py` only when no catalogued setting expresses the
+need. It is reviewed executable Python, deliberately unvalidated, and runs
+with process credentials. Never put credentials or private CV data in it.
+When `JOB_SEARCH_CONFIG_FILE` is absent, the runtime optionally checks the
+working-directory `job_search_config.py`; an explicit nonempty path must exist,
+and an explicit blank value is an error.
 
 ```python
 def configure(runtime, settings):
-    runtime.candidate_filter = lambda job: "qa" not in job.title.lower()
+    runtime.candidate_filter = lambda job: job.source == "example-source"
+    return runtime
 ```
 
-`runtime` is a `job_search.runtime.Runtime`; `settings` is the effective
-`PipelineConfig`. Nothing subclasses anything and there is no plugin discovery:
-the module imports what it needs and you install those imports yourself
-(including in the workflow, for Actions).
-
-**It is deliberately unvalidated.** A mistake surfaces as that file's own
-traceback, not a tidy message. Three things do raise a clear error: an explicit
-`JOB_SEARCH_CONFIG_FILE` naming a missing file, a module without `configure`,
-and an old-style `configure(defaults, settings)` signature. An *empty*
-`JOB_SEARCH_CONFIG_FILE` is an error too, so a blank `.env` line can't silently
-disable a local config.
-
-If the hatch swaps the backend or renderer, flip the matching derived flags
-(`runtime.cv_required`, `needs_telegram`, `needs_base_tex`, `telegram_markup`)
-so preflight and the pipeline stay coherent with it.
-
-```bash
-cp job_search_config.example.py job_search_config.py
-python3 -m job_search.pipeline --check-config
-```
-
-**Security boundary:** this file is trusted executable code and is deliberately
-trackable in git. Never put credentials, tokens, or private CV values in it —
-those belong in the environment, a mode-600 `.env`, or Actions secrets. Review
-it like application source before every commit.
-
-`docs/configuration.md` is the full settings reference.
-
-## Working method
-
-1. Read the current state before proposing a change — `--check-config` output,
-   the relevant file, and `job_search/config.py` for the actual default.
-2. Make the change at the highest layer that suffices.
-3. Re-run `--check-config`.
-4. If the change touches evaluation or delivery, say what it costs on the next
-   run (reopened jobs, re-tailoring, extra LLM calls) before it runs.
-5. If tests are relevant, `python3 -m pytest -q` (offline suite, no network).
+Finish every configuration change with the appropriate validation command; use
+`--check-config` only on the intended, trusted deployment host.

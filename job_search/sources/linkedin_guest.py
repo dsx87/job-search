@@ -30,7 +30,13 @@ from ..dates import parse_iso_date
 from ..http import http_request
 from ..identity import job_identity_keys
 from ..models import Job
-from .base import BaseSource, register
+from .base import (
+    BaseSource,
+    configured_query_locations,
+    configured_results_per_query,
+    configured_search_terms,
+    register,
+)
 
 NAME = "linkedin-guest"
 DESCRIPTION = (
@@ -126,8 +132,17 @@ class LinkedInGuestSource(BaseSource):
         descriptions_disabled = False
         consecutive_429 = 0
 
-        for query in QUERIES:
-            for location, results_wanted in LOCATIONS:
+        queries = configured_search_terms(self, QUERIES)
+        configured_locations = configured_query_locations(self)
+        if getattr(self, "search", None) is not None and (not queries or not configured_locations):
+            self._skip("configured search requires search_terms and query_locations")
+            return []
+        locations = (
+            tuple((location, configured_results_per_query(self, PER_PAGE)) for location in configured_locations)
+            if getattr(self, "search", None) is not None else tuple(LOCATIONS)
+        )
+        for query in queries:
+            for location, results_wanted in locations:
                 if time.monotonic() >= deadline:
                     self._timed_out("LinkedIn source time budget reached")
                     if verbose:
