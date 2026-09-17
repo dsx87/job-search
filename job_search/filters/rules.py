@@ -6,7 +6,7 @@ from ..identity import job_identity_keys
 from ..location.classify import classify_region, is_eu_member_job, is_israel_job
 from ..models import Region, merge_jobs
 from ..text import strip_html
-from .keywords import SKILL_KEYWORDS, match_keywords
+from .keywords import SKILL_KEYWORDS, match_configured_keywords, match_keywords
 
 RELOCATION_KEYWORDS = [
     "relocation",
@@ -342,6 +342,32 @@ def role_filter(job):
     return bool(_ENGINEERING_TITLE_RE.search(title) or _APPLE_ROLE_TITLE_RE.search(title))
 
 
+def configured_location_filter(job, search):
+    """Keep postings outside explicitly excluded advertised locations.
+
+    This intentionally only runs for a supplied reusable search configuration;
+    the legacy India-aware parser remains the compatibility path until a
+    transitional profile opts into the new settings.
+    """
+    terms = tuple(str(term).strip().lower() for term in getattr(search, "location_exclude_terms", ()) if str(term).strip())
+    # A location exclusion applies to the advertised job location.  Descriptions
+    # commonly name offices, customers, or teams elsewhere; those mentions do
+    # not say where the candidate must work.
+    advertised_location = str(job.location or "").lower()
+    return not any(match_configured_keywords(advertised_location, (term,)) for term in terms)
+
+
+def configured_role_filter(job, search):
+    title = job.title.strip().lower()
+    if not title:
+        return False
+    excluded = tuple(str(term).strip().lower() for term in getattr(search, "role_exclude_terms", ()) if str(term).strip())
+    included = tuple(str(term).strip().lower() for term in getattr(search, "role_include_terms", ()) if str(term).strip())
+    if any(match_configured_keywords(title, (term,)) for term in excluded):
+        return False
+    return not included or bool(match_configured_keywords(title, included))
+
+
 def skills_filter(job):
     title_text = job.title.lower()
     desc_text = strip_html(job.description).lower()
@@ -382,6 +408,23 @@ def skills_filter(job):
     if len(desc_apple_signals) < 2:
         return False
 
+    job.matched_skills = sorted(set(matched))
+    return True
+
+
+def configured_skills_filter(job, search):
+    """Apply declarative skill groups: every group needs one matching term."""
+    groups = getattr(search, "skill_include_groups", ())
+    text = job_text(job)
+    matched = []
+    for raw_group in groups:
+        group = tuple(str(term).strip().lower() for term in raw_group if str(term).strip())
+        if not group:
+            continue
+        present = match_configured_keywords(text, group)
+        if not present:
+            return False
+        matched.extend(present)
     job.matched_skills = sorted(set(matched))
     return True
 
@@ -444,7 +487,11 @@ def remote_filter(job):
 
 
 def relocation_filter(job, relocation_regions=None):
-    relocation_regions = relocation_regions or DEFAULT_RELOCATION_REGIONS
+    # ``None`` means the legacy default.  An explicitly empty set is a useful
+    # configured override: it disables relocation without silently restoring
+    # the historical regions.
+    if relocation_regions is None:
+        relocation_regions = DEFAULT_RELOCATION_REGIONS
     region = job.region if job.region != Region.UNKNOWN else classify_region(job)
     if region not in relocation_regions:
         return False
@@ -469,6 +516,65 @@ def opportunity_filter(job, relocation_regions=None):
     if is_israel_job(job):
         return True  # LLM in criteria.md judges office-days requirement
     return remote_filter(job) or relocation_filter(job, relocation_regions)
+
+
+def _configured_regions(values):
+    regions = set()
+    for value in values:
+        if isinstance(value, Region):
+            regions.add(value)
+        else:
+            key = str(value).strip().lower()
+            if key == "eu":
+                regions.add(Region.EU)
+            elif key == "ca":
+                regions.add(Region.CA)
+            elif key == "au":
+                regions.add(Region.AU)
+            elif key == "us":
+                regions.add(Region.US)
+    return regions
+
+
+def _candidate_is_explicitly_local(job, candidate):
+    """Whether the candidate explicitly has residence *and* work permission.
+
+    Residence alone never implies authorization.  The resolver only returns
+    countries advertised for this role, so an employer HQ/team mentioned in a
+    description cannot accidentally create a local exception.
+    """
+    if candidate is None:
+        return False
+    residences = frozenset(str(value).strip().upper() for value in getattr(candidate, "residency_countries", ()) if str(value).strip())
+    authorizations = frozenset(str(value).strip().upper() for value in getattr(candidate, "work_authorization_countries", ()) if str(value).strip())
+    if not residences or not authorizations:
+        return False
+    try:
+        from ..location.countries import advertised_locations
+    except ImportError:
+        return False
+    for target in advertised_locations(job.location):
+        country = str(getattr(target, "country", "")).upper()
+        if country and country in residences and country in authorizations:
+            return True
+    return False
+
+
+def configured_opportunity_filter(job, search, candidate=None, relocation_regions=None):
+    """Apply remote/relocation switches without inheriting a personal locale."""
+    remote_allowed = bool(getattr(search, "remote_allowed", True))
+    relocation_allowed = bool(getattr(search, "relocation_allowed", True))
+    raw_regions = (
+        tuple(getattr(search, "relocation_regions", ()) or ())
+        if relocation_regions is None else tuple(relocation_regions)
+    )
+    regions = _configured_regions(raw_regions)
+    return (
+        _candidate_is_explicitly_local(job, candidate)
+        or
+        (remote_allowed and remote_filter(job))
+        or (relocation_allowed and relocation_filter(job, regions))
+    )
 
 
 def dedup(jobs):

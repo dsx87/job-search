@@ -2,7 +2,7 @@
 from ..dates import parse_epoch_date, parse_iso_date
 from ..http import http_json, verbose_source_error
 from ..models import Job
-from .base import BaseSource, register
+from .base import BaseSource, configured_results_per_query, configured_search_terms, register
 
 
 @register("Remotive remote jobs API.")
@@ -300,15 +300,22 @@ class WorkingNomadsSource(BaseSource):
     API_URL = BASE_URL + "/jobsapi/_search"
 
     def payload(self):
-        query = (
+        legacy_query = (
             '"ios" OR "ipados" OR "macos" OR "iphone" OR "ipad" OR '
             '"swiftui" OR "uikit" OR "appkit" OR "objective-c" OR '
             '("swift" AND ("ios" OR "macos" OR "swiftui" OR "uikit" OR "xcode"))'
         )
+        terms = configured_search_terms(self, ())
+        if getattr(self, "search", None) is not None and not terms:
+            return None
+        query = (
+            " OR ".join('"{}"'.format(term.replace('"', "")) for term in terms)
+            if getattr(self, "search", None) is not None else legacy_query
+        )
         return {
             "track_total_hits": True,
             "from": 0,
-            "size": 100,
+            "size": configured_results_per_query(self, 100),
             "_source": [
                 "company",
                 "locations",
@@ -337,11 +344,15 @@ class WorkingNomadsSource(BaseSource):
 
     def fetch(self, verbose=False):
         jobs = []
+        payload = self.payload()
+        if payload is None:
+            self._skip("configured search requires search_terms")
+            return jobs
         try:
             status, data = http_json(
                 self.API_URL,
                 method="POST",
-                json_body=self.payload(),
+                json_body=payload,
             )
             self._attempt_http(status)
             if status != 200:

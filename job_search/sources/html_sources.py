@@ -9,7 +9,7 @@ from ..http import http_request, verbose_source_error
 from ..identity import job_identity_keys
 from ..location.db import COUNTRY_NAMES
 from ..models import Job
-from .base import BaseSource, register
+from .base import BaseSource, configured_search_terms, register
 from .parsers import (
     JOBSCROLLER_CARD_RE,
     MOBILECAREER_JOB_OBJECT_RE,
@@ -26,6 +26,7 @@ from .parsers import (
 @register("Arc remote iOS/Swift pages.")
 class ArcSource(BaseSource):
     name = "arc"
+    generic_default_enabled = False
     BASE_URL = "https://arc.dev"
     PATHS = ("mobile-ios", "swift")
     NEXT_RE = re.compile(
@@ -154,6 +155,7 @@ class ArcSource(BaseSource):
 @register("Mobile.Career iOS jobs with direct company/ATS apply links.")
 class MobileCareerSource(BaseSource):
     name = "mobile.career"
+    generic_default_enabled = False
     IOS_URL = "https://mobile.career/ios-developer-jobs"
 
     def fetch(self, verbose=False):
@@ -212,6 +214,7 @@ class MobileCareerSource(BaseSource):
 @register("JobScroller Swift/Objective-C company-career-page listings.")
 class JobScrollerSource(BaseSource):
     name = "jobscroller"
+    generic_default_enabled = False
     ROLE_URLS = (
         "https://www.jobscroller.net/roles/swift",
         "https://www.jobscroller.net/roles/objective-c",
@@ -273,7 +276,11 @@ class RelocateMeSource(BaseSource):
 
     def fetch(self, verbose=False):
         jobs = []
-        for query in self.QUERIES:
+        queries = configured_search_terms(self, self.QUERIES)
+        if getattr(self, "search", None) is not None and not queries:
+            self._skip("configured search requires search_terms")
+            return jobs
+        for query in queries:
             try:
                 status, text = http_request(self.SEARCH_URL, params={"q": query})
                 self._attempt_http(status)

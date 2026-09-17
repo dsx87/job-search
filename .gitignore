@@ -19,6 +19,8 @@
 # variables or a mode-600 .env file.
 !job_search_config.py
 !job_search_config.example.py
+!job_search.example.toml
+!deployment.env.example
 # seen_jobs.json is NOT tracked on main — it lives on the orphan `state` branch.
 
 # Unignore the in-repo agent skills and the shared permission allowlist. The

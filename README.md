@@ -14,9 +14,31 @@ with custom CVs attached — to Telegram.
 cron (zero infrastructure) *and* a self-hosted **Raspberry Pi 1** — the original
 700 MHz ARMv6 board with 512 MB of RAM. It runs on the Pi because the whole
 application is **pure Python standard library**: there is nothing to compile and
-zero pip packages to install for the core path.
+no optional scraper packages required for the core path. Versioned TOML
+configuration uses `tomli` on Python 3.9/3.10 and the standard-library
+`tomllib` on Python 3.11+.
 
 > Built to run my own job search end-to-end. It's a working system, not a demo.
+
+## Configure search and CV policy
+
+Select a commented TOML file with `JOB_SEARCH_SETTINGS_FILE`. The complete
+[job_search.example.toml](job_search.example.toml) covers search terms, sources,
+candidate eligibility, deterministic evaluation checks, and country-aware CV
+page limits. [Configuration documentation](docs/configuration.md) explains
+precedence, paths, trusted customization, and the complementary
+[environment example](deployment.env.example).
+
+```bash
+python -m job_search --describe-config
+python -m job_search --validate-config job_search.example.toml
+JOB_SEARCH_SETTINGS_FILE=/path/to/job_search.toml python -m job_search.pipeline --check-config
+```
+
+Discovery and TOML validation are data-only. `--check-config` executes trusted
+customization code and checks the host. A CV's advertised job location selects
+its maximum pages; the fallback remains one page, with optional country and EU
+overrides. Changing page limits preserves delivery history.
 
 ## Deploy it two ways
 
@@ -123,19 +145,20 @@ So the core has **none of them**:
   injected from a `CV_PHONE` secret only at compile time (see [Privacy](#privacy)).
 - **Pluggable sources** — every board is a small `BaseSource` subclass behind a
   `@register` decorator, so adding a provider is one class.
-- **Configured by environment, not by code** — every realistic knob (output
-  mode, prompts, candidate identity, sources, LaTeX engine, ...) is an
-  environment variable read once at startup. One optional trusted
-  `job_search_config.py` survives as a deliberately unvalidated escape hatch
-  for the rare thing that genuinely needs code, such as a pre-LLM candidate
-  filter.
+- **Commented TOML configuration** — search, candidate profile, evaluation
+  policy, CV page limits, and runtime settings share a versioned configuration.
+  Nonempty environment variables override file values; credentials remain in
+  environment variables. A trusted Python escape hatch supports custom code.
 
 ## Customize the runtime
 
-Start with `python -m job_search.pipeline --check-config` to see every
-effective setting and validate your environment. Most deployments only need
-environment variables — see [`docs/configuration.md`](docs/configuration.md)
-for the full settings table.
+Start with [job_search.example.toml](job_search.example.toml), select it with
+`JOB_SEARCH_SETTINGS_FILE`, and run
+`python -m job_search.pipeline --validate-config job_search.example.toml` for
+an offline, data-only check. `--describe-config` returns the option catalog;
+`--check-config` shows effective settings and origins, executes trusted
+customization, and checks runtime requirements. See
+[`docs/configuration.md`](docs/configuration.md) for precedence and examples.
 
 For the rare thing that genuinely needs code, copy the tested example and
 validate it before running:

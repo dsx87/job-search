@@ -18,3 +18,7 @@ python-jobspy~=1.1.82
 # Optional: enables the secrettelaviv source (Cloudflare-fronted, needs a real
 # browser). Requires `python -m playwright install chromium` after pip install.
 playwright~=1.61.0
+
+# TOML parser for Python 3.9-3.10; Python 3.11+ ships tomllib. Keep TOML 1.0
+# parity with the standard-library parser used by newer runners.
+tomli>=2.0,<2.4; python_version < "3.11"

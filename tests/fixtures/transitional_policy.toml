@@ -1,0 +1,24 @@
+[settings]
+version = 1
+
+[search]
+role_include_terms = ["ios", "macos"]
+skill_include_groups = [["swift"]]
+max_age_days = 30
+remote_allowed = true
+relocation_allowed = true
+
+[candidate]
+residency_countries = ["IL"]
+work_authorization_countries = ["IL"]
+
+[policy]
+check_order = ["language", "role_match", "excluded_industry", "excluded_platform_focus", "minimum_seniority", "local_office_attendance", "remote_location_residency", "nonremote_nonpermanent_employment", "remote_fact_residency", "nonremote_work_authorization", "nonremote_sponsorship", "nonremote_arrangement"]
+require_english = true
+local_language_exempt = true
+allowed_languages = ["english"]
+excluded_industries = ["crypto_web3"]
+excluded_platform_focuses = ["cross_platform", "other"]
+rejected_seniority = ["junior"]
+max_local_office_days = 3
+allow_sponsorship_override = true

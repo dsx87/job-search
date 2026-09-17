@@ -32,7 +32,7 @@ def main(cfg=None) -> int:
 
     phone = os.environ.get("CV_PHONE", "").strip()
     if artifact.media_type == "application/pdf":
-        detail = "1 page, phone {}".format("included" if phone else "masked")
+        detail = "verified PDF, phone {}".format("included" if phone else "masked")
     else:
         detail = artifact.media_type
     print("Wrote {} ({}).".format(output_path, detail))

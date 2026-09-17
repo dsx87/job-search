@@ -1,0 +1,14 @@
+[settings]
+version = 1
+
+[search]
+# Literal alternatives reproduce the former Apple role/skill vocabulary without
+# relying on its hidden aliases or predicates.
+role_include_terms = ["engineer", "developer", "architect", "ios", "ipados", "macos", "iphone", "ipad", "watchos", "tvos", "swiftui", "uikit", "appkit", "objective-c", "objc", "mobile"]
+role_exclude_terms = ["qa", "quality assurance", "test engineer", "sdet", "support engineer", "technical support", "sales", "account manager", "recruiter", "account director", "director", "program manager", "project manager", "product manager", "engineering manager", "quality automation", "devops", "site reliability", "sre", "customer success", "business development", "writer", "advocate", "evangelist", "pest", "technician", "field service", "mechanical designer", "data scientist", "data science", "data analyst", "machine learning engineer", "ml engineer", "ai engineer", "ai/ml engineer"]
+skill_include_groups = [["ios", "ipados", "macos", "iphone", "ipad", "watchos", "tvos", "swift", "swiftui", "swift ui", "uikit", "appkit", "objective-c", "objective c", "objc", "core data", "coredata"]]
+location_exclude_terms = ["bangalore", "bengaluru", "india"]
+relocation_regions = ["EU", "CA", "US"]
+max_age_days = 30
+remote_allowed = true
+relocation_allowed = true
