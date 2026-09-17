@@ -1,7 +1,8 @@
 # Complete, fictional settings file for AI Job Hunter.
 #
-# Copy this file, change the values for one candidate, then select it with:
-#   JOB_SEARCH_SETTINGS_FILE=/absolute/path/to/job_search.toml
+# Copy this file into a private, commit-pinned configuration repository, replace
+# the Avery Example values, and select it with JOB_SEARCH_SETTINGS_FILE.
+# Fetching needs this selected file plus at least one explicit [search] setting.
 #
 # Values in this file are data only. Credentials and a few host controls are
 # environment-only and are deliberately shown as comments. Every active option

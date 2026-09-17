@@ -42,16 +42,35 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Materialize the optional config escape hatch
+      - name: Validate private configuration request
         env:
-          JOB_SEARCH_CONFIG_PY: ${{ secrets.JOB_SEARCH_CONFIG_PY }}
+          PERSONAL_RUNS_ENABLED: ${{ vars.PERSONAL_RUNS_ENABLED }}
+          CONFIG_REPOSITORY: ${{ vars.CONFIG_REPOSITORY }}
+          CONFIG_REF: ${{ vars.CONFIG_REF }}
+          CONFIG_DEPLOY_KEY: ${{ secrets.CONFIG_DEPLOY_KEY }}
         run: |
-          if [ -n "$JOB_SEARCH_CONFIG_PY" ]; then
-            printf '%s' "$JOB_SEARCH_CONFIG_PY" > job_search_config.py
-            echo "Wrote job_search_config.py from the Actions secret."
-          else
-            echo "Using a tracked job_search_config.py when present; otherwise built-in defaults."
-          fi
+          failed=0
+          [ "$PERSONAL_RUNS_ENABLED" = "true" ] || { echo "::error::Set PERSONAL_RUNS_ENABLED=true before requesting a personal run."; failed=1; }
+          [[ "$CONFIG_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::CONFIG_REPOSITORY must be owner/repository."; failed=1; }
+          [[ "$CONFIG_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::CONFIG_REF must be a lowercase full 40-character commit SHA."; failed=1; }
+          [ -n "$CONFIG_DEPLOY_KEY" ] || { echo "::error::CONFIG_DEPLOY_KEY is required."; failed=1; }
+          exit "$failed"
+
+      - name: Checkout pinned private configuration
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CONFIG_REPOSITORY }}
+          ref: ${{ vars.CONFIG_REF }}
+          ssh-key: ${{ secrets.CONFIG_DEPLOY_KEY }}
+          persist-credentials: false
+          path: .private-config/job-search-config
+
+      - name: Verify private configuration revision
+        env:
+          CONFIG_REF: ${{ vars.CONFIG_REF }}
+        run: |
+          actual="$(git -C .private-config/job-search-config rev-parse HEAD)"
+          [ "$actual" = "$CONFIG_REF" ] || { echo "::error::Private configuration checkout does not match CONFIG_REF."; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -65,9 +84,15 @@ jobs:
             texlive-latex-recommended \
             texlive-fonts-recommended
 
+      - name: Validate pinned private configuration
+        env:
+          JOB_SEARCH_SETTINGS_FILE: ${{ github.workspace }}/.private-config/job-search-config/job_search.toml
+        run: python3 -m job_search.pipeline --validate-config "$JOB_SEARCH_SETTINGS_FILE"
+
       - name: Tailor CV and send to Telegram
         env:
           PYTHONUNBUFFERED: "1"
+          JOB_SEARCH_SETTINGS_FILE: ${{ github.workspace }}/.private-config/job-search-config/job_search.toml
           # Generic scheme-based LLM providers (see the daily workflow).
           LLM_PRIMARY_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LLM_FALLBACK_API_KEY: ${{ secrets.OPENAI_API_KEY }}

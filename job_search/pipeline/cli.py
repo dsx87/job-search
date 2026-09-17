@@ -44,7 +44,7 @@ def run_tailor(args, cfg) -> None:
         company = host.replace("www.", "").split(".")[0] if host else ""
 
     job = Job(
-        title=args.title or "iOS Developer",
+        title=args.title or "Job opportunity",
         company=company or "the role",
         location=args.location,
         url=args.url,

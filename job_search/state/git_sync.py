@@ -23,7 +23,7 @@ from .seen_merge import merge_refs
 
 STATE_DIR = ".state"          # dedicated checkout of the `state` branch
 STATE_BRANCH = "state"
-COMMIT_MESSAGE = "chore: update seen jobs state (rpi-igor) [skip ci]"
+COMMIT_MESSAGE = "chore: update seen jobs state (rpi) [skip ci]"
 PUSH_ATTEMPTS = 5
 
 

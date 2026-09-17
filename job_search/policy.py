@@ -14,7 +14,7 @@ Two gates sit outside that grounding scheme because they are decided directly
 from the posting text (no LLM fact to hallucinate), so they reject hard: the
 description must be written in English, and a non-remote role must explicitly
 state remote work or offer relocation/visa sponsorship. Israeli roles are exempt
-from both (Igor is local; some postings are in Hebrew).
+from both (the candidate is local; some postings are in Hebrew).
 """
 import hashlib
 import json
@@ -24,7 +24,7 @@ from .models import coerce_job
 from .text import collapse_ws, is_probably_english
 
 _US_CA_GROUP = {"US", "USA", "UNITED STATES", "CA", "CANADA"}
-_TZ_NOTE = "Role requires US working hours (Igor is UTC+3) — review the timezone mismatch."
+_TZ_NOTE = "Role requires US working hours (the candidate is UTC+3) — review the timezone mismatch."
 
 
 def _decision(verdict, reason, timezone_note=None):
@@ -134,7 +134,7 @@ def _apply_legacy_policy(facts, job) -> dict:
     if arrangement == "remote":
         if facts.get("remote_geo_scope") == "restricted":
             # criteria.md: "Skip a remote role that is restricted to a specific
-            # country or region Igor cannot work from ... UNLESS it offers
+            # country or region the candidate cannot work from ... UNLESS it offers
             # relocation/visa sponsorship." The location-based branch above
             # honored that exception; this description-based one ignored it, so
             # the same job got opposite verdicts depending on where the

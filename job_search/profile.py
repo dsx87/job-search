@@ -1,25 +1,14 @@
-"""Personal-profile constants and the tailored-CV content guard.
+"""Candidate-configurable tailored-CV content guard.
 
-These values are byte-identical to the originals; validate_tailored_cv guards
-against drift in either the fixed job timeline or the never-claim term list.
+The package carries no candidate identity. Callers that need timeline or claim
+constraints pass them explicitly from their configured candidate profile.
 """
 import re
 
-# Fixed reverse-chronological order of the four real jobs (matched as substrings
-# of each \jobheader{...} company field). The model must never reorder these.
-EXPECTED_JOB_ORDER = ["Check Point", "Applitools", "Shutterfly", "CNOGA"]
-
-# Industries/domains Igor has never worked in, plus skills/frameworks the master
-# profile says to never claim. Any of these appearing in a tailored CV is a
-# fabrication (e.g. "consumer banking" injected because the employer is a bank).
-FORBIDDEN_TERM_PATTERNS = [
-    r"banking", r"\bbank\b", r"fintech", r"financial services",
-    r"insurance", r"e-?commerce", r"\bgaming\b", r"advertising",
-    r"StoreKit", r"WidgetKit", r"SwiftData", r"HealthKit", r"\bFDA\b", r"HIPAA",
-    # Igor never wrote C++ — only Swift/C++ interop is truthful. Catch any C++
-    # *development* claim while leaving the allowed "C++ interop" wording alone.
-    r"develop\w* c\+\+",
-]
+# Compatibility names for callers that omit a profile. They are deliberately
+# empty: a reusable package must not impose one person's history or exclusions.
+EXPECTED_JOB_ORDER = ()
+FORBIDDEN_TERM_PATTERNS = ()
 
 
 def validate_tailored_cv(
@@ -27,15 +16,12 @@ def validate_tailored_cv(
 ) -> list:
     """Return a list of human-readable constraint violations (empty == clean).
 
-    Catches the two failure modes the prompt alone can't guarantee: jobs
-    reordered out of fixed reverse-chronological order, and fabricated
-    industries/domains or never-claim skills.
+    Candidate-specific constraints are optional and supplied by the caller.
     """
     violations = []
 
     # 1. Job order — extract \jobheader company fields in document order, keep
-    #    only the four work entries (the Education jobheader matches none), and
-    #    verify their relative order matches EXPECTED_JOB_ORDER.
+    #    configured work entries, and verify their relative order.
     expected_job_order = list(
         EXPECTED_JOB_ORDER if expected_job_order is None else expected_job_order
     )

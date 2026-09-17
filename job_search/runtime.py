@@ -264,7 +264,7 @@ def build_runtime(
         backend=backend,
         cv_required=cv_required,
         needs_telegram=output_mode == "telegram",
-        needs_base_tex=cv_required,
+        needs_base_tex=cv_required or command == "base",
         telegram_markup=output_mode == "telegram",
     )
     runtime = apply_user_config(runtime, settings, environ=environ)

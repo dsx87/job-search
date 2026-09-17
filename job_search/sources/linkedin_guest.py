@@ -40,7 +40,7 @@ from .base import (
 
 NAME = "linkedin-guest"
 DESCRIPTION = (
-    "LinkedIn iOS/macOS jobs (EU, Canada, Israel) via LinkedIn's public guest API. "
+    "LinkedIn jobs using configured terms and locations via the public guest API. "
     "Stdlib-only replacement for the jobspy-backed LinkedIn sources; runs on ARMv6."
 )
 

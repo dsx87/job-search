@@ -35,11 +35,11 @@ def _install(monkeypatch, items):
 
 
 def test_upload_posts_multipart_with_keep_name_and_a_long_id(monkeypatch):
-    fake = _install(monkeypatch, [_body("https://x0.at/igor_pivnyk_cv_acme_AbCd.pdf\n")])
+    fake = _install(monkeypatch, [_body("https://x0.at/avery_example_cv_acme_AbCd.pdf\n")])
 
-    url = x0.X0Client().upload("igor_pivnyk_cv_acme.pdf", b"%PDF-1.4 ciphertext")
+    url = x0.X0Client().upload("avery_example_cv_acme.pdf", b"%PDF-1.4 ciphertext")
 
-    assert url == "https://x0.at/igor_pivnyk_cv_acme_AbCd.pdf"
+    assert url == "https://x0.at/avery_example_cv_acme_AbCd.pdf"
     request = fake.requests[0]
     assert request.full_url == x0.API_BASE
     assert request.get_method() == "POST"
@@ -49,7 +49,7 @@ def test_upload_posts_multipart_with_keep_name_and_a_long_id(monkeypatch):
     # link (and so the downloaded file) gets a random name.
     assert b'name="keep_name"' in body and b"1" in body
     assert b'name="id_length"' in body and b"24" in body
-    assert b'name="file"; filename="igor_pivnyk_cv_acme.pdf"' in body
+    assert b'name="file"; filename="avery_example_cv_acme.pdf"' in body
     assert b"%PDF-1.4 ciphertext" in body
 
 

@@ -1,4 +1,4 @@
-"""Fictional digest sections — copy to `sections.py` to switch grouping on.
+"""Fictional digest sections for a selected private configuration.
 
 With no `sections.py` present the digest renders exactly as it always has: one
 flat list of fits. Create the file and the dashboard groups the Fits (and,
@@ -14,7 +14,8 @@ supported, where `entry.job` is the Job record and `entry.evaluation` is the
 LLM result. Sections change presentation only: search and policy still come
 from the selected TOML file.
 
-Point the pipeline at a different file with the SECTIONS_FILE env var.
+Keep a real sections file in the private configuration checkout and point the
+selected TOML's settings.sections_file at it (or use the SECTIONS_FILE override).
 """
 from job_search.digest.sections import (
     Section,

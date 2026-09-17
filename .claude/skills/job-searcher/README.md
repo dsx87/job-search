@@ -8,8 +8,8 @@ who clones the repo and trusts the workspace.
 
 | Skill | Purpose |
 |---|---|
-| `/job-searcher:configure` | environment settings, `criteria.md`, sources, `sections.py`, and the optional `job_search_config.py` escape hatch |
-| `/job-searcher:deploy` | GitHub Actions and Raspberry Pi installs, dedup-state seeding/sync, operating a host, run triage |
+| `/job-searcher:configure` | selected versioned TOML, protected environment settings, private configuration checkout, sources, policy, sections, and the optional Python escape hatch |
+| `/job-searcher:deploy` | GitHub Actions and Raspberry Pi private-config checkout, host operation, rollout, and triage |
 | `/job-searcher:explain` | how the pipeline works — stages, sources, provider fallback, CV guards, delivery, and the local CLI/TUI |
 
 `configure` and `explain` also load automatically when a request matches.
@@ -24,5 +24,5 @@ invoke it deliberately.
 - Edits to a `SKILL.md` take effect immediately. Edits to `plugin.json` need
   `/reload-plugins` or a restart.
 - The skills are a map into the real documentation, not a copy of it. Depth
-  lives in `docs/configuration.md`, `docs/deploy-rpi.md`, and the README; keep
-  it that way when editing them, so there is one place to update.
+  lives in `docs/configuration.md`, deployment documentation, and the README;
+  keep it that way when editing them, so there is one place to update.

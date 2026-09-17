@@ -23,8 +23,10 @@ which module owns the answer so you can read it before replying.
    512 MB Pi.
 2. **Deduplicate** — `seen_jobs.json` via `job_search/state/job_store.py`. Every
    role is evaluated and notified at most once.
-3. **Filter** — the LLM scores each new role against `criteria.md`; executable
-   defaults are in `job_search/policy.py`, evaluation in `job_search/llm/`.
+3. **Filter** — ordered structured policy in the selected TOML and built-in
+   checks determine eligibility; model claims must be grounded in the posting.
+   `criteria.md` contributes only to the reevaluation fingerprint, not evaluator
+   context or executable policy. Evaluation lives in `job_search/llm/`.
    Outcomes: fit, review, deferred, rejected.
 4. **Tailor** — for each fit and each review, the model selects bullets from the
    base LaTeX résumé; a factual-content guard validates, `pdflatex` compiles,
@@ -106,8 +108,10 @@ what the ARMv6 Pi runs instead of the jobspy-backed LinkedIn sources.
 ## Running it by hand
 
 ```bash
-python3 -m job_search --json                                  # scrape, print JSON
-python3 -m job_search --sources remotive,remoteok --max-age 7
+python3 -m job_search --describe-config                        # catalog, no config needed
+python3 -m job_search --validate-config path/to/job_search.toml
+python3 -m job_search --json                                  # selected TOML + explicit search required
+python3 -m job_search --sources remotive,remoteok --max-age 7 # selected TOML + explicit search required
 python3 -m job_search --list-sources
 python3 -m job_search.tui                                     # curses browser
 
@@ -119,19 +123,26 @@ python3 -m job_search.pipeline                                # the daily run
 python3 -m job_search.pipeline --tailor --url "https://…"
 python3 -m job_search.pipeline --tailor --job-text "$(pbpaste)" \
   --title "Senior iOS Developer" --company "Acme"
+python3 -m job_search.latex.render_base                   # configured base CV paths required
 ```
+
+The TUI can browse and mark existing local history without selected settings.
+Only its refresh action fetches, so refresh requires selected TOML and an
+explicit search setting.
 
 `--list`, `--test`, `--check-config`, and `--tailor` do not touch
 `seen_jobs.json`. `--seed` resets the dedup baseline. Preview the Telegraph
 pages without a real run using `scripts/telegraph_preview.py` (mints a separate
 preview account; `--upload` makes the archive link live).
 
-## Privacy facts to state accurately
+## Configuration and privacy facts
 
-The repo is public and carries no secrets. The résumé's phone is a `((PHONE))`
-placeholder replaced at compile time from `CV_PHONE` — never committed, never
-sent to the LLM. The digest page carries no phone number and, by construction,
-no CV password: the password is never placed on the object the renderer sees.
+The public repository carries no candidate identity, contacts, work history, or
+secrets. A real profile lives in a private, commit-pinned configuration checkout
+selected by `JOB_SEARCH_SETTINGS_FILE`; fetches require that file and an
+explicit search setting. Generic catalog defaults leave candidate and CV fields
+blank. Sensitive placeholder values are supplied through a protected host
+environment and never through public examples or TOML.
 
 ## Answering method
 

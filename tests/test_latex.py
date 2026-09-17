@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 # --- modules under test (repoint on migration) ---
-from job_search.profile import validate_tailored_cv, EXPECTED_JOB_ORDER
+from job_search.profile import validate_tailored_cv
 from job_search.latex import compile as compile_mod
 from job_search.latex import onepage as onepage_mod
 from job_search.latex.compile import (
@@ -20,7 +20,10 @@ from job_search.latex.compile import (
 from job_search.latex.onepage import _apply_density_overrides, ONE_PAGE_SHRINK_LADDER
 
 
-def _cv(order=("Check Point", "Applitools", "Shutterfly", "CNOGA"), extra=""):
+EMPLOYERS = ("Example Labs", "Sample Systems")
+
+
+def _cv(order=EMPLOYERS, extra=""):
     headers = "\n".join(f"\\jobheader{{{c} Ltd}}" for c in order)
     return (
         "\\documentclass[9.5pt]{article}\n"
@@ -47,33 +50,42 @@ def test_strip_latex_fences_passthrough_when_no_document():
 
 
 def test_validate_tailored_cv_clean():
-    assert validate_tailored_cv(_cv()) == []
+    assert validate_tailored_cv(_cv(), expected_job_order=EMPLOYERS) == []
 
 
 def test_validate_tailored_cv_out_of_order():
-    v = validate_tailored_cv(_cv(order=("Check Point", "Shutterfly", "Applitools", "CNOGA")))
+    v = validate_tailored_cv(
+        _cv(order=("Sample Systems", "Example Labs")), expected_job_order=EMPLOYERS
+    )
     assert len(v) == 1
     assert "out of order" in v[0]
 
 
 def test_validate_tailored_cv_missing_job():
-    v = validate_tailored_cv(_cv(order=("Check Point", "Applitools", "Shutterfly")))
+    v = validate_tailored_cv(_cv(order=("Example Labs",)), expected_job_order=EMPLOYERS)
     assert any("missing job" in x for x in v)
 
 
 def test_validate_tailored_cv_forbidden_term():
-    v = validate_tailored_cv(_cv(extra="Deep experience in banking systems."))
-    assert any("forbidden term present: 'banking'" == x for x in v)
+    v = validate_tailored_cv(
+        _cv(extra="A forbidden claim."), forbidden_term_patterns=(r"forbidden claim",)
+    )
+    assert any("forbidden term present: 'forbidden claim'" == x for x in v)
 
 
 def test_validate_tailored_cv_forbidden_cpp_development():
-    v = validate_tailored_cv(_cv(extra="Developed C++ shared libraries at Check Point."))
+    v = validate_tailored_cv(
+        _cv(extra="Developed C++ shared libraries."),
+        forbidden_term_patterns=(r"develop\w* c\+\+",),
+    )
     assert any(x.startswith("forbidden term present:") and "C++" in x for x in v)
 
 
 def test_validate_tailored_cv_allows_cpp_interop():
-    # Swift/C++ interop is truthful and must not be flagged.
-    assert validate_tailored_cv(_cv(extra="Used Swift/C++ interop; C++ Interop.")) == []
+    assert validate_tailored_cv(
+        _cv(extra="Used Swift/C++ interop; C++ Interop."),
+        forbidden_term_patterns=(r"develop\w* c\+\+",),
+    ) == []
 
 
 def testpdf_pages_from_log(tmp_path):
@@ -112,8 +124,8 @@ def test_apply_density_overrides_inserts_block_with_tunable_macros():
     assert "\\renewcommand{\\arraystretch}{0.95}" in out
 
 
-def test_expected_job_order_constant():
-    assert EXPECTED_JOB_ORDER == ["Check Point", "Applitools", "Shutterfly", "CNOGA"]
+def test_default_validator_has_no_candidate_specific_guard():
+    assert validate_tailored_cv(_cv(extra="A forbidden claim.")) == []
 
 
 def _fake_pdflatex(monkeypatch, returncodes, pdf_bytes=b"PDF", log_text=None):

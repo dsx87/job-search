@@ -5,8 +5,9 @@ Argument parsing, the interactive menu, and dispatch into sources.fetch.
 import argparse
 import json
 import sys
+from dataclasses import replace
 
-from .config import PipelineConfig
+from .config import PipelineConfig, require_search_configured
 from .filters.rules import DEFAULT_RELOCATION_REGIONS
 from .sources import ALL_SOURCES, SOURCE_DESCRIPTIONS
 from .sources.fetch import (
@@ -25,6 +26,26 @@ def _search_options(settings):
         return {}
     return {"search": settings.search, "candidate": settings.candidate,
             "budget_seconds": settings.scrape_budget_seconds}
+
+
+def _validate_search_arguments(args):
+    for raw, allowed, flag in (
+        (args.sources, set(ALL_SOURCES), "--sources"),
+        (args.relocation_region, {"eu", "ca", "au", "us"}, "--region"),
+    ):
+        if raw is None or (flag == "--sources" and raw.strip().lower() == "all"):
+            continue
+        parts = [part.strip().lower() for part in raw.split(",") if part.strip()]
+        if not parts or any(part not in allowed for part in parts):
+            raise ValueError("{} requires nonempty, supported values".format(flag))
+    if args.max_age is not None and args.max_age < 0:
+        raise ValueError("--max-age must be a nonnegative integer")
+
+
+def _cli_regions(raw):
+    # An explicit empty TOML list disables relocation regions; the legacy
+    # parse_regions helper treats an empty string as the default regions.
+    return set() if raw == "" else parse_regions(raw)
 
 
 def _source_names(raw, settings):
@@ -98,7 +119,7 @@ def interactive_menu(initial_args=None, settings=None):
 
     if initial_args is not None:
         source_names = _source_names(initial_args.sources, settings)
-        regions = parse_regions(initial_args.relocation_region)
+        regions = _cli_regions(initial_args.relocation_region)
         max_age = initial_args.max_age
         as_json = initial_args.as_json
         verbose = initial_args.verbose
@@ -138,7 +159,7 @@ def interactive_menu(initial_args=None, settings=None):
         elif choice in ("6", "verbose", "v"):
             verbose = not verbose
         elif choice in ("7", "list", "l"):
-            print_sources()
+            print_sources(generic=True)
         elif choice in ("8", "quit", "q", "exit"):
             return 0
         else:
@@ -220,11 +241,23 @@ def main(argv=None):
         return 0
 
     if args.list_sources:
-        print_sources()
+        print_sources(generic=True)
         return 0
 
     try:
+        _validate_search_arguments(args)
         settings = PipelineConfig.from_env()
+        explicit = {}
+        for field, value, flag in (
+            ("sources_enable", args.sources, "--sources"),
+            ("max_age_days", args.max_age, "--max-age"),
+            ("relocation_regions", args.relocation_region, "--region"),
+        ):
+            if value is not None:
+                explicit[field] = {"kind": "explicit", "source": flag}
+        if explicit:
+            settings = replace(settings, setting_origins={**settings.setting_origins, **explicit})
+        require_search_configured(settings)
     except (ValueError, OSError) as exc:
         print("Error: {}".format(exc), file=sys.stderr)
         return 2
@@ -240,7 +273,7 @@ def main(argv=None):
 
     return run_scraper(
         source_names=_source_names(args.sources, settings),
-        relocation_regions=parse_regions(args.relocation_region),
+        relocation_regions=_cli_regions(args.relocation_region),
         max_age=args.max_age,
         as_json=args.as_json,
         verbose=args.verbose,

@@ -1,9 +1,9 @@
 """Configuration: frozen dataclasses + from_env(), plus prompt/file loaders.
 
-The module-level constants reproduce the original flat-module globals exactly,
-so defaults are unchanged. PipelineConfig wraps them for explicit injection;
-run.py builds a config once and threads it through the stages. The scraper side
-reads its two constants (HTTP_TIMEOUT_SECONDS, MAX_WORKERS) directly — a
+The module-level constants provide generic defaults and preserve established
+environment aliases. PipelineConfig wraps them for explicit injection; run.py
+builds a config once and threads it through the stages. The scraper side reads
+its two constants (HTTP_TIMEOUT_SECONDS, MAX_WORKERS) directly — a
 ScraperConfig wrapper existed here until 2026-07-25 but was never constructed
 outside its own test, so it was removed rather than left as decoration.
 """
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping, Tuple
 
-from .settings import ConfigValidationError, load_settings
+from .settings import ConfigValidationError, OPTION_CATALOG, load_settings
 
 
 class ConfigurationError(ValueError):
@@ -61,23 +61,14 @@ class CandidateConfig:
     max_pages: int = 1
     max_pages_by_country: Mapping[str, int] = field(default_factory=dict)
     max_pages_by_region: Mapping[str, int] = field(default_factory=dict)
-    display_name: str = "Igor Pivnyk"
-    filename_prefix: str = "igor_pivnyk_cv"
-    base_tex_file: str = "igor_pivnyk_cv_base_updated.tex"
-    rendered_base_file: str = "igor_pivnyk_cv_base_updated.pdf"
-    employer_order: Tuple[str, ...] = (
-        "Check Point", "Applitools", "Shutterfly", "CNOGA",
-    )
-    forbidden_claim_patterns: Tuple[str, ...] = (
-        r"banking", r"\bbank\b", r"fintech", r"financial services",
-        r"insurance", r"e-?commerce", r"\bgaming\b", r"advertising",
-        r"StoreKit", r"WidgetKit", r"SwiftData", r"HealthKit", r"\bFDA\b",
-        r"HIPAA", r"develop\w* c\+\+",
-    )
-    private_placeholders: Mapping[str, str] = field(
-        default_factory=lambda: {"((PHONE))": "CV_PHONE"}
-    )
-    residency_countries: Tuple[str, ...] = ("IL",)
+    display_name: str = ""
+    filename_prefix: str = ""
+    base_tex_file: str = ""
+    rendered_base_file: str = ""
+    employer_order: Tuple[str, ...] = ()
+    forbidden_claim_patterns: Tuple[str, ...] = ()
+    private_placeholders: Mapping[str, str] = field(default_factory=dict)
+    residency_countries: Tuple[str, ...] = ()
     work_authorization_countries: Tuple[str, ...] = ()
 
     def __post_init__(self):
@@ -144,8 +135,8 @@ SCRAPE_BUDGET_SECONDS = 600
 SEEN_JOBS_FILE = "seen_jobs.json"
 CRITERIA_FILE = "criteria.md"
 CV_TAILORING_PROMPT_FILE = "cv_tailoring_prompt.md"
-BASE_TEX_FILE = "igor_pivnyk_cv_base_updated.tex"
-OUT_PDF_FILE = "igor_pivnyk_cv_base_updated.pdf"
+BASE_TEX_FILE = ""
+OUT_PDF_FILE = ""
 # Optional user-defined digest sections (job_search.digest.section_config). The
 # file is absent by default, and an absent file renders today's ungrouped
 # digest — the feature is opt-in and costs nothing until it exists.
@@ -187,14 +178,10 @@ PROMPT_REVISION = ""
 LATEX_ENGINE = "pdflatex"
 
 # ── Candidate identity ────────────────────────────────────────────────────────
-# The name on the CV and the prefix of every tailored PDF. These were class
-# defaults on CandidateProfile, which made the one thing most obviously *not*
-# reusable a property of the library rather than of the configuration. They are
-# still defaulted to this repository's owner so nothing changes without an env
-# var; the job_search_config.py escape hatch can also set them on the profile
-# directly.
-CV_DISPLAY_NAME = "Igor Pivnyk"
-CV_FILENAME_PREFIX = "igor_pivnyk_cv"
+# Candidate identity defaults are deliberately blank. Set these through a
+# versioned TOML file or their established environment aliases.
+CV_DISPLAY_NAME = ""
+CV_FILENAME_PREFIX = ""
 
 # ── LLM defaults (generic, scheme-based providers) ─────────────────────────────
 # A provider is a wire-protocol *scheme* (gemini | openai | anthropic) + model +
@@ -452,20 +439,7 @@ class PipelineConfig:
                     loader_environ.pop(worker_name, None)
         loaded = load_settings(environ=loader_environ)
         values = loaded.values
-        effective_origins = dict(loaded.origins)
-        # A run without a versioned TOML retains its established personal
-        # behavior. A selected TOML receives catalog defaults, making its
-        # profile explicit and reusable from day one.
         legacy = loaded.path is None
-
-        def configured(name, fallback):
-            if legacy and loaded.origins[name].kind == "default":
-                effective_origins[name] = {
-                    "kind": "legacy-default",
-                    "source": "legacy PipelineConfig compatibility default",
-                }
-                return fallback
-            return values[name]
 
         search = SearchConfig(
             sources_enable=values["sources_enable"],
@@ -486,18 +460,14 @@ class PipelineConfig:
             max_pages=values["max_pages"],
             max_pages_by_country=values["max_pages_by_country"],
             max_pages_by_region=values["max_pages_by_region"],
-            display_name=configured("display_name", CV_DISPLAY_NAME),
-            filename_prefix=configured("filename_prefix", CV_FILENAME_PREFIX),
-            base_tex_file=configured("base_tex_file", BASE_TEX_FILE),
-            rendered_base_file=configured("rendered_base_file", OUT_PDF_FILE),
-            employer_order=configured("employer_order", CandidateConfig().employer_order),
-            forbidden_claim_patterns=configured(
-                "forbidden_claim_patterns", CandidateConfig().forbidden_claim_patterns
-            ),
-            private_placeholders=configured(
-                "private_placeholders", CandidateConfig().private_placeholders
-            ),
-            residency_countries=configured("residency_countries", ("IL",)),
+            display_name=values["display_name"],
+            filename_prefix=values["filename_prefix"],
+            base_tex_file=values["base_tex_file"],
+            rendered_base_file=values["rendered_base_file"],
+            employer_order=values["employer_order"],
+            forbidden_claim_patterns=values["forbidden_claim_patterns"],
+            private_placeholders=values["private_placeholders"],
+            residency_countries=values["residency_countries"],
             work_authorization_countries=values["work_authorization_countries"],
         )
         policy = PolicyConfig(
@@ -570,12 +540,36 @@ class PipelineConfig:
                     origin if isinstance(origin, dict)
                     else {"kind": origin.kind, "source": origin.source}
                 )
-                for key, origin in effective_origins.items()
+                for key, origin in loaded.origins.items()
             },
             search=search,
             candidate=candidate,
             policy=policy,
         )
+
+
+_SEARCH_SETTING_FIELDS = frozenset(
+    spec.field for spec in OPTION_CATALOG if spec.section == "search"
+)
+
+
+def require_search_configured(cfg) -> None:
+    """Require an explicit, selected reusable search configuration."""
+    if not str(getattr(cfg, "settings_file", "") or "").strip():
+        raise ConfigurationError(
+            "Search requires a selected settings file. Copy job_search.example.toml "
+            "and set JOB_SEARCH_SETTINGS_FILE."
+        )
+    origins = getattr(cfg, "setting_origins", {}) or {}
+    for field_name in _SEARCH_SETTING_FIELDS:
+        origin = origins.get(field_name, {})
+        kind = origin.get("kind") if isinstance(origin, Mapping) else getattr(origin, "kind", "")
+        if kind in {"file", "env", "explicit"}:
+            return
+    raise ConfigurationError(
+        "Search requires at least one explicit [search] option in the selected "
+        "settings file, environment, or CLI override. See job_search.example.toml."
+    )
 
 
 # ── Prompt / file loaders ──────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pyzipper
 import pytest
 
+from job_search.config import SearchConfig, CandidateConfig, PolicyConfig
 from job_search.components import CVArtifact
 from job_search.digest import delivery
 from job_search.models import Job
@@ -72,7 +73,7 @@ def fake_prepare(pdf=b"PDFDATA"):
     def _prepare(_renderer, _llm, job, evaluation=None):
         described = coerce_job(job)
         artifact = CVArtifact(
-            "igor_pivnyk_cv_{}.pdf".format(_company_slug(described.get("company", ""))),
+            "avery_example_cv_{}.pdf".format(_company_slug(described.get("company", ""))),
             "application/pdf",
             pdf,
         )
@@ -95,6 +96,11 @@ def make_config(digest_delivery=False, telegraph_access_token=""):
     # Existing tests exercise the legacy per-job delivery path, so this defaults
     # digest_delivery OFF; the digest-mode tests below pass digest_delivery=True.
     return SimpleNamespace(
+        settings_file='explicit-test-fixture.toml',
+        setting_origins={'search_terms': {'kind': 'file'}},
+        search=SearchConfig(search_terms=('Python',)),
+        candidate=CandidateConfig(), policy=PolicyConfig(),
+        base_tex_file='avery_example_base.tex',
         llm_primary_scheme="gemini",
         llm_primary_model="gemini-custom",
         llm_primary_api_key="primary-key",
@@ -352,7 +358,7 @@ def test_daily_no_config_path_keeps_builtin_behavior(tmp_path, monkeypatch):
     for name in (
         "criteria.md",
         "cv_tailoring_prompt.md",
-        "igor_pivnyk_cv_base_updated.tex",
+        "avery_example_base.tex",
     ):
         (tmp_path / name).write_text("fixture", encoding="utf-8")
 
@@ -448,7 +454,8 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
     configured_llm = SimpleNamespace(usage_summary=lambda: "usage")
     observed = []
 
-    def fake_evaluate_job(llm, criteria, candidate, prompts=None):
+    def fake_evaluate_job(llm, criteria, job, prompts=None, **settings):
+        candidate = job
         observed.append((llm, criteria, candidate.title))
         return {
             "fit": False, "verdict": "nonfit", "reason": "custom policy",
@@ -1237,8 +1244,8 @@ def test_successful_enrichment_is_cleaned_before_evaluation(monkeypatch):
     )
     descriptions = []
 
-    def fake_evaluate(_client, _criteria, candidate, **_kwargs):
-        descriptions.append(candidate["description"])
+    def fake_evaluate(_client, _criteria, job, **_kwargs):
+        descriptions.append(job["description"])
         return {"fit": False, "reason": "no", "timezone_note": None}
 
     monkeypatch.setattr(EVALUATE_JOB, fake_evaluate)
@@ -1295,8 +1302,8 @@ def test_previously_deferred_job_can_later_be_evaluated(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: next(sufficiency))
     monkeypatch.setattr(
         EVALUATE_JOB,
-        lambda _client, _criteria, candidate, **_kwargs: (
-            evaluated.append(candidate["url"])
+        lambda _client, _criteria, job, **_kwargs: (
+            evaluated.append(job["url"])
             or {"fit": False, "reason": "no", "timezone_note": None}
         ),
     )
@@ -1521,7 +1528,8 @@ def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
     _telegram, _saved = install_daily_fakes(monkeypatch, [job])
     calls = []
 
-    def fake_evaluate_job(llm, criteria, candidate, prompts=None):
+    def fake_evaluate_job(llm, criteria, job, prompts=None, **settings):
+        candidate = job
         calls.append(("evaluate", candidate.title))
         return {
             "fit": True,
@@ -2497,7 +2505,7 @@ def test_telegraph_sends_one_message_with_one_hosted_cv_archive(monkeypatch):
     names = [name for name, _content in host.uploads]
     assert names == ["job-cvs-2026-07-21.zip"]
     nodes = _created_nodes(client)
-    assert "https://x0.at/igor_pivnyk_cv_acme_" not in nodes
+    assert "https://x0.at/avery_example_cv_acme_" not in nodes
     assert "https://x0.at/job-cvs-2026-07-21_" in nodes
     # The job is marked seen exactly as the ZIP path marks it.
     assert "https://x/match" in saved[-1]
@@ -2521,9 +2529,9 @@ def test_host_receives_only_an_encrypted_archive_of_plain_pdfs(monkeypatch):
     assert b"PLAINTEXTCV" not in zip_content
     with pyzipper.AESZipFile(io.BytesIO(zip_content)) as archive:
         with pytest.raises(RuntimeError, match="Bad password"):
-            archive.read("igor_pivnyk_cv_acme.pdf", pwd=b"wrong")
+            archive.read("avery_example_cv_acme.pdf", pwd=b"wrong")
         assert archive.read(
-            "igor_pivnyk_cv_acme.pdf", pwd=b"test-password-1234"
+            "avery_example_cv_acme.pdf", pwd=b"test-password-1234"
         ) == b"PLAINTEXTCV"
 
 
@@ -2603,7 +2611,7 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
     assert len(host.uploads) == 1
     with pyzipper.AESZipFile(io.BytesIO(host.uploads[0][1])) as archive:
         names = archive.namelist()
-        assert names == ["igor_pivnyk_cv_beta.pdf"]
+        assert names == ["avery_example_cv_beta.pdf"]
         assert archive.read(names[0], pwd=b"test-password-1234") == b"REVIEW-PLAINTEXT"
     assert "https://x/maybe" in saved[-1]
     assert len(telegram.messages) == 1
@@ -2725,7 +2733,7 @@ def test_a_telegraph_failure_after_successful_uploads_still_sends_the_zip(monkey
     name, _zf, html = _read_digest(telegram)
     assert name == "job-digest-2026-07-21.zip"
     # The archive keeps its local links, so the ZIP is self-contained as ever.
-    assert 'cvs/igor_pivnyk_cv_acme.pdf' in html
+    assert 'cvs/avery_example_cv_acme.pdf' in html
     assert "https://x/match" in saved[-1]
 
 

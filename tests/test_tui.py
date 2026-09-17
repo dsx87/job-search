@@ -1,4 +1,13 @@
+import pytest
 from job_search import tui
+
+
+@pytest.fixture(autouse=True)
+def explicit_search(tmp_path, monkeypatch):
+    config = tmp_path / "search.toml"
+    config.write_text('[settings]\nversion=1\n[search]\nsearch_terms=["Python"]\n')
+    monkeypatch.setenv("JOB_SEARCH_SETTINGS_FILE", str(config))
+
 from job_search.models import Job
 from job_search.sources.health import FetchReport, SourceHealth, SourceStatus
 

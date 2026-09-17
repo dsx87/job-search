@@ -179,11 +179,11 @@ def _hrefs(nodes):
 
 
 def test_individual_cv_urls_are_never_published():
-    entry = sample_fit(cv_url="https://x0.at/igor_pivnyk_cv_acme_AAA.pdf")
+    entry = sample_fit(cv_url="https://x0.at/avery_example_cv_acme_AAA.pdf")
     nodes = tg.render_digest_nodes(sample_context(fits=[entry]))
 
     assert "Download CV" not in _all_text(nodes)
-    assert "https://x0.at/igor_pivnyk_cv_acme_AAA.pdf" not in _hrefs(nodes)
+    assert "https://x0.at/avery_example_cv_acme_AAA.pdf" not in _hrefs(nodes)
 
 
 def test_a_fit_without_a_cv_url_renders_no_download_text_at_all():
@@ -284,7 +284,7 @@ def test_twenty_fits_with_one_archive_link_stay_well_under_the_content_budget():
         sample_fit(
             title="Role {}".format(index), company="Company {}".format(index),
             url="https://jobs.example.com/{}".format(index),
-            cv_url="https://x0.at/igor_pivnyk_cv_company_{}_{}.pdf".format(index, "y" * 24),
+            cv_url="https://x0.at/avery_example_cv_company_{}_{}.pdf".format(index, "y" * 24),
         )
         for index in range(20)
     ]

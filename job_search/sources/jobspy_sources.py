@@ -214,7 +214,7 @@ LINKEDIN_HOURS_OLD = 168
 
 
 @register(
-    "LinkedIn iOS/Swift jobs globally (Remote + key relocation countries) via JobSpy. "
+    "LinkedIn jobs using configured search terms and locations via JobSpy. "
     "Skips unless python-jobspy is installed.",
     optional_dependency="python-jobspy",
 )
@@ -297,7 +297,7 @@ class LinkedInGlobalSource(BaseSource):
 
 
 @register(
-    "LinkedIn iOS/Swift jobs in Israel via JobSpy. Skips unless python-jobspy is installed.",
+    "Optional LinkedIn Israel adapter; uses configured queries when selected. Requires python-jobspy.",
     optional_dependency="python-jobspy",
 )
 class LinkedInIsraelSource(BaseSource):

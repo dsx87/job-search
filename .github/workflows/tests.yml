@@ -13,6 +13,7 @@ on:
       - job_search_config.py
       - job_search_config.example.py
       - job_search.example.toml
+      - avery_example_base.tex
       - deployment.env.example
       - sections.example.py
       - README.md

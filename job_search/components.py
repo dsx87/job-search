@@ -42,9 +42,7 @@ class CandidateProfile:
     cv_filename_prefix: str = CV_FILENAME_PREFIX
     employer_order: Tuple[str, ...] = tuple(EXPECTED_JOB_ORDER)
     forbidden_claim_patterns: Tuple[str, ...] = tuple(FORBIDDEN_TERM_PATTERNS)
-    private_placeholders: Mapping[str, str] = field(
-        default_factory=lambda: {"((PHONE))": "CV_PHONE"}
-    )
+    private_placeholders: Mapping[str, str] = field(default_factory=dict)
     max_pages: int = 1
     max_pages_by_country: Mapping[str, int] = field(default_factory=dict)
     max_pages_by_region: Mapping[str, int] = field(default_factory=dict)
@@ -91,9 +89,7 @@ class CandidateProfile:
             forbidden_claim_patterns=tuple(
                 getattr(source, "forbidden_claim_patterns", FORBIDDEN_TERM_PATTERNS)
             ),
-            private_placeholders=getattr(
-                source, "private_placeholders", {"((PHONE))": "CV_PHONE"}
-            ),
+            private_placeholders=getattr(source, "private_placeholders", {}),
             max_pages=getattr(source, "max_pages", 1),
             max_pages_by_country=getattr(source, "max_pages_by_country", {}),
             max_pages_by_region=getattr(source, "max_pages_by_region", {}),

@@ -21,6 +21,7 @@ from ..config import (
     load_base_tex,
     load_criteria,
     load_tailoring_instructions,
+    require_search_configured,
 )
 from ..runtime import ConfigurationError, build_runtime
 from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
@@ -340,6 +341,7 @@ def _deferred_markers(job) -> set[str]:
 
 
 def _fetch_for_pipeline(cfg):
+    require_search_configured(cfg)
     kwargs = {
         "source_names": (select_sources(cfg.sources_enable, cfg.sources_disable, generic=True)
                          if getattr(cfg, "settings_file", "")
@@ -360,6 +362,7 @@ def _fetch_for_pipeline(cfg):
 
 def run_seed(cfg) -> int:
     """Mark all currently fetched jobs as seen without evaluating."""
+    require_search_configured(cfg)
     _build_runtime(cfg, command="seed")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
@@ -382,6 +385,7 @@ def run_seed(cfg) -> int:
 
 def run_list(cfg) -> int:
     """Fetch and print new jobs (not in seen_jobs.json) without AI/Telegram."""
+    require_search_configured(cfg)
     _build_runtime(cfg, command="list")
     report = _fetch_for_pipeline(cfg)
     if not report.has_usable_source:
@@ -616,6 +620,7 @@ def _deliver_digest(
 
 def run_daily(cfg, test: bool = False) -> int:
     """The full scheduled pipeline: fetch → evaluate → tailor → deliver."""
+    require_search_configured(cfg)
     rt = _build_runtime(cfg, command="daily")
     llm = rt.llm
     # See the matching comment in _deliver_digest.

@@ -7,6 +7,10 @@ on:
 
 jobs:
   search:
+    # Scheduled runs are inert until the repository owner explicitly enables
+    # the personal deployment. A manually requested run reaches the setup guard
+    # below and reports incomplete configuration rather than silently skipping.
+    if: github.event_name != 'schedule' || vars.PERSONAL_RUNS_ENABLED == 'true'
     runs-on: ubuntu-latest
     # ubuntu-latest has no 15-min execution cap (unlike the ubuntu-slim runner);
     # this generous timeout just guards against a hung run burning Actions minutes.
@@ -18,24 +22,39 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # A tracked job_search_config.py is used as-is. For an untracked
-      # deployment-specific escape-hatch module, store its source in the
-      # multiline JOB_SEARCH_CONFIG_PY secret. That module must still read
-      # actual credentials from environment variables rather than embedding
-      # them.
-      - name: Materialize the optional config escape hatch
+      - name: Validate private configuration request
         env:
-          JOB_SEARCH_CONFIG_PY: ${{ secrets.JOB_SEARCH_CONFIG_PY }}
+          PERSONAL_RUNS_ENABLED: ${{ vars.PERSONAL_RUNS_ENABLED }}
+          CONFIG_REPOSITORY: ${{ vars.CONFIG_REPOSITORY }}
+          CONFIG_REF: ${{ vars.CONFIG_REF }}
+          CONFIG_DEPLOY_KEY: ${{ secrets.CONFIG_DEPLOY_KEY }}
         run: |
-          if [ -n "$JOB_SEARCH_CONFIG_PY" ]; then
-            printf '%s' "$JOB_SEARCH_CONFIG_PY" > job_search_config.py
-            echo "Wrote job_search_config.py from the Actions secret."
-          else
-            echo "Using a tracked job_search_config.py when present; otherwise built-in defaults."
-          fi
+          failed=0
+          [ "$PERSONAL_RUNS_ENABLED" = "true" ] || { echo "::error::Set PERSONAL_RUNS_ENABLED=true before requesting a personal run."; failed=1; }
+          [[ "$CONFIG_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::CONFIG_REPOSITORY must be owner/repository."; failed=1; }
+          [[ "$CONFIG_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::CONFIG_REF must be a lowercase full 40-character commit SHA."; failed=1; }
+          [ -n "$CONFIG_DEPLOY_KEY" ] || { echo "::error::CONFIG_DEPLOY_KEY is required."; failed=1; }
+          exit "$failed"
+
+      - name: Checkout pinned private configuration
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CONFIG_REPOSITORY }}
+          ref: ${{ vars.CONFIG_REF }}
+          ssh-key: ${{ secrets.CONFIG_DEPLOY_KEY }}
+          persist-credentials: false
+          path: .private-config/job-search-config
+
+      - name: Verify private configuration revision
+        env:
+          CONFIG_REF: ${{ vars.CONFIG_REF }}
+        run: |
+          actual="$(git -C .private-config/job-search-config rev-parse HEAD)"
+          [ "$actual" = "$CONFIG_REF" ] || { echo "::error::Private configuration checkout does not match CONFIG_REF."; exit 1; }
 
       # Dedup state lives on its own orphan branch so it never clutters main.
       - name: Checkout dedup state branch
+        id: state_checkout
         uses: actions/checkout@v4
         with:
           ref: state
@@ -68,26 +87,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Digest grouping without committing the config. SECTIONS_PY is a repo
-      # variable holding the contents of sections.py, which is gitignored and so
-      # never in a runner's checkout. Passed via env rather than interpolated
-      # into the script, so the Python source can never be read as shell. Run
-      # before the slow Chromium install so a bad config is visible early —
-      # reported, never fatal: the pipeline delivers an ungrouped digest.
-      - name: Write digest sections config
-        if: vars.SECTIONS_PY != ''
+      - name: Validate pinned private configuration
         env:
-          SECTIONS_PY: ${{ vars.SECTIONS_PY }}
-          SECTIONS_FILE: ${{ vars.SECTIONS_FILE || 'sections.py' }}
+          JOB_SEARCH_SETTINGS_FILE: ${{ github.workspace }}/.private-config/job-search-config/job_search.toml
         run: |
-          printf '%s' "$SECTIONS_PY" > "$SECTIONS_FILE"
-          python3 - <<PY
-          from job_search.digest.section_config import load_sections
-          sections, error = load_sections("$SECTIONS_FILE")
-          print("Digest sections:", [s.name for s in sections] or "(none)")
-          if error:
-              print("::warning title=Digest sections::" + error)
-          PY
+          python3 -m job_search.pipeline --validate-config "$JOB_SEARCH_SETTINGS_FILE"
 
       - name: Install Chromium for Playwright (secrettelaviv source)
         run: python -m playwright install --with-deps chromium
@@ -111,9 +115,7 @@ jobs:
           LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
           LLM_FALLBACK_API_BASE: ${{ vars.LLM_FALLBACK_API_BASE }}
           LLM_FALLBACK_AUTH_MODE: ${{ vars.LLM_FALLBACK_AUTH_MODE }}
-          # Optional override for the path the grouping config is read from.
-          # Leave unset: the step above writes sections.py, the default.
-          SECTIONS_FILE: ${{ vars.SECTIONS_FILE }}
+          JOB_SEARCH_SETTINGS_FILE: ${{ github.workspace }}/.private-config/job-search-config/job_search.toml
           CV_PHONE: ${{ secrets.CV_PHONE }}
           # Publish the digest as a telegra.ph page instead of a ZIP. Unset
           # (the default) is a no-op -- see README's Actions-secrets table.
@@ -128,7 +130,7 @@ jobs:
       # sharing partial-run state is sound. Without this the two runners
       # disagreed, and CI was the one contradicting the documented intent.
       - name: Persist seen_jobs.json to state branch
-        if: always()
+        if: ${{ always() && steps.state_checkout.outcome == 'success' }}
         working-directory: .state
         run: |
           if [ ! -f ../seen_jobs.json ]; then

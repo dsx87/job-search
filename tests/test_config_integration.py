@@ -9,6 +9,7 @@ from job_search.sources.health import FetchReport
 def test_pipeline_fetch_threads_search_and_candidate(monkeypatch):
     search, candidate = object(), object()
     cfg = SimpleNamespace(settings_file='settings.toml', search=search, candidate=candidate,
+                          setting_origins={'search_terms': {'kind': 'file'}},
                           sources_enable=(), sources_disable=(), seen_jobs_file='seen_jobs.json',
                           scrape_budget_seconds=77)
     captured = {}
@@ -157,3 +158,14 @@ def test_menu_all_overrides_configured_source_selection(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper_cli, 'run_scraper', lambda **kw: captured.update(kw) or 0)
     assert scraper_cli.main(['--menu']) == 0
     assert 'remotive' in captured['source_names']
+
+
+def test_explicit_cli_search_counts_with_selected_empty_toml(monkeypatch, tmp_path):
+    from job_search import scraper_cli
+    config = tmp_path / 'empty.toml'
+    config.write_text('[settings]\nversion=1\n')
+    monkeypatch.setenv('JOB_SEARCH_SETTINGS_FILE', str(config))
+    calls = []
+    monkeypatch.setattr(scraper_cli, 'run_scraper', lambda **kw: calls.append(kw) or 0)
+    assert scraper_cli.main(['--sources', 'remotive', '--json']) == 0
+    assert calls[0]['source_names'] == ['remotive']

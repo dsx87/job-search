@@ -43,9 +43,9 @@ def test_fixture_cv_filenames_match_what_bundle_now_produces():
     # here would show a human something no real run can emit.
     names = [entry.cv_filename for entry in sample_context().fits]
     assert names == [
-        "igor_pivnyk_cv_acme.pdf",
-        "igor_pivnyk_cv_delta_sons.pdf",
-        "igor_pivnyk_cv_epsilon.pdf",
+        "avery_example_cv_acme.pdf",
+        "avery_example_cv_delta_sons.pdf",
+        "avery_example_cv_epsilon.pdf",
     ]
 
 
