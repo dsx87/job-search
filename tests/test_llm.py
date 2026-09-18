@@ -1067,6 +1067,12 @@ def test_fact_schema_declares_all_expected_properties():
         assert field_name in props
 
 
+def test_fact_schema_requires_every_declared_property():
+    assert set(FACT_SCHEMA["required"]) == set(FACT_SCHEMA["properties"])
+    evidence_item = FACT_SCHEMA["properties"]["evidence"]["items"]
+    assert set(evidence_item["required"]) == set(evidence_item["properties"])
+
+
 def test_extract_facts_returns_normalized_dict_and_prompts_job():
     client = _RecordingClient([json.dumps(_VALID_FACTS)])
 

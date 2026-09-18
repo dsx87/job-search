@@ -6,7 +6,8 @@ job, and returns a verdict of "fit", "nonfit", or "uncertain" plus a reason and
 timezone note. Decisions are auditable and independent of prompt wording. A
 verdict that would REJECT a job on a positive claim (crypto, cross-platform,
 junior, an authorization blocker, a US/Canada-only restriction) is downgraded to
-"uncertain" unless the claim's evidence snippet is grounded in the posting text,
+"uncertain" unless the claim's evidence snippet is grounded in the complete
+advertised posting,
 so a hallucinated blocker surfaces for review instead of silently dropping a
 good job.
 
@@ -31,28 +32,38 @@ def _decision(verdict, reason, timezone_note=None):
     return {"verdict": verdict, "reason": reason, "timezone_note": timezone_note}
 
 
-def _grounded(facts, field, text):
-    """True when the evidence snippet for `field` appears in the posting text."""
+def _grounded(facts, field, *texts):
+    """True when evidence appears within one supplied posting field."""
     snippet = str((facts.get("evidence") or {}).get(field) or "").strip()
     if not snippet:
         return False
-    return collapse_ws(snippet).lower() in collapse_ws(text).lower()
+    snippet = collapse_ws(snippet).lower()
+    return any(snippet in collapse_ws(str(text or "")).lower() for text in texts)
+
+
+def _advertised_posting_fields(job):
+    """Return the free-text fields advertised with a job posting separately."""
+    return tuple(
+        str(getattr(job, field, "") or "")
+        for field in ("title", "company", "location", "description")
+    )
 
 
 def _apply_legacy_policy(facts, job) -> dict:
     """Return {"verdict", "reason", "timezone_note"} for the given facts + job."""
     job = coerce_job(job)
-    text = job.description
+    description = job.description
+    posting_fields = _advertised_posting_fields(job)
     tz = _TZ_NOTE if facts.get("requires_us_hours") == "yes" else None
 
     # Language gate — the description must be written in English (Israeli roles
     # exempt; some are in Hebrew and need no sponsorship). Decided directly from
     # the posting text, so a hard nonfit is safe: no LLM fact to hallucinate.
-    if not is_israel_job(job) and not is_probably_english(text):
+    if not is_israel_job(job) and not is_probably_english(description):
         return _decision("nonfit", "Job description is not written in English.")
 
     def reject(field, reason, unverified_reason):
-        if _grounded(facts, field, text):
+        if _grounded(facts, field, *posting_fields):
             return _decision("nonfit", reason)
         return _decision("uncertain", unverified_reason, tz)
 
@@ -109,7 +120,9 @@ def _apply_legacy_policy(facts, job) -> dict:
         where = job.location.strip()
         if where.lower().startswith("remote"):
             where = where[len("remote"):].lstrip(" -–—,:").strip() or job.location.strip()
-        if facts.get("offers_sponsorship") == "yes" and _grounded(facts, "offers_sponsorship", text):
+        if facts.get("offers_sponsorship") == "yes" and _grounded(
+            facts, "offers_sponsorship", *posting_fields
+        ):
             return _decision(
                 "fit",
                 f"Remote role tied to {where}, but relocation/visa sponsorship is offered.",
@@ -140,7 +153,7 @@ def _apply_legacy_policy(facts, job) -> dict:
             # the same job got opposite verdicts depending on where the
             # restriction was written down (finding 15).
             if facts.get("offers_sponsorship") == "yes" and _grounded(
-                facts, "offers_sponsorship", text
+                facts, "offers_sponsorship", *posting_fields
             ):
                 return _decision(
                     "fit",
@@ -150,8 +163,8 @@ def _apply_legacy_policy(facts, job) -> dict:
                 )
             countries = [c.upper() for c in facts.get("restricted_to_countries") or []]
             if countries and set(countries) <= _US_CA_GROUP:
-                grounded = _grounded(facts, "authorization_blocker", text) or _grounded(
-                    facts, "restricted_to_countries", text
+                grounded = _grounded(facts, "authorization_blocker", *posting_fields) or _grounded(
+                    facts, "restricted_to_countries", *posting_fields
                 )
                 if grounded:
                     return _decision("nonfit", "Remote role restricted to US/Canada residents only.")
@@ -178,7 +191,9 @@ def _apply_legacy_policy(facts, job) -> dict:
     # The posting must EXPLICITLY state remote work, or offer relocation/visa
     # sponsorship. A grounded sponsorship offer accepts; a role that is silent on
     # all three is no longer auto-accepted (the former EU leniency is removed).
-    if facts.get("offers_sponsorship") == "yes" and _grounded(facts, "offers_sponsorship", text):
+    if facts.get("offers_sponsorship") == "yes" and _grounded(
+        facts, "offers_sponsorship", *posting_fields
+    ):
         return _decision("fit", "On-site/hybrid role offering relocation/visa sponsorship.", tz)
     if facts.get("offers_sponsorship") == "yes":
         return _decision("uncertain", "Sponsorship is mentioned but unverified in the posting — review.", tz)
@@ -423,8 +438,10 @@ def _generic_timezone_note(facts, policy):
     return "Role requires US working hours — review the timezone mismatch."
 
 
-def _generic_reject(facts, text, field, reason, unverified_reason, timezone_note):
-    if _grounded(facts, field, text):
+def _generic_reject(facts, texts, field, reason, unverified_reason, timezone_note):
+    if isinstance(texts, str):
+        texts = (texts,)
+    if _grounded(facts, field, *texts):
         return _decision("nonfit", reason, timezone_note)
     return _decision("uncertain", unverified_reason, timezone_note)
 
@@ -437,7 +454,8 @@ def _generic_policy(facts, job, candidate, policy, search=None):
     an ungrounded model claim remains a review item.
     """
     job = coerce_job(job)
-    text = job.description
+    description = job.description
+    posting_fields = _advertised_posting_fields(job)
     residences = _candidate_countries(candidate, "residency_countries")
     work_authorization = _candidate_countries(candidate, "work_authorization_countries")
     local = _candidate_is_local(job, residences)
@@ -445,7 +463,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
     arrangement = facts.get("work_arrangement")
     sponsorship_grounded = (
         facts.get("offers_sponsorship") == "yes"
-        and _grounded(facts, "offers_sponsorship", text)
+        and _grounded(facts, "offers_sponsorship", *posting_fields)
     )
     sponsorship_override = bool(_option(policy, "allow_sponsorship_override", True))
 
@@ -465,7 +483,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             language = str(facts.get("description_language", "")).strip().lower()
             if language and language not in allowed:
                 return _generic_reject(
-                    facts, text, "description_language", "Job description is not written in an allowed language.",
+                    facts, description, "description_language", "Job description is not written in an allowed language.",
                     "Job description may not be written in an allowed language, but this is unverified — review.", tz,
                 )
             if not language:
@@ -473,7 +491,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
                 # no equivalent inference is safe for the other configured
                 # languages.  A missing extracted fact therefore remains
                 # reviewable for Japanese, Hebrew, etc.
-                if "english" in allowed and is_probably_english(text):
+                if "english" in allowed and is_probably_english(description):
                     continue
                 return _decision("uncertain", "Job description language is unclear — review.", tz)
 
@@ -482,7 +500,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             configured_roles = tuple(getattr(search, "role_include_terms", ()) or ())
             if facts.get("role_match") == "no":
                 return _generic_reject(
-                    facts, text, "role_match", "Role does not match the configured target roles.",
+                    facts, posting_fields, "role_match", "Role does not match the configured target roles.",
                     "Role may not match the configured target roles, but this is unverified — review.", tz,
                 )
             if configured_roles and facts.get("role_match") != "yes":
@@ -498,14 +516,14 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             industries = frozenset(str(value).strip().lower() for value in facts.get("industries") or () if str(value).strip())
             if industries.intersection(excluded):
                 return _generic_reject(
-                    facts, text, "industries", "Posting belongs to an excluded industry.",
+                    facts, posting_fields, "industries", "Posting belongs to an excluded industry.",
                     "Posting may belong to an excluded industry, but this is unverified — review.", tz,
                 )
             # ``industry_crypto_web3`` is retained for source compatibility;
             # "crypto_web3" is its reusable configuration value.
             if facts.get("industry_crypto_web3") == "yes" and ({"crypto_web3", "crypto", "web3"} & excluded):
                 return _generic_reject(
-                    facts, text, "industry_crypto_web3", "Posting belongs to an excluded industry.",
+                    facts, posting_fields, "industry_crypto_web3", "Posting belongs to an excluded industry.",
                     "Posting may belong to an excluded industry, but this is unverified — review.", tz,
                 )
 
@@ -513,7 +531,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             excluded = frozenset(str(value).strip().lower() for value in _option(policy, "excluded_platform_focuses", ()) if str(value).strip())
             if facts.get("platform_focus") in excluded:
                 return _generic_reject(
-                    facts, text, "platform_focus", "Primary platform focus is excluded.",
+                    facts, posting_fields, "platform_focus", "Primary platform focus is excluded.",
                     "Primary platform focus may be excluded, but this is unverified — review.", tz,
                 )
 
@@ -521,7 +539,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             rejected = frozenset(str(value).strip().lower() for value in _option(policy, "rejected_seniority", ()) if str(value).strip())
             if facts.get("seniority") in rejected:
                 return _generic_reject(
-                    facts, text, "seniority", "Role seniority is excluded.",
+                    facts, posting_fields, "seniority", "Role seniority is excluded.",
                     "Role seniority may be excluded, but this is unverified — review.", tz,
                 )
 
@@ -530,12 +548,12 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             office_days = facts.get("office_days_per_week", "unknown")
             if local and office_days != "unknown" and int(office_days) > maximum:
                 return _generic_reject(
-                    facts, text, "office_days_per_week", "Local role exceeds the permitted office attendance.",
+                    facts, posting_fields, "office_days_per_week", "Local role exceeds the permitted office attendance.",
                     "Local role may exceed the permitted office attendance, but this is unverified — review.", tz,
                 )
             if local and maximum < 4 and arrangement in ("hybrid", "onsite") and facts.get("office_days_4plus") == "yes":
                 return _generic_reject(
-                    facts, text, "office_days_4plus", "Local role exceeds the permitted office attendance.",
+                    facts, posting_fields, "office_days_4plus", "Local role exceeds the permitted office attendance.",
                     "Local role may exceed the permitted office attendance, but this is unverified — review.", tz,
                 )
 
@@ -568,7 +586,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
                     continue
                 if arrangement in ("onsite", "hybrid"):
                     return _generic_reject(
-                        facts, text, "work_arrangement", "Non-remote non-permanent role is excluded.",
+                        facts, posting_fields, "work_arrangement", "Non-remote non-permanent role is excluded.",
                         "Non-remote arrangement may make this non-permanent role ineligible, but this is unverified — review.", tz,
                     )
                 return _decision("uncertain", "Non-permanent role with an unclear work arrangement — verify.", tz)
@@ -579,7 +597,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             if eligible is False:
                 if sponsorship_override and sponsorship_grounded:
                     continue
-                grounded = _grounded(facts, "restricted_to_countries", text) or _grounded(facts, "authorization_blocker", text)
+                grounded = _grounded(facts, "restricted_to_countries", *posting_fields) or _grounded(facts, "authorization_blocker", *posting_fields)
                 if grounded:
                     return _decision("nonfit", "Remote role has a residency restriction the candidate does not meet.", tz)
                 return _decision("uncertain", "Remote residency restriction may make the candidate ineligible, but this is unverified — review.", tz)
@@ -604,7 +622,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
                         tz,
                     )
                 return _generic_reject(
-                    facts, text, "authorization_blocker", "Role has a work-authorization requirement the candidate does not meet.",
+                    facts, posting_fields, "authorization_blocker", "Role has a work-authorization requirement the candidate does not meet.",
                     "A work-authorization requirement may apply, but this is unverified — review.", tz,
                 )
 
@@ -619,7 +637,7 @@ def _generic_policy(facts, job, candidate, policy, search=None):
             if _candidate_can_reside_in(targets, work_authorization) is True:
                 return _decision("fit", "Candidate is eligible for the advertised non-remote location.", tz)
             return _generic_reject(
-                facts, text, "work_arrangement", "On-site or hybrid role has no eligible location or sponsorship.",
+                facts, posting_fields, "work_arrangement", "On-site or hybrid role has no eligible location or sponsorship.",
                 "On-site or hybrid arrangement may be ineligible, but this is unverified — review.", tz,
             )
 
