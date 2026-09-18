@@ -45,9 +45,19 @@ FACT_SCHEMA = {
                     "field": {"type": "string"},
                     "snippet": {"type": "string"},
                 },
+                "required": ["field", "snippet"],
             },
         },
     },
+    "required": [
+        *_ENUMS,
+        "restricted_to_countries",
+        "matched_role_terms",
+        "matched_required_skills",
+        "industries",
+        "description_language",
+        "evidence",
+    ],
 }
 
 

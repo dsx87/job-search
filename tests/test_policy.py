@@ -5,9 +5,11 @@
 each decision rule (audit order 6, part 1) and the evidence-grounding
 downgrades, one case per branch. Every rule marked ``[grounded]`` in the
 contract downgrades ``nonfit`` -> ``uncertain`` when its triggering fact is not
-literally present in ``job.description``; grounded cases therefore place the
-evidence snippet verbatim in the description, ungrounded ones omit it.
+literally present in the advertised title, company, location, or description;
+grounded cases therefore place the evidence snippet verbatim in one of those
+fields, while ungrounded ones omit it.
 """
+from job_search.config import PolicyConfig
 from job_search.models import Job, Region
 from job_search.policy import apply_policy
 
@@ -121,6 +123,75 @@ def test_cross_platform_ungrounded_uncertain():
     decision = apply_policy(facts, Job(description="Build mobile apps."))
     assert decision["verdict"] == "uncertain"
     assert "unverif" in decision["reason"].lower()
+
+
+def test_generic_cross_platform_title_evidence_is_grounded_nonfit():
+    facts = _facts(
+        platform_focus="cross_platform",
+        evidence={"platform_focus": "React Native"},
+    )
+    policy = PolicyConfig(
+        check_order=("excluded_platform_focus",),
+        excluded_platform_focuses=("cross_platform",),
+    )
+    decision = apply_policy(
+        facts,
+        Job(title="React Native Engineer", description="Build mobile products."),
+        candidate=object(),
+        policy=policy,
+    )
+    assert decision["verdict"] == "nonfit"
+
+
+def test_generic_cross_platform_evidence_does_not_cross_posting_field_boundaries():
+    facts = _facts(
+        platform_focus="cross_platform",
+        evidence={"platform_focus": "React Native"},
+    )
+    policy = PolicyConfig(
+        check_order=("excluded_platform_focus",),
+        excluded_platform_focuses=("cross_platform",),
+    )
+    decision = apply_policy(
+        facts,
+        Job(title="React", company="Native", description="Build mobile products."),
+        candidate=object(),
+        policy=policy,
+    )
+    assert decision["verdict"] == "uncertain"
+
+
+def test_generic_cross_platform_absent_evidence_remains_uncertain():
+    facts = _facts(
+        platform_focus="cross_platform",
+        evidence={"platform_focus": "React Native"},
+    )
+    policy = PolicyConfig(
+        check_order=("excluded_platform_focus",),
+        excluded_platform_focuses=("cross_platform",),
+    )
+    decision = apply_policy(
+        facts,
+        Job(title="Mobile Engineer", description="Build mobile products."),
+        candidate=object(),
+        policy=policy,
+    )
+    assert decision["verdict"] == "uncertain"
+
+
+def test_generic_language_evidence_in_title_remains_uncertain():
+    facts = _facts(
+        description_language="german",
+        evidence={"description_language": "Deutsch"},
+    )
+    policy = PolicyConfig(check_order=("language",))
+    decision = apply_policy(
+        facts,
+        Job(title="Deutsch speaking engineer", description="Build mobile products."),
+        candidate=object(),
+        policy=policy,
+    )
+    assert decision["verdict"] == "uncertain"
 
 
 def test_platform_other_grounded_nonfit():
