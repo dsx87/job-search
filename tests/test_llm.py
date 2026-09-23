@@ -106,19 +106,20 @@ def test_gemini_request_uses_configured_model_base_header_and_low_thinking(monke
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
     client = GeminiProvider(
         "secret-key",
-        model="gemini-3.5-flash",
+        model="gemini-3.8-flash",
         api_base="https://gemini.example/v1/models/",
     )
 
-    assert client.generate("prompt", json_mode=True) == "ok"
+    assert client.generate("prompt", response_schema=FACT_SCHEMA) == "ok"
 
     request = captured["request"]
     payload = json.loads(request.data)
-    assert request.full_url == "https://gemini.example/v1/models/gemini-3.5-flash:generateContent"
+    assert request.full_url == "https://gemini.example/v1/models/gemini-3.8-flash:generateContent"
     assert "secret-key" not in request.full_url
     assert request.get_header("X-goog-api-key") == "secret-key"
     assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
     assert payload["generationConfig"]["responseMimeType"] == "application/json"
+    assert payload["generationConfig"]["responseSchema"] == FACT_SCHEMA
     assert "temperature" not in payload["generationConfig"]
 
 
@@ -175,7 +176,7 @@ def test_openai_request_omits_temperature_and_uses_json_object(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
     client = OpenAIProvider(
-        "openai-key", model="gpt-5.4-mini", api_base="https://oai.example/v1/"
+        "openai-key", model="gpt-6-luna", api_base="https://oai.example/v1/"
     )
 
     assert client.generate("prompt", json_mode=True) == "ok"
@@ -184,8 +185,8 @@ def test_openai_request_omits_temperature_and_uses_json_object(monkeypatch):
     payload = json.loads(request.data)
     assert request.full_url == "https://oai.example/v1/chat/completions"
     assert request.get_header("Authorization") == "Bearer openai-key"
-    assert payload["model"] == "gpt-5.4-mini"
-    # gpt-5.4-mini rejects a non-default temperature — omitted by default.
+    assert payload["model"] == "gpt-6-luna"
+    # GPT-6 Luna rejects a non-default temperature with reasoning enabled.
     assert "temperature" not in payload
     assert payload["response_format"] == {"type": "json_object"}
 
@@ -293,7 +294,7 @@ def test_openai_response_schema_is_enforced_on_the_wire(monkeypatch):
         return _Response({"choices": [{"message": {"content": "{}"}}]})
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    OpenAIProvider("k", model="gpt-5.4-mini").generate("prompt", response_schema=FACT_SCHEMA)
+    OpenAIProvider("k", model="gpt-6-luna").generate("prompt", response_schema=FACT_SCHEMA)
 
     fmt = captured["payload"]["response_format"]
     assert fmt["type"] == "json_schema"

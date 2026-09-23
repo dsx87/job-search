@@ -188,20 +188,14 @@ CV_FILENAME_PREFIX = ""
 # API key (+ optional base). Switching providers is a config edit — no code
 # change. See job_search.llm.clients for the schemes and the factory.
 #
-# Primary model choice (recorded deliberately, 2026-07-25): gemini-2.5-flash is
-# kept over the 3.x lineage because 2.5 proved steadier on this workload — see
-# commit 08a12a2. That is a quality call, not an oversight, and it carries a
-# dated risk: Google has scheduled 2.5-flash for shutdown (see
-# LLM_MODEL_SHUTDOWN_DATES). Revisit before that date; if a 3.x successor has
-# since become steady enough, switch LLM_PRIMARY_MODEL here (or pin it per-runner
-# via the LLM_PRIMARY_MODEL env var / workflow variable) and update the README +
-# docs/deploy-rpi.md examples alongside it.
+# Keep the defaults aligned with the current Flash and efficient OpenAI models.
+# Per-runner model overrides remain available through environment variables.
 LLM_PRIMARY_SCHEME = "gemini"
-LLM_PRIMARY_MODEL = "gemini-2.5-flash"
+LLM_PRIMARY_MODEL = "gemini-3.8-flash"
 LLM_FALLBACK_SCHEME = "openai"          # OpenAI-compatible: also Groq, DeepSeek, xAI, … via api_base
-LLM_FALLBACK_MODEL = "gpt-5.4-mini"
+LLM_FALLBACK_MODEL = "gpt-6-luna"
 
-# Announced provider shutdown dates (ISO) for models this repo defaults to. A
+# Announced provider shutdown dates (ISO) for known models. A
 # retired model does not degrade — it starts answering 404, which is neither
 # retryable nor a circuit-break status, so without this the only symptom would be
 # a doomed primary request per job. Surfaced ahead of time in the run log and the
