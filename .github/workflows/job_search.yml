@@ -103,6 +103,7 @@ jobs:
           # GEMINI_API_KEY secret; the optional fallback uses OPENAI_API_KEY.
           LLM_PRIMARY_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LLM_FALLBACK_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Optional provider overrides (defaults live in code — leave the repo

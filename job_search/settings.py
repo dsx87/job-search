@@ -76,6 +76,7 @@ OPTION_CATALOG = (
     _spec("settings", "llm_fallback_api_key", "string", "", "Fallback LLM credential.", env=("LLM_FALLBACK_API_KEY", "OPENAI_API_KEY"), sensitive=True, environment_only=True),
     _spec("settings", "llm_fallback_api_base", "string", "", "Fallback LLM endpoint override.", env=("LLM_FALLBACK_API_BASE",)),
     _spec("settings", "llm_fallback_auth_mode", "string", "bearer", "Fallback LLM authentication mode.", env=("LLM_FALLBACK_AUTH_MODE",)),
+    _spec("settings", "jev_api_key", "string", "", "DefAPI Jev decision credential.", env=("JEV_API_KEY",), sensitive=True, environment_only=True),
     _spec("settings", "telegram_bot_token", "string", "", "Telegram delivery credential.", env=("TELEGRAM_BOT_TOKEN",), sensitive=True, environment_only=True),
     _spec("settings", "telegram_chat_id", "string", "", "Telegram destination chat.", env=("TELEGRAM_CHAT_ID",), sensitive=True, environment_only=True),
     _spec("settings", "eval_workers", "positive_int", 12, "Concurrent evaluation workers.", env=("EVAL_WORKERS",)),

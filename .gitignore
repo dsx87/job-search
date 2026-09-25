@@ -65,6 +65,8 @@
 !scripts/telegraph_account.py
 !scripts/telegraph_preview.py
 !scripts/__init__.py
+!scripts/compare_jev.py
+!scripts/run_jev_comparison.sh
 
 # The vendored ARMv6 tls-client shared library (vendor/tls-client-armv6.so,
 # ~13 MB, cross-built for the Pi's arm1176jzf-s core) is intentionally NOT

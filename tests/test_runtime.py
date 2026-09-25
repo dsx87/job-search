@@ -13,7 +13,7 @@ def _runtime(**overrides):
 
 
 def _configured_cv(**kwargs):
-    values = dict(base_tex_file='avery_example_base.tex',
+    values = dict(jev_api_key='jev-key', base_tex_file='avery_example_base.tex',
                   rendered_base_file='build/avery_example_base.pdf',
                   cv_filename_prefix='avery_example_cv')
     values.update(kwargs)

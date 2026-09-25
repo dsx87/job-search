@@ -24,7 +24,7 @@ from job_search.state.seen_jobs import (
 
 # The built-in evaluator calls llm.eval.evaluate_job (with prompts=), so tests
 # patch it where it is defined rather than through a pipeline-local alias.
-EVALUATE_JOB = "job_search.llm.eval.evaluate_job"
+EVALUATE_JOB = "job_search.jev.evaluate_job"
 
 
 class FakeLLM:
@@ -104,6 +104,7 @@ def make_config(digest_delivery=False, telegraph_access_token=""):
         llm_primary_scheme="gemini",
         llm_primary_model="gemini-custom",
         llm_primary_api_key="primary-key",
+        jev_api_key="jev-key",
         llm_primary_api_base="https://gemini.example/models",
         llm_fallback_scheme="openai",
         llm_fallback_model="gpt-custom",
@@ -473,7 +474,7 @@ def test_configured_llm_and_evaluator_drive_evaluation(monkeypatch):
     monkeypatch.setattr(EVALUATE_JOB, fake_evaluate_job)
 
     assert run.run_daily(make_config()) == 0
-    assert observed == [(configured_llm, "criteria", "iOS Engineer")]
+    assert observed == [("jev-key", "criteria", "iOS Engineer")]
 
 
 def test_configured_cv_renderer_drives_daily_artifact_and_filename(monkeypatch):
@@ -1516,6 +1517,20 @@ def test_mode_defers_before_tailoring_without_seen_state(monkeypatch):
     assert "1 new job posting deferred" in telegram.messages[0]
 
 
+def test_mode_routes_jev_review_without_tailoring_or_seen_state(monkeypatch):
+    job = Job(title="Needs review", company="Acme", url="https://x/review",
+              description="Detailed individual engineering posting. " * 12)
+    telegram, _saved = install_daily_fakes(monkeypatch, [job])
+    monkeypatch.setattr(EVALUATE_JOB, lambda *_a, **_k: {
+        "fit": False, "verdict": "review", "reason": "Jev findings conflict."})
+    monkeypatch.setattr(run, "_prepare_with_renderer", lambda *_a, **_k: (
+        _ for _ in ()).throw(AssertionError("review must not be tailored in test mode")))
+    monkeypatch.setattr(run, "load_seen_jobs", lambda *_a: (
+        _ for _ in ()).throw(AssertionError("test mode must not load seen state")))
+    assert run.run_daily(make_config(), test=True) == 0
+    assert any("flagged for review" in message for message in telegram.messages)
+
+
 def test_mode_uses_configured_filter_evaluator_and_text_backend(monkeypatch):
     from job_search.components import DefaultPromptSet
 
@@ -1959,7 +1974,7 @@ def test_uncertain_verdict_is_surfaced_for_review_and_marked_seen(monkeypatch):
         EVALUATE_JOB,
         lambda *_args, **_kwargs: {
             "fit": False,
-            "verdict": "uncertain",
+            "verdict": "review",
             "reason": "policy could not decide",
             "timezone_note": None,
         },
@@ -1976,7 +1991,7 @@ def test_uncertain_verdict_is_surfaced_for_review_and_marked_seen(monkeypatch):
     assert "Needs review (uncertain): 1" in telegram.messages[-1]
     # marked seen (notified once) and recorded as an uncertain verdict
     assert "https://x/maybe" in saved[-1]
-    assert any(m.startswith("eval:verdict:") and m.endswith(":uncertain") for m in saved[-1])
+    assert any(m.startswith("eval:verdict:") and m.endswith(":review") for m in saved[-1])
 
     # a second run does NOT re-surface it (marked seen)
     run.run_daily(make_config())
@@ -2072,7 +2087,7 @@ def test_digest_folds_uncertain_and_deferred_into_zip_not_messages(monkeypatch):
     def evaluate(_client, _criteria, job, **_kwargs):
         if job["title"] == "Match":
             return {"fit": True, "reason": "great", "timezone_note": None, "facts": {}}
-        return {"fit": False, "verdict": "uncertain", "reason": "cannot decide", "timezone_note": None}
+        return {"fit": False, "verdict": "review", "reason": "cannot decide", "timezone_note": None}
 
     monkeypatch.setattr(EVALUATE_JOB, evaluate)
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"PDF"))
@@ -2095,7 +2110,7 @@ def test_digest_success_marks_uncertain_seen(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
         EVALUATE_JOB,
-        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "review", "reason": "maybe", "timezone_note": None},
     )
     monkeypatch.setattr(run, "_prepare_with_renderer", fake_prepare(b"REVIEW-PDF"))
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
@@ -2105,7 +2120,7 @@ def test_digest_success_marks_uncertain_seen(monkeypatch):
     assert len(telegram.documents) == 1
     # A delivered digest marks the uncertain job seen so it isn't re-surfaced.
     assert "https://x/maybe" in saved[-1]
-    assert any(m.startswith("eval:verdict:") and m.endswith(":uncertain") for m in saved[-1])
+    assert any(m.startswith("eval:verdict:") and m.endswith(":review") for m in saved[-1])
 
 
 def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
@@ -2121,7 +2136,7 @@ def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
         EVALUATE_JOB,
-        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "maybe", "timezone_note": None},
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "review", "reason": "maybe", "timezone_note": None},
     )
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")
 
@@ -2129,7 +2144,7 @@ def test_digest_failure_keeps_uncertain_unseen_for_retry(monkeypatch):
 
     # A failed digest must NOT bury the uncertain job — it re-surfaces next run.
     assert "https://x/maybe" not in saved[-1]
-    assert not any(m.startswith("eval:verdict:") and m.endswith(":uncertain") for m in saved[-1])
+    assert not any(m.startswith("eval:verdict:") and m.endswith(":review") for m in saved[-1])
 
 
 def test_digest_caption_counts_delivered_fits_not_found_fits(monkeypatch):
@@ -2586,7 +2601,7 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
         EVALUATE_JOB,
         lambda *_a, **_kwargs: {
             "fit": False,
-            "verdict": "uncertain",
+            "verdict": "review",
             "reason": "unclear",
             "timezone_note": None,
             "facts": {},
@@ -2607,7 +2622,7 @@ def test_review_job_is_tailored_and_added_to_the_hosted_archive(monkeypatch):
 
     run.run_daily(_telegraph_config())
 
-    assert tailored == [("Maybe", "uncertain")]
+    assert tailored == [("Maybe", "review")]
     assert len(host.uploads) == 1
     with pyzipper.AESZipFile(io.BytesIO(host.uploads[0][1])) as archive:
         names = archive.namelist()
@@ -2687,7 +2702,7 @@ def test_a_run_with_no_fits_still_publishes_a_page(monkeypatch):
     monkeypatch.setattr(run, "ensure_job_description", lambda _job: True)
     monkeypatch.setattr(
         EVALUATE_JOB,
-        lambda *_a, **_kwargs: {"fit": False, "verdict": "uncertain", "reason": "unclear",
+        lambda *_a, **_kwargs: {"fit": False, "verdict": "review", "reason": "unclear",
                      "timezone_note": None, "facts": {}},
     )
     monkeypatch.setattr(run, "summarize_job", lambda _llm, _job, **_kw: "s")

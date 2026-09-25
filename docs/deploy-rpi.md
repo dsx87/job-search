@@ -1,6 +1,6 @@
 # Running the daily flow on a Raspberry Pi
 
-This runs the full pipeline — **fetch → dedupe → LLM filter → tailor résumé →
+This runs the full pipeline — **fetch → dedupe → Jev decision → tailor résumé →
 validate → compile and verify a one-page PDF → Telegram** — on a self-hosted Pi
 instead of (or alongside) the GitHub Actions cron.
 
@@ -26,7 +26,7 @@ library TOML parser; Python 3.9/3.10 needs the small `tomli` package, which
 
 | Feature | Original Pi B (ARMv6, ~512 MB) | Notes |
 |---|---|---|
-| 16 stdlib sources + LLM filter + tailor + PDF + Telegram | ✅ Works | `tomli` is installed on Python 3.9/3.10; LLM/Telegram are HTTPS |
+| 16 stdlib sources + Jev decision + tailor + PDF + Telegram | ✅ Works | `tomli` is installed on Python 3.9/3.10; LLM/Telegram are HTTPS |
 | `linkedin-guest` (LinkedIn via the public guest API) | ✅ Works, stdlib | Select it in the pinned private TOML when needed |
 | `jobspy` (Indeed + Google) | ⚙️ Opt-in via a bundled lib | `tls-client` has no ARMv6 wheel, so the repo ships a cross-built `vendor/tls-client-armv6.so`; `scripts/enable-jobspy.sh` wires it up |
 | `linkedin-global` / `linkedin-israel` (jobspy LinkedIn) | optional | Select sources in the pinned private TOML |
@@ -122,6 +122,7 @@ not start, stop, enable, disable, or restart the timer or bot.
    | `LLM_FALLBACK_AUTH_MODE` | optional | fallback `bearer` / explicit `none` mode |
    | `JOB_SEARCH_CONFIG_FILE` | optional | absolute path to a trusted escape-hatch module; an optional repo-root `job_search_config.py` is used when unset. **Setting it to an empty value is an error**, not "disabled" — it doesn't silently fall back |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
+   | `JEV_API_KEY` | required | DefAPI Jev decisions; keep in mode-600 `.env` |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
    | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | non-secret host overrides; normally select sources in the pinned TOML |
@@ -140,8 +141,7 @@ not start, stop, enable, disable, or restart the timer or bot.
    > ⚠️ The default primary `gemini-2.5-flash` is scheduled for shutdown on
    > **2026-10-16** (kept deliberately until then — it is steadier here than the
    > 3.x lineage). `LLM_FALLBACK_API_KEY` is *not* optional in practice: with it
-   > blank, a retired primary turns every job into an evaluation failure and the
-   > Pi delivers nothing. The run log warns from 120 days out.
+   > blank, a retired primary prevents summaries and CV tailoring for fits. The run log warns from 120 days out.
 
    For local inference on this same host, use the `openai` scheme with the
    server's loopback URL and `LLM_PRIMARY_AUTH_MODE=none`. No-auth mode is

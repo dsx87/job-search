@@ -47,9 +47,6 @@ def test_default_prompt_text_is_byte_compatible_with_the_legacy_builders():
     prompts = DefaultPromptSet()
     job = _job()
 
-    assert _sha(prompts.fact_extraction(job)) == (
-        "9806ade23ae91d02676719ffbd6c777bb0816bee0dd392580a3345320ec9c099"
-    )
     assert _sha(prompts.job_summary(job)) == (
         "d3a245365e747e426b44859319052e519abcd48b17dd9f6199825df506b45236"
     )
@@ -64,7 +61,6 @@ def test_default_prompt_text_is_byte_compatible_with_the_legacy_builders():
 def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
     files = {}
     templates = {
-        "fact_extraction": "$title|$company|$location|$is_remote|$description",
         "job_summary": "$title|$description",
         "cv_bullet_selection": "$resume_bullets|$company|$description",
         "compiler_repair": "$compiler_errors|$tex_source",
@@ -75,7 +71,6 @@ def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
         files[name + "_file"] = str(path)
     prompts = FilePromptSet(revision="my-prompts-v2", **files)
 
-    assert prompts.fact_extraction(_job()).startswith("Senior iOS Engineer|Acme|Berlin|True|")
     assert prompts.job_summary(_job()).startswith("Senior iOS Engineer|")
     assert "Example Labs" in prompts.cv_bullet_selection(
         _cv_base(), _job(), _avery_profile()
@@ -103,7 +98,7 @@ def test_file_prompt_set_rejects_invalid_placeholders_at_load(
     path.write_text(template, encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
-        FilePromptSet(revision="bad-v1", fact_extraction_file=str(path))
+        FilePromptSet(revision="bad-v1", job_summary_file=str(path))
 
 
 def test_criteria_fingerprint_is_legacy_compatible_until_prompts_change():
