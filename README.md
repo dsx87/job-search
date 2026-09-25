@@ -248,22 +248,17 @@ Then add the delivery/provider secrets required by your selected TOML:
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
 `OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`, and passes `JEV_API_KEY` to the daily run. The default primary is the `gemini`
-scheme at `gemini-2.5-flash`; the default fallback is the `openai` scheme at
-`gpt-5.4-mini` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
+scheme at `gemini-3.8-flash`; the default fallback is the `openai` scheme at
+`gpt-6-luna` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
 include API access).
 
 The private TOML is data-only and is validated before any personal pipeline
 work. A GitHub-hosted runner cannot connect to an LLM server bound only to your
 laptop's loopback interface.
 
-> ⚠️ **`gemini-2.5-flash` is scheduled for shutdown on 2026-10-16.** It is kept
-> as the default deliberately (2.5 proved steadier than the 3.x lineage on this
-> workload), so the migration is a dated decision, not an oversight. The run log
-> and the digest footer start warning 120 days out, and a retired model is
-> reported once as "primary model rejected — check `LLM_PRIMARY_MODEL`" rather
-> than silently costing one doomed request per job. **Configure the fallback
-> key**: without `OPENAI_API_KEY` a retired primary is a total outage, not a
-> degraded run. See `LLM_MODEL_SHUTDOWN_DATES` in `job_search/config.py`.
+Older `gemini-2.5-flash` overrides are scheduled for shutdown on 2026-10-16.
+The run log and digest footer warn before that date. Configure the fallback key
+to keep summaries and CV tailoring available if the primary model is rejected.
 
 A provider is a **scheme** + model + key (+ optional base), so switching
 providers is config only — no code change. Override any of these optional

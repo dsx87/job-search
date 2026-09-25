@@ -19,9 +19,9 @@ version = 1
 # primary provider wire protocol.
 # settings.llm_primary_scheme | purpose: Primary LLM wire protocol. | type: string | default: "gemini" | allowed: anthropic, gemini, openai | env: LLM_PRIMARY_SCHEME | dependencies: must match primary model, credential, base, and auth | effect: selects primary request protocol
 llm_primary_scheme = "openai"
-# settings.llm_primary_model — type: string; default: "gemini-2.5-flash";
+# settings.llm_primary_model — type: string; default: "gemini-3.8-flash";
 # env: LLM_PRIMARY_MODEL (legacy GEMINI_MODEL). The primary model identifier.
-# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "gemini-2.5-flash" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
+# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "gemini-3.8-flash" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
 llm_primary_model = "fictional-platform-model"
 # settings.llm_primary_api_key — type: string; default: empty;
 # env only: LLM_PRIMARY_API_KEY (legacy GEMINI_API_KEY); sensitive. Never put a
@@ -44,9 +44,9 @@ llm_primary_auth_mode = "bearer"
 # primary cannot serve a request.
 # settings.llm_fallback_scheme | purpose: Fallback LLM wire protocol. | type: string | default: "openai" | allowed: anthropic, gemini, openai | env: LLM_FALLBACK_SCHEME | dependencies: must match fallback model, credential, base, and auth | effect: selects failover request protocol
 llm_fallback_scheme = "openai"
-# settings.llm_fallback_model — type: string; default: "gpt-5.4-mini";
+# settings.llm_fallback_model — type: string; default: "gpt-6-luna";
 # env: LLM_FALLBACK_MODEL. Fallback model identifier.
-# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "gpt-5.4-mini" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
+# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "gpt-6-luna" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
 llm_fallback_model = "fictional-fallback-model"
 # settings.llm_fallback_api_key — type: string; default: empty;
 # env only: LLM_FALLBACK_API_KEY (legacy OPENAI_API_KEY); sensitive.
