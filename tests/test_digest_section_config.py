@@ -252,7 +252,7 @@ def test_the_shipped_example_config_loads_cleanly():
     assert error == ""
     assert [section.name for section in sections] == [
         "Local",
-        "Remote — Worldwide",
+        "Remote — eligible",
         "EU relocation",
         "Everything else",
     ]

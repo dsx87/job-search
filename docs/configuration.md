@@ -26,7 +26,7 @@ The TOML has four tables:
 | `[settings]` | providers, files, output, prompts, workers, and state |
 | `[search]` | sources, terms, locations, age, and opportunity scope |
 | `[candidate]` | CV identity, legal eligibility, placeholders, and page limits |
-| `[policy]` | ordered built-in eligibility checks and declarative values |
+| `[policy]` | declarative candidate requirements sent to Jev |
 
 `[settings].version = 1` is required. Unknown keys, unsupported types,
 credentials, and host-only controls are errors. Python 3.11+ uses `tomllib`;
@@ -133,20 +133,28 @@ operations require the relevant CV inputs. In particular,
 `rendered_base_file`; tailored rendering also needs its configured base and
 prompt inputs.
 
-`[policy]` selects known, unique built-in check identifiers; TOML cannot add
-Python predicates. The compatible `nonremote_work_authorization` identifier
-applies explicit work-authorization requirements to every arrangement,
-including remote. Residency never supplies authorization.
+`[policy]` remains a validated, versioned settings surface. Its values, along
+with relevant `[search]` and `[candidate]` values, are supplied to Jev for each
+posting. `JEV_API_KEY` is an environment-only secret and is required for daily
+runs. Explicit work authorization remains independent of residency, including remote
+roles. Residency never supplies authorization. The general LLM remains
+responsible for summaries and CV tailoring.
 
-`criteria_file` is a readable compatibility input whose contents affect only
-the reevaluation fingerprint. Editing it can reopen rejected jobs and trigger
-new LLM work, but it is neither evaluator context nor executable policy.
-Structured policy belongs in `[policy]`. `cv_tailoring_prompt_file` is another
-legacy compatibility input: it is parsed for file validation and its text is
-ignored by tailoring. To customize active prompts, set `prompt_dir` together
-with `prompt_revision` and provide `cv_bullet_selection.txt`; the same
-directory may override `fact_extraction.txt`, `job_summary.txt`, and
-`compiler_repair.txt`.
+`criteria_file` supplies the actual criteria text to Jev and participates in
+reopening previously rejected jobs. The questions, flag labels, and short
+explanations are approved code in `job_search/jev.py`. When criteria change,
+propose corresponding question and label edits for approval before applying
+them; deploy the approved version together with the criteria. Jev returns
+categorical choices, not quotations or free-text reasons. Fit reaches the fit
+path; review, contradictory findings, and a nonfit supported only by an
+unknown red flag reach review. Nonfit with a named red flag stays out of the
+digest. Generic listings and stale redirects without a real posting are deferred.
+
+`cv_tailoring_prompt_file` remains a legacy compatibility input: it is parsed
+for file validation and its text is ignored by tailoring. To customize active
+prompts, set `prompt_dir` with `prompt_revision` and provide
+`cv_bullet_selection.txt`. The same directory may override `job_summary.txt`
+and `compiler_repair.txt`.
 
 ## Digest sections and the Python escape hatch
 
@@ -155,6 +163,10 @@ priority and each job appears once. A load or definition error yields an
 ungrouped digest with a warning. A predicate blank-entry smoke warning retains
 otherwise valid sections because a legitimate predicate can need real job data.
 Sections never change search, policy, CVs, or delivery.
+Custom sections using the retired `fact(...)` predicate should switch to
+`signal(name, *choices)` for Jev categories. The old helper remains available
+for custom entries that still supply a `facts` mapping; using it on a Jev entry
+produces a digest warning and leaves that entry in the next matching section.
 
 `job_search_config.py` is a rare, reviewed local-host escape hatch for behavior
 no catalogued option can express. It runs with host credentials, so never use

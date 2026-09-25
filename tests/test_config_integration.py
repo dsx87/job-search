@@ -24,7 +24,7 @@ def test_pipeline_fetch_threads_search_and_candidate(monkeypatch):
 
 
 def test_pipeline_evaluation_threads_policy(monkeypatch):
-    from job_search.llm import eval as evaluator
+    from job_search import jev as evaluator
     captured = {}
     def evaluate(*args, **kwargs):
         captured.update(kwargs)
@@ -91,7 +91,7 @@ def test_page_limits_preserve_history_while_policy_changes_reopen_only_nonfits()
     import datetime
     from dataclasses import replace
     from job_search.config import SearchConfig, CandidateConfig, PolicyConfig
-    from job_search.policy import evaluation_configuration_revision
+    from job_search.evaluation_config import evaluation_configuration_revision
     from job_search.state.seen_jobs import (criteria_fingerprint, evaluation_signature,
                                            record_evaluation, should_reevaluate)
     from job_search.identity import job_identity_keys

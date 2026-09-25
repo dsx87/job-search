@@ -161,16 +161,13 @@ OUTPUT_CV_MODE = "required"
 
 # ── Prompts / LaTeX engine ──────────────────────────────────────────────────────
 # Directory of file-backed prompt overrides (components.FilePromptSet), read
-# using the four conventional filenames: fact_extraction.txt, job_summary.txt,
+# using the conventional filenames: job_summary.txt,
 # cv_bullet_selection.txt, compiler_repair.txt. A file missing from the
 # directory falls back to the built-in prompt. Empty (the default) uses the
 # built-in prompts unmodified. Replaces constructing a FilePromptSet by hand in
 # job_search_config.py for the common case.
 PROMPT_DIR = ""
-# Required whenever PROMPT_DIR is set. Prompt wording participates in
-# evaluation reopening (state.seen_jobs.criteria_fingerprint), so an unnamed
-# revision would silently reuse the wrong reopen fingerprint across a prompt
-# change; preflight rejects PROMPT_DIR set without this.
+# Required whenever PROMPT_DIR is set to track summary and CV prompt changes.
 PROMPT_REVISION = ""
 # LaTeX engine invoked to compile the CV. "pdflatex" (default) is the
 # lightweight, tracked toolchain; any other executable on PATH (e.g. "xelatex")
@@ -188,20 +185,14 @@ CV_FILENAME_PREFIX = ""
 # API key (+ optional base). Switching providers is a config edit — no code
 # change. See job_search.llm.clients for the schemes and the factory.
 #
-# Primary model choice (recorded deliberately, 2026-07-25): gemini-2.5-flash is
-# kept over the 3.x lineage because 2.5 proved steadier on this workload — see
-# commit 08a12a2. That is a quality call, not an oversight, and it carries a
-# dated risk: Google has scheduled 2.5-flash for shutdown (see
-# LLM_MODEL_SHUTDOWN_DATES). Revisit before that date; if a 3.x successor has
-# since become steady enough, switch LLM_PRIMARY_MODEL here (or pin it per-runner
-# via the LLM_PRIMARY_MODEL env var / workflow variable) and update the README +
-# docs/deploy-rpi.md examples alongside it.
+# Keep the defaults aligned with the current Flash and efficient OpenAI models.
+# Per-runner model overrides remain available through environment variables.
 LLM_PRIMARY_SCHEME = "gemini"
-LLM_PRIMARY_MODEL = "gemini-2.5-flash"
+LLM_PRIMARY_MODEL = "gemini-3.8-flash"
 LLM_FALLBACK_SCHEME = "openai"          # OpenAI-compatible: also Groq, DeepSeek, xAI, … via api_base
-LLM_FALLBACK_MODEL = "gpt-5.4-mini"
+LLM_FALLBACK_MODEL = "gpt-6-luna"
 
-# Announced provider shutdown dates (ISO) for models this repo defaults to. A
+# Announced provider shutdown dates (ISO) for known models. A
 # retired model does not degrade — it starts answering 404, which is neither
 # retryable nor a circuit-break status, so without this the only symptom would be
 # a doomed primary request per job. Surfaced ahead of time in the run log and the
@@ -365,6 +356,7 @@ class PipelineConfig:
     llm_fallback_scheme: str = LLM_FALLBACK_SCHEME
     llm_fallback_model: str = LLM_FALLBACK_MODEL
     llm_fallback_api_key: str = ""
+    jev_api_key: str = ""
     llm_fallback_api_base: str = ""
     llm_fallback_auth_mode: str = "bearer"
     telegram_bot_token: str = ""
@@ -502,6 +494,7 @@ class PipelineConfig:
             llm_fallback_scheme=values["llm_fallback_scheme"].lower(),
             llm_fallback_model=values["llm_fallback_model"],
             llm_fallback_api_key=values["llm_fallback_api_key"],
+            jev_api_key=values["jev_api_key"],
             llm_fallback_api_base=values["llm_fallback_api_base"],
             llm_fallback_auth_mode=values["llm_fallback_auth_mode"].lower(),
             telegram_bot_token=values["telegram_bot_token"],

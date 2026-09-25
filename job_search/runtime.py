@@ -169,10 +169,7 @@ def preflight(settings: object, runtime: Runtime, command: str = "daily") -> Non
     if output_mode == "telegram" and cv_mode != "required":
         problems.append("OUTPUT_MODE=telegram requires OUTPUT_CV_MODE=required")
 
-    # PROMPT_REVISION is required whenever PROMPT_DIR is set: prompt wording
-    # participates in evaluation reopening (criteria_fingerprint), so a
-    # missing revision would silently reuse the wrong reopen fingerprint
-    # across a prompt change rather than fail loudly here.
+    # A named revision is required for file-backed summary and CV prompts.
     if getattr(settings, "prompt_dir", "") and not getattr(settings, "prompt_revision", ""):
         problems.append("PROMPT_DIR is set but PROMPT_REVISION is empty")
 
@@ -189,6 +186,8 @@ def preflight(settings: object, runtime: Runtime, command: str = "daily") -> Non
                     "the configured Telegram backend requires TELEGRAM_BOT_TOKEN "
                     "and TELEGRAM_CHAT_ID"
                 )
+    if command in ("daily", "check") and not getattr(settings, "jev_api_key", ""):
+        problems.append("JEV_API_KEY is required for job evaluation")
 
     required_files = []
     if command in ("daily", "check"):

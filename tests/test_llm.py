@@ -23,8 +23,6 @@ from job_search.llm.clients import (
     model_shutdown_warning,
 )
 from job_search.llm.cv_edits import CV_EDIT_SCHEMA, select_cv_bullets
-from job_search.llm.eval import evaluate_job
-from job_search.llm.facts import FACT_SCHEMA, _normalize_facts, extract_facts
 from job_search.llm.tailor import CVValidationError, tailor_resume
 from job_search.profile import validate_tailored_cv
 
@@ -202,7 +200,7 @@ def test_openai_no_auth_mode_omits_authorization_and_keeps_structured_output(mon
         "", model="local-model", api_base="http://127.0.0.1:1234/v1", auth_mode="none"
     )
 
-    assert client.generate("prompt", response_schema=FACT_SCHEMA) == "{}"
+    assert client.generate("prompt", response_schema=CV_EDIT_SCHEMA) == "{}"
 
     request = captured["request"]
     payload = json.loads(request.data)
@@ -282,10 +280,7 @@ def test_openai_json_mode_messages_mention_json(monkeypatch):
 
 
 def test_openai_response_schema_is_enforced_on_the_wire(monkeypatch):
-    # The schema used to be dropped: json_object alone let the model invent both
-    # the shape ({"value": …, "evidence": …} per field) and the values ("true",
-    # "restricted to specific countries"), so _normalize_facts scored every field
-    # "unknown" — a silent all-unknown evaluation instead of a real verdict.
+    # Structured CV selection must keep its schema on the wire.
     captured = {}
 
     def urlopen(request, timeout):
@@ -293,17 +288,15 @@ def test_openai_response_schema_is_enforced_on_the_wire(monkeypatch):
         return _Response({"choices": [{"message": {"content": "{}"}}]})
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    OpenAIProvider("k", model="gpt-5.4-mini").generate("prompt", response_schema=FACT_SCHEMA)
+    OpenAIProvider("k", model="gpt-5.4-mini").generate("prompt", response_schema=CV_EDIT_SCHEMA)
 
     fmt = captured["payload"]["response_format"]
     assert fmt["type"] == "json_schema"
     assert fmt["json_schema"]["strict"] is True
     schema = fmt["json_schema"]["schema"]
-    assert schema["properties"]["platform_focus"]["enum"] == list(
-        FACT_SCHEMA["properties"]["platform_focus"]["enum"]
-    )
+    assert "jobs" in schema["properties"]
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == set(FACT_SCHEMA["properties"])
+    assert set(schema["required"]) == set(CV_EDIT_SCHEMA["properties"])
     assert any("json" in m["content"].lower() for m in captured["payload"]["messages"])
 
 
@@ -1009,249 +1002,6 @@ class _RecordingClient:
         if not self._responses:
             raise AssertionError("_RecordingClient ran out of canned responses")
         return self._responses.pop(0)
-
-
-def test_extract_facts_prompt_surfaces_late_restriction():
-    long_desc = (
-        "Overview of the role. "
-        + ("iOS Swift work. " * 400)
-        + " Eligibility: US residents only, no visa sponsorship."
-    )
-    # the restriction sits beyond the naive 5000-char prefix cut
-    assert len(long_desc) > 5000
-    assert "US residents only" not in long_desc[:5000]
-
-    client = _RecordingClient([json.dumps(_VALID_FACTS)])
-    extract_facts(client, {"title": "iOS", "company": "Acme", "description": long_desc})
-
-    assert "US residents only" in client.prompts[0]
-
-
-# A complete, valid facts payload the model might return (evidence in array form).
-_VALID_FACTS = {
-    "platform_focus": "ios_macos",
-    "seniority": "senior",
-    "employment_type": "full_time",
-    "work_arrangement": "remote",
-    "remote_geo_scope": "worldwide",
-    "restricted_to_countries": [],
-    "offers_sponsorship": "no",
-    "authorization_blocker": "no",
-    "office_days_4plus": "no",
-    "industry_crypto_web3": "no",
-    "requires_us_hours": "no",
-    "evidence": [{"field": "platform_focus", "snippet": "iOS and Swift"}],
-}
-
-_ENUM_FIELDS = (
-    "platform_focus",
-    "seniority",
-    "employment_type",
-    "work_arrangement",
-    "remote_geo_scope",
-    "offers_sponsorship",
-    "authorization_blocker",
-    "office_days_4plus",
-    "industry_crypto_web3",
-    "requires_us_hours",
-)
-
-_ALL_FACT_FIELDS = _ENUM_FIELDS + ("restricted_to_countries", "evidence")
-
-
-# --- B) FACT_SCHEMA / extract_facts / _normalize_facts ----------------
-
-def test_fact_schema_declares_all_expected_properties():
-    props = FACT_SCHEMA["properties"]
-    for field_name in _ALL_FACT_FIELDS:
-        assert field_name in props
-
-
-def test_extract_facts_returns_normalized_dict_and_prompts_job():
-    client = _RecordingClient([json.dumps(_VALID_FACTS)])
-
-    facts = extract_facts(
-        client,
-        {
-            "title": "iOS Engineer",
-            "company": "Acme",
-            "description": "We build iOS apps in Swift.",
-        },
-    )
-
-    # every schema field is present after normalization
-    for field_name in _ALL_FACT_FIELDS:
-        assert field_name in facts
-
-    assert facts["platform_focus"] == "ios_macos"
-    assert facts["restricted_to_countries"] == []
-    # evidence normalized from array form into a field->snippet mapping
-    assert facts["evidence"] == {"platform_focus": "iOS and Swift"}
-
-    # the prompt carries the job title + description
-    assert "iOS Engineer" in client.prompts[0]
-    assert "We build iOS apps in Swift." in client.prompts[0]
-
-
-def test_extract_facts_passes_fact_schema_to_generate():
-    client = _RecordingClient([json.dumps(_VALID_FACTS)])
-    extract_facts(client, {"title": "iOS", "company": "Acme", "description": "desc"})
-    assert client.kwargs[0]["response_schema"] == FACT_SCHEMA
-
-
-def test_normalize_facts_missing_fields_default_to_unknown():
-    out = _normalize_facts({})
-    for field_name in _ENUM_FIELDS:
-        assert out[field_name] == "unknown"
-    assert out["restricted_to_countries"] == []
-    assert out["evidence"] == {}
-
-
-def test_normalize_facts_invalid_enum_becomes_unknown():
-    out = _normalize_facts(
-        {"platform_focus": "banana", "seniority": 123, "work_arrangement": None}
-    )
-    assert out["platform_focus"] == "unknown"
-    assert out["seniority"] == "unknown"
-    assert out["work_arrangement"] == "unknown"
-
-
-def test_normalize_facts_valid_enum_preserved():
-    out = _normalize_facts({"platform_focus": "ios_macos", "work_arrangement": "remote"})
-    assert out["platform_focus"] == "ios_macos"
-    assert out["work_arrangement"] == "remote"
-
-
-def test_normalize_facts_evidence_array_becomes_dict():
-    out = _normalize_facts(
-        {"evidence": [{"field": "seniority", "snippet": "Senior iOS Engineer"}]}
-    )
-    assert out["evidence"] == {"seniority": "Senior iOS Engineer"}
-
-
-def test_normalize_facts_evidence_dict_passthrough():
-    out = _normalize_facts({"evidence": {"seniority": "Senior iOS Engineer"}})
-    assert out["evidence"] == {"seniority": "Senior iOS Engineer"}
-
-
-def test_normalize_facts_restricted_countries_uppercased():
-    out = _normalize_facts({"restricted_to_countries": ["us", "Canada"]})
-    assert out["restricted_to_countries"] == ["US", "CANADA"]
-
-
-def test_normalize_facts_garbage_input_is_all_unknown():
-    for junk in (None, "nope", 42, ["a", "b"]):
-        out = _normalize_facts(junk)
-        for field_name in _ENUM_FIELDS:
-            assert out[field_name] == "unknown"
-        assert out["restricted_to_countries"] == []
-        assert out["evidence"] == {}
-
-
-# --- D) evaluate_job rewired to facts + policy -------------------------
-
-def test_evaluate_job_fit_case_end_to_end():
-    client = _RecordingClient([json.dumps(_VALID_FACTS)])
-
-    result = evaluate_job(
-        client,
-        "CRIT",
-        {"title": "iOS", "company": "Acme", "description": "Fully remote, worldwide."},
-    )
-
-    assert set(result.keys()) == {"fit", "reason", "timezone_note", "verdict", "facts"}
-    assert result["fit"] is True
-    assert result["verdict"] == "fit"
-    assert isinstance(result["reason"], str) and result["reason"]
-    assert result["timezone_note"] is None
-    assert result["facts"]["work_arrangement"] == "remote"
-
-
-def test_evaluate_job_nonfit_case_end_to_end():
-    facts_payload = {
-        **_VALID_FACTS,
-        "industry_crypto_web3": "yes",
-        "evidence": [{"field": "industry_crypto_web3", "snippet": "web3 startup"}],
-    }
-    client = _RecordingClient([json.dumps(facts_payload)])
-
-    result = evaluate_job(
-        client,
-        "CRIT",
-        {
-            "title": "iOS",
-            "company": "Acme",
-            "description": "We are a web3 startup building wallets.",
-        },
-    )
-
-    assert result["fit"] is False
-    assert result["verdict"] == "nonfit"
-    assert result["facts"]["industry_crypto_web3"] == "yes"
-
-
-def test_evaluate_job_skips_llm_for_non_english_posting():
-    # A non-English, non-Israeli posting is rejected WITHOUT any LLM call —
-    # the empty response list would make generate() raise if it were invoked.
-    client = _RecordingClient([])
-    result = evaluate_job(
-        client,
-        "CRIT",
-        {
-            "title": "iOS Entwickler",
-            "company": "Acme",
-            "description": (
-                "Wir suchen einen erfahrenen iOS-Entwickler für unser Team in "
-                "Berlin. Sie entwickeln und pflegen Funktionen für unsere mobilen "
-                "Anwendungen mit Swift und SwiftUI im Büro vor Ort."
-            ),
-        },
-    )
-    assert client.prompts == []  # no fact-extraction call was made
-    assert result["verdict"] == "nonfit"
-    assert "english" in result["reason"].lower()
-    assert set(result.keys()) == {"fit", "reason", "timezone_note", "verdict", "facts"}
-    assert result["facts"]["work_arrangement"] == "unknown"  # well-formed default
-
-
-def test_evaluate_job_calls_llm_for_english_posting():
-    client = _RecordingClient([json.dumps(_VALID_FACTS)])
-    evaluate_job(
-        client,
-        "CRIT",
-        {
-            "title": "iOS",
-            "company": "Acme",
-            "description": (
-                "We are hiring a fully remote iOS engineer to build apps with "
-                "Swift and SwiftUI for our users around the world."
-            ),
-        },
-    )
-    assert len(client.prompts) == 1  # English posting is not short-circuited
-
-
-def test_evaluate_job_extracts_for_israeli_non_english_posting():
-    # Israeli roles are exempt from the language gate, so extraction still runs
-    # (we need the facts to judge office-attendance for a Hebrew Israeli post).
-    client = _RecordingClient([json.dumps(_VALID_FACTS)])
-    result = evaluate_job(
-        client,
-        "CRIT",
-        {
-            "title": "iOS",
-            "company": "Acme",
-            "location": "Tel Aviv",
-            "description": "משרה מלאה למפתח iOS בכיר בתל אביב עם ניסיון רב ב-Swift.",
-        },
-    )
-    assert len(client.prompts) == 1  # extraction ran despite the Hebrew text
-    assert result["verdict"] != "nonfit" or "english" not in result["reason"].lower()
-
-
-# =====================================================================
-# audit order 7 — structured CV edits (select_cv_bullets) + tailor rewire
-# =====================================================================
 
 
 def test_select_cv_bullets_request_contract_and_selection():

@@ -44,7 +44,7 @@ def test_tui_refuses_unconfigured_refresh_without_touching_store(monkeypatch):
 def test_cv_settings_are_not_required_for_text_only_daily(tmp_path):
     criteria = tmp_path / 'criteria.md'
     criteria.write_text('Fictional policy notes')
-    cfg = PipelineConfig(output_mode='plain', output_cv_mode='disabled',
+    cfg = PipelineConfig(output_mode='plain', output_cv_mode='disabled', jev_api_key='jev-key',
                          criteria_file=str(criteria), output_dir=str(tmp_path / 'out'))
     rt = Runtime(object(), object(), object(), object(), object(),
                  cv_required=False, needs_telegram=False, needs_base_tex=False)
