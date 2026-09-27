@@ -6,6 +6,7 @@ import json
 from job_search.filters import run_pipeline
 from job_search.llm.facts import default_facts
 from job_search.llm.facts import extract_facts
+from job_search.llm.eval import evaluate_job
 from job_search.models import Job
 from job_search.policy import apply_policy, evaluation_configuration_revision
 from job_search.sources.jobspy_sources import JobSpySource
@@ -15,6 +16,70 @@ from job_search.sources.html_sources import RelocateMeSource
 from job_search.sources import linkedin_guest
 from job_search.sources.playwright_sources import SecretTelAvivSource
 from job_search.sources.fetch import fetch_jobs_with_health, run_scraper, select_sources
+
+
+def test_office_over_remote_posting_is_not_evaluated_as_remote():
+    class Client:
+        def generate(self, prompt, **_kwargs):
+            assert "Remote: False" in prompt
+            return json.dumps({"work_arrangement": "remote"})
+
+    job = Job(
+        title="iOS Engineer",
+        company="Clear Street",
+        location="Umeå, Västerbotten County, Sweden",
+        description=(
+            "We are seeking an iOS Engineer to join our Swedish engineering team. "
+            "Join a collaborative team that values office work over remote work. "
+            "You will build our mobile platform with Swift and SwiftUI."
+        ),
+    )
+    result = evaluate_job(
+        Client(), "", job,
+        candidate=_candidate(residency_countries=("IL",), work_authorization_countries=("IL",)),
+        policy=_policy(),
+    )
+
+    assert result["facts"]["work_arrangement"] == "onsite"
+    assert result["facts"]["evidence"]["work_arrangement"] == "team that values office work over remote work"
+    assert result["verdict"] == "nonfit"
+
+
+def test_optional_office_for_remote_workers_remains_remote():
+    class Client:
+        def generate(self, _prompt, **_kwargs):
+            return json.dumps({"work_arrangement": "remote"})
+
+    job = Job(
+        title="iOS Engineer",
+        location="Remote",
+        is_remote=True,
+        description=(
+            "This is a fully remote iOS engineering role. The office is available "
+            "for people who prefer working there."
+        ),
+    )
+    result = evaluate_job(Client(), "", job, candidate=_candidate(), policy=_policy())
+
+    assert result["facts"]["work_arrangement"] == "remote"
+    assert result["verdict"] == "fit"
+
+
+def test_employee_preference_or_negation_does_not_override_remote_offer():
+    class Client:
+        def generate(self, _prompt, **_kwargs):
+            return json.dumps({"work_arrangement": "remote"})
+
+    descriptions = (
+        "This role is fully remote. Some employees prefer office work over remote work.",
+        "This role is fully remote. We do not prefer office work over remote work.",
+        "This role is fully remote. If you prefer office work over remote work, our office is available.",
+    )
+    for description in descriptions:
+        job = Job(title="iOS Engineer", location="Remote", description=description)
+        result = evaluate_job(Client(), "", job, candidate=_candidate(), policy=_policy())
+        assert result["facts"]["work_arrangement"] == "remote"
+        assert result["verdict"] == "fit"
 
 
 def _search(**values):
