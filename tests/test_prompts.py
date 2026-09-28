@@ -48,7 +48,7 @@ def test_default_prompt_text_is_byte_compatible_with_the_legacy_builders():
     job = _job()
 
     assert _sha(prompts.fact_extraction(job)) == (
-        "9806ade23ae91d02676719ffbd6c777bb0816bee0dd392580a3345320ec9c099"
+        "386fcf4cbd793072294b1deef9bb9ad6719b5371e31e3694ec2703d648d706f5"
     )
     assert _sha(prompts.job_summary(job)) == (
         "d3a245365e747e426b44859319052e519abcd48b17dd9f6199825df506b45236"

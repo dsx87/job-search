@@ -6,9 +6,18 @@ criteria.md to those facts. This keeps decisions auditable and prevents prompt
 wording from silently changing policy (audit Finding 17).
 """
 import json
+import re
 
 from ..models import coerce_job
 from ..text import section_aware_excerpt
+
+
+_OFFICE_OVER_REMOTE_RE = re.compile(
+    r"\b(?:team\s+that|company\s+that|we)\s+(?:values?|prefers?)\s+"
+    r"(?:working\s+(?:from\s+)?)?(?:the\s+)?"
+    r"office(?:\s+work)?\s+over\s+remote(?:\s+work)?\b",
+    re.IGNORECASE,
+)
 
 _ENUMS = {
     # Generic role alignment complements the legacy Apple-specific
@@ -159,7 +168,7 @@ Description:
 
 ## Fields
 - platform_focus: PRIMARY technology — native iOS/macOS (ios_macos); a cross-platform framework such as React Native, Flutter, Xamarin, Ionic, or Kotlin Multiplatform (cross_platform); something else (other); or unclear (unknown). Secondary/optional cross-platform mention still counts as ios_macos.
-- seniority; employment_type; work_arrangement (remote/hybrid/onsite).
+- seniority; employment_type; work_arrangement (remote/hybrid/onsite). When the employer says its team values office work over remote work and does not advertise a remote option, classify the role as onsite. An optional office for remote workers does not make a role onsite.
 - remote_geo_scope: if remote, worldwide or restricted to specific countries.
 - restricted_to_countries: country codes/names the remote role is restricted to.
 - offers_sponsorship: relocation/visa sponsorship offered.
@@ -186,4 +195,12 @@ def extract_facts(client, job, prompts=None, search=None, policy=None) -> dict:
         data = json.loads(raw)
     except (ValueError, TypeError):
         data = {}
-    return _normalize_facts(data)
+    facts = _normalize_facts(data)
+    # A model can mistake the word "remote" in an explicit office preference
+    # for a remote-work offer. Keep the employer's stated preference as evidence.
+    job = coerce_job(job)
+    match = _OFFICE_OVER_REMOTE_RE.search(job.description) if not job.is_remote else None
+    if match:
+        facts["work_arrangement"] = "onsite"
+        facts["evidence"]["work_arrangement"] = match.group(0)
+    return facts
