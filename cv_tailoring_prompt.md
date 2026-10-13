@@ -1,8 +1,11 @@
 # CV tailoring instructions
 
-This public compatibility file supplies the file-backed instructions used by
-the deterministic CV pipeline. Candidate identity, work history, page limits,
-and factual claim restrictions belong in the selected candidate configuration
+This public file is retained for compatibility; its instruction text is not
+supplied to the model. Active tailoring instructions come from the built-in
+bullet-selection prompt, or `cv_bullet_selection.txt` in the configured
+`prompt_dir` (which also requires a nonempty `prompt_revision`). Candidate
+identity, work history, page limits, and factual claim restrictions belong
+in the selected candidate configuration
 and base template; this file contains no candidate-specific information.
 
 ## STEP 1 — Read the posting

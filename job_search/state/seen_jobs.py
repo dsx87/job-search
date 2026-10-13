@@ -393,7 +393,7 @@ def criteria_version(criteria: str) -> str:
     return _short_hash(collapse_ws(criteria), POLICY_VERSION)
 
 
-DEFAULT_PROMPT_REVISION = "default-prompts-v1"   # DefaultPromptSet.revision
+DEFAULT_PROMPT_REVISION = "default-prompts-v1"   # Frozen legacy fingerprint compatibility
 LEGACY_POLICY_MARKER = "default-policy-v1"       # frozen: the evaluator object is gone,
                                                  # but this string is part of stored state
 

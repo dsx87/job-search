@@ -386,14 +386,16 @@ def test_anthropic_json_mode_is_prompt_driven_only(monkeypatch):
         return _Response({"content": [{"type": "text", "text": "ok"}]})
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    # The Messages API has no json_object mode — json_mode/response_schema are
-    # accepted for interface parity but never sent on the wire.
+    # The adapter provides the schema as system instructions, not a native
+    # structured-output parameter.
     AnthropicProvider("k", model="claude-haiku-4-5").generate(
         "p", json_mode=True, response_schema={"type": "object"}
     )
 
     assert "response_format" not in captured["payload"]
     assert "responseSchema" not in captured["payload"]
+    assert "Return exactly one JSON object" in captured["payload"]["system"]
+    assert json.loads(captured["payload"]["system"].split("JSON Schema:\n")[1]) == {"type": "object"}
 
 
 def test_anthropic_response_skips_non_text_blocks(monkeypatch):
@@ -1110,3 +1112,16 @@ def test_select_cv_bullets_survives_scalar_jobs_and_keep_bullets():
         {"title": "iOS", "company": "Acme", "description": "d"}, _avery_profile(),
     )
     assert validate_tailored_cv(out, expected_job_order=CV_EMPLOYERS) == []
+
+
+
+def test_anthropic_json_mode_without_schema(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured.update(json.loads(request.data))
+        return _Response({"content": [{"type": "text", "text": '{}'}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    assert AnthropicProvider("k").generate("p", json_mode=True) == '{}'
+    assert captured["system"] == "Return exactly one JSON object, without Markdown or commentary."

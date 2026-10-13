@@ -394,11 +394,10 @@ class AnthropicProvider:
     """Scheme ``anthropic``: the Messages API ``/messages``.
 
     Headers ``x-api-key`` + ``anthropic-version: 2023-06-01``; body carries the
-    required ``max_tokens`` (``ANTHROPIC_MAX_TOKENS``). The Messages API has no
-    ``json_object`` mode, so **JSON is prompt-driven only** — the eval/tailor
-    prompts already instruct JSON output; ``json_mode``/``response_schema`` are
-    accepted for interface parity but not sent on the wire. Offline-tested only
-    until first live use.
+    required ``max_tokens`` (``ANTHROPIC_MAX_TOKENS``). This adapter uses
+    prompt-based JSON guidance: JSON instructions and any requested
+    schema are sent as system text, not API-enforced schema validation.
+    Offline-tested only until first live use.
     """
 
     scheme = "anthropic"
@@ -424,6 +423,14 @@ class AnthropicProvider:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
         }
+        if response_schema is not None or json_mode:
+            payload["system"] = (
+                "Return exactly one JSON object, without Markdown or commentary."
+            )
+            if response_schema is not None:
+                payload["system"] += "\nThe object must conform to this JSON Schema:\n" + json.dumps(
+                    response_schema, ensure_ascii=False
+                )
         url = f"{self.api_base}/messages"
         headers = {
             "Content-Type": "application/json",
