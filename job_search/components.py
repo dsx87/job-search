@@ -192,7 +192,7 @@ class DigestOutcome:
 class DefaultPromptSet:
     """Default prompt facade; prompt bodies are supplied by the LLM modules."""
 
-    revision = "default-prompts-v1"
+    revision = "default-prompts-v2"
 
     def fact_extraction(self, job: object) -> str:
         from .llm.facts import build_fact_extraction_prompt
