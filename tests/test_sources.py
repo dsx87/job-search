@@ -703,3 +703,34 @@ def test_linkedin_guest_recognizes_seen_fallback_alias(monkeypatch):
     by_url = {job.url: job for job in jobs}
     assert by_url["https://www.linkedin.com/jobs/view/111"].description == ""
     assert not any("jobPosting/111" in url for url in calls)
+
+
+def test_linkedin_global_keeps_partial_results_when_its_budget_runs_out(monkeypatch):
+    import sys
+    import types
+
+    from job_search.sources import jobspy_sources
+
+    pandas = pytest.importorskip("pandas")
+    calls = []
+
+    def scrape_jobs(**kwargs):
+        calls.append(kwargs)
+        return pandas.DataFrame([{"title": "iOS Engineer", "company": "Acme", "location": "Berlin",
+                                  "job_url": "https://www.linkedin.com/jobs/view/{}".format(len(calls))}])
+
+    monkeypatch.setitem(sys.modules, "jobspy", types.SimpleNamespace(scrape_jobs=scrape_jobs))
+    clock = iter([0.0, 0.0, 1.0, 1000.0])
+    monkeypatch.setattr(jobspy_sources.time, "monotonic", lambda: next(clock))
+    monkeypatch.delenv("LINKEDIN_BUDGET_SECONDS", raising=False)
+
+    source = jobspy_sources.LinkedInGlobalSource()
+    source.budget_seconds = 600
+    jobs = source.fetch()
+
+    # Two of the four default query/location combinations ran before the
+    # 510 s (85%) deadline; their jobs are returned rather than discarded.
+    assert len(jobs) == 2
+    assert all(call["fetch_description"] is True for call in calls)
+    assert "linkedin_fetch_description" not in calls[0]
+    assert fetch_mod._source_health("linkedin-global", jobs, None, source).status.value == "partial"

@@ -10,11 +10,12 @@
 pyzipper~=0.4.0
 
 # Optional: enables jobspy, linkedin-global, and linkedin-israel sources.
-# NOTE (Pi): the vendored ARMv6 tls-client .so under vendor/ was cross-built
-# against a specific jobspy release, and ~= still admits patch upgrades — so a
-# `pip install -U` on the Pi can drift past what that .so matches. The pin does
-# not cover that interaction; re-check the vendored build after any bump.
-python-jobspy~=1.1.82
+# 1.2 replaced tls-client with curl_cffi and `linkedin_fetch_description` with
+# `fetch_description`. NOTE (Pi): the vendored ARMv6 tls-client .so under vendor/
+# only serves jobspy 1.1.x; the Pi's default LinkedIn source is the stdlib
+# linkedin-guest, so do not `pip install -U` jobspy there without a curl_cffi
+# build for ARMv6.
+python-jobspy~=1.3.0
 # Optional: enables the secrettelaviv source (Cloudflare-fronted, needs a real
 # browser). Requires `python -m playwright install chromium` after pip install.
 playwright~=1.61.0

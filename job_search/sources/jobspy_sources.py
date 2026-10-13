@@ -3,7 +3,9 @@
 The `jobspy` package is imported lazily inside fetch(), so the module imports
 cleanly (and the registry builds) even when python-jobspy is not installed.
 """
+import os
 import sys
+import time
 
 from ..dates import parse_iso_date
 from ..models import Job
@@ -48,6 +50,26 @@ def _configured_result_limit(source, fallback):
     except (TypeError, ValueError):
         return fallback
     return value if value > 0 else fallback
+
+
+def _linkedin_deadline(source):
+    """Monotonic time after which a LinkedIn source starts no new query.
+
+    LinkedIn throttles nondeterministically (a query can take 15 s one day and
+    80 s the next). If the fetch stage's budget runs out first, the source is
+    abandoned and every job it already fetched is lost, so stop at 85% of that
+    budget and return what is in hand. LINKEDIN_BUDGET_SECONDS overrides it.
+    """
+    budget = getattr(source, "budget_seconds", None)
+    try:
+        budget = float(budget or os.environ.get("SCRAPE_BUDGET_SECONDS") or 600)
+    except ValueError:
+        budget = 600.0
+    try:
+        own = float(os.environ.get("LINKEDIN_BUDGET_SECONDS") or 0)
+    except ValueError:
+        own = 0.0
+    return time.monotonic() + (own if own > 0 else max(60.0, budget * 0.85))
 
 
 def _generic_jobspy_requests(location):
@@ -247,8 +269,14 @@ class LinkedInGlobalSource(BaseSource):
         total = len(queries) * len(locations)
         step = 0
         failures = 0
+        deadline = _linkedin_deadline(self)
         for query in queries:
             for location, results_wanted in locations:
+                if time.monotonic() >= deadline:
+                    self._timed_out("LinkedIn time budget reached after {}/{} queries".format(step, total))
+                    print("[linkedin-global] Time budget reached after {}/{} queries — keeping {} job(s)".format(
+                        step, total, len(all_jobs)), file=sys.stderr, flush=True)
+                    return all_jobs
                 step += 1
                 if verbose:
                     print("[linkedin-global] ({}/{}) {!r} in {}...".format(step, total, query, location), flush=True)
@@ -259,7 +287,7 @@ class LinkedInGlobalSource(BaseSource):
                         location=location,
                         results_wanted=results_wanted,
                         hours_old=LINKEDIN_HOURS_OLD,
-                        linkedin_fetch_description=True,
+                        fetch_description=True,
                     )
                     self._attempt_succeeded()
                 except Exception as exc:
@@ -325,8 +353,14 @@ class LinkedInIsraelSource(BaseSource):
         total = len(queries) * len(locations)
         failures = 0
         step = 0
+        deadline = _linkedin_deadline(self)
         for query in queries:
             for location in locations:
+                if time.monotonic() >= deadline:
+                    self._timed_out("LinkedIn time budget reached after {}/{} queries".format(step, total))
+                    print("[linkedin-israel] Time budget reached after {}/{} queries — keeping {} job(s)".format(
+                        step, total, len(all_jobs)), file=sys.stderr, flush=True)
+                    return all_jobs
                 step += 1
                 if verbose:
                     print("[linkedin-israel] ({}/{}) {!r} in {}...".format(step, total, query, location), flush=True)
@@ -337,7 +371,7 @@ class LinkedInIsraelSource(BaseSource):
                         location=location,
                         results_wanted=_configured_result_limit(self, 25),
                         hours_old=LINKEDIN_HOURS_OLD,
-                        linkedin_fetch_description=True,
+                        fetch_description=True,
                     )
                     self._attempt_succeeded()
                 except Exception as exc:
