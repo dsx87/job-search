@@ -47,9 +47,6 @@ def test_default_prompt_text_is_pinned_to_revision_v2():
     prompts = DefaultPromptSet()
     job = _job()
 
-    assert _sha(prompts.fact_extraction(job)) == (
-        "25a27290eeb27ef48a56f93efe0f2fff27dedd8a288108b6b0f06b3187ca25db"
-    )
     assert _sha(prompts.job_summary(job)) == (
         "1d24e4876f1d4938c33cc67ce6cd0802f626126d719ce496e28a3454b7a77887"
     )
@@ -64,7 +61,6 @@ def test_default_prompt_text_is_pinned_to_revision_v2():
 def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
     files = {}
     templates = {
-        "fact_extraction": "$title|$company|$location|$is_remote|$description",
         "job_summary": "$title|$description",
         "cv_bullet_selection": "$resume_bullets|$company|$description",
         "compiler_repair": "$compiler_errors|$tex_source",
@@ -75,7 +71,6 @@ def test_file_prompt_set_substitutes_documented_placeholders(tmp_path):
         files[name + "_file"] = str(path)
     prompts = FilePromptSet(revision="my-prompts-v2", **files)
 
-    assert prompts.fact_extraction(_job()).startswith("Senior iOS Engineer|Acme|Berlin|True|")
     assert prompts.job_summary(_job()).startswith("Senior iOS Engineer|")
     assert "Example Labs" in prompts.cv_bullet_selection(
         _cv_base(), _job(), _avery_profile()
@@ -103,7 +98,7 @@ def test_file_prompt_set_rejects_invalid_placeholders_at_load(
     path.write_text(template, encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
-        FilePromptSet(revision="bad-v1", fact_extraction_file=str(path))
+        FilePromptSet(revision="bad-v1", job_summary_file=str(path))
 
 
 def test_criteria_fingerprint_is_legacy_compatible_until_prompts_change():
@@ -117,34 +112,7 @@ def test_criteria_fingerprint_is_legacy_compatible_until_prompts_change():
     assert criteria_fingerprint(criteria, "prompts-v2") != criteria_version(criteria)
 
 
-def test_current_prompt_revision_reopens_legacy_evaluations():
-    assert DefaultPromptSet.revision == "default-prompts-v2"
-    assert criteria_fingerprint("criteria", DefaultPromptSet.revision) != criteria_version("criteria")
-
-
-def test_fact_prompt_defines_policy_labels_and_empty_values():
-    from types import SimpleNamespace
-    from job_search.llm.facts import build_fact_extraction_prompt
-
-    prompt = build_fact_extraction_prompt(
-        _job(), policy=SimpleNamespace(excluded_industries=("gambling",)),
-    )
-    assert 'lowercase English language name' in prompt
-    assert 'never a language code' in prompt
-    assert 'use "" when unclear' in prompt
-    assert 'EXACT configured label' in prompt
-    assert 'Configured excluded industries: gambling' in prompt
-    assert 'different primary stack remains other' in prompt
-    assert 'Optional office visits do not make a remote role hybrid' in prompt
-    assert 'contiguous quote from ONE advertised text field value' in prompt
-    assert 'Never cite the source Remote flag as evidence' in prompt
-    assert 'False does not establish onsite or hybrid work' in prompt
-    assert 'relocation assistance OR visa sponsorship' in prompt
-    assert 'Never include the prompt labels' in prompt
-    assert 'Check the title as well as the description' in prompt
-
-
-@pytest.mark.parametrize("name", ["fact_extraction", "job_summary", "cv_bullet_selection"])
+@pytest.mark.parametrize("name", ["job_summary", "cv_bullet_selection"])
 def test_posting_prompts_mark_external_text_as_untrusted(name):
     prompts = DefaultPromptSet()
     job = _job()

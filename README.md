@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 An autonomous, self-hosted job-search agent. It can scrape job boards, filter
-results against a configuration-owned policy with an LLM, tailor a configured
+results with DefAPI Jev against approved criteria and settings, tailor a configured
 CV to matching roles, compile it to PDF, and deliver the matches to Telegram.
 
 **The same pipeline runs in two very different places:** a free **GitHub Actions**
@@ -25,7 +25,7 @@ configuration uses `tomli` on Python 3.9/3.10 and the standard-library
 
 Select a commented TOML file with `JOB_SEARCH_SETTINGS_FILE`. The complete
 [job_search.example.toml](job_search.example.toml) covers search terms, sources,
-candidate eligibility, deterministic evaluation checks, and country-aware CV
+candidate eligibility, Jev policy inputs, and country-aware CV
 page limits. [Configuration documentation](docs/configuration.md) explains
 precedence, paths, trusted customization, and the complementary
 [environment example](deployment.env.example).
@@ -62,14 +62,14 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
 
 ```
                     ┌─────────────────────────────────────────────┐
-   GitHub Actions   │  fetch  ─▶  dedupe  ─▶  LLM filter  ─▶ tailor │
+   GitHub Actions   │  fetch  ─▶  dedupe  ─▶  Jev decision ─▶ tailor │
    or a Raspberry Pi│  ~20      seen_jobs    criteria.md     résumé │
-   daily            │  sources  .json     (primary+fallback) (LaTeX)│
+   daily            │  sources  .json     (DefAPI)         (LaTeX)│
                     └─────────────────────────────────────────────┬─┘
                                                                    ▼
                                                     Telegram: match + tailored
                                                     verified one-page PDF
-                                                    with reasoning
+                                                    with categorical findings
 ```
 
 1. **Fetch** — pulls listings concurrently from ~20 sources (Remotive, RemoteOK,
@@ -78,16 +78,20 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
    Cloudflare-fronted regional boards, among others).
 2. **Deduplicate** — `seen_jobs.json` tracks everything already processed so each
    role is only ever evaluated and notified once.
-3. **Filter** — an LLM extracts structured facts from each new role, then the
-   configured policy applies stack fit, seniority, remote/relocation, industry,
-   and timezone rules before producing its verdict.
+3. **Filter** — Jev receives each new posting, `criteria.md`, and the selected candidate,
+   search, and policy settings. It returns a fit, review, or nonfit decision and
+   categorical checks for language, location and work, employment, seniority,
+   technology stack, industry, and other clear rejection reasons.
 4. **Tailor** — for every match and every job flagged for review, the model
    rewrites the configured base LaTeX CV to emphasize the relevant experience. A
    factual-content guard validates it, pdflatex compiles it, and the page guard
    verifies exactly one page.
+   Jev’s labels carry fixed short descriptions. They are categorical judgments,
+   not excerpts from the posting or proof of correctness. Nonfits stay out of
+   the digest; Jev review decisions and fits contradicted by red flags go to review.
 5. **Notify** — each run is bundled into **one ZIP digest** delivered to Telegram:
    a self-contained HTML dashboard (a table of every match with a one-line
-   summary, the fit reasoning, key facts, and a local link to its tailored CV,
+   summary, short categorical findings and a local link to its tailored CV,
    plus the jobs flagged for review and the deferred ones) alongside the CV PDFs
    themselves. Set `TELEGRAPH_ACCESS_TOKEN` to publish the dashboard as a
    [telegra.ph](https://telegra.ph) page instead: one AES-256 protected archive
@@ -234,7 +238,8 @@ Then add the delivery/provider secrets required by your selected TOML:
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | ✅ | primary LLM key (filtering & tailoring) |
+| `GEMINI_API_KEY` | ✅ | primary LLM key (summaries and tailoring) |
+| `JEV_API_KEY` | ✅ | DefAPI Jev job decisions |
 | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
 | `TELEGRAM_CHAT_ID` | ✅ | delivery |
 | `OPENAI_API_KEY` | optional | fallback provider key |
@@ -242,23 +247,18 @@ Then add the delivery/provider secrets required by your selected TOML:
 | `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it uploads one AES-256 protected CV archive to [x0.at](https://x0.at); its password is sent in the Telegram message. Without ZIP-encryption support, the run safely sends the Telegram ZIP instead |
 
 The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
-`OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`. The default primary is the `gemini`
-scheme at `gemini-2.5-flash`; the default fallback is the `openai` scheme at
-`gpt-5.4-mini` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
+`OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`, and passes `JEV_API_KEY` to the daily run. The default primary is the `gemini`
+scheme at `gemini-3.8-flash`; the default fallback is the `openai` scheme at
+`gpt-6-luna` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
 include API access).
 
 The private TOML is data-only and is validated before any personal pipeline
 work. A GitHub-hosted runner cannot connect to an LLM server bound only to your
 laptop's loopback interface.
 
-> ⚠️ **`gemini-2.5-flash` is scheduled for shutdown on 2026-10-16.** It is kept
-> as the default deliberately (2.5 proved steadier than the 3.x lineage on this
-> workload), so the migration is a dated decision, not an oversight. The run log
-> and the digest footer start warning 120 days out, and a retired model is
-> reported once as "primary model rejected — check `LLM_PRIMARY_MODEL`" rather
-> than silently costing one doomed request per job. **Configure the fallback
-> key**: without `OPENAI_API_KEY` a retired primary is a total outage, not a
-> degraded run. See `LLM_MODEL_SHUTDOWN_DATES` in `job_search/config.py`.
+Older `gemini-2.5-flash` overrides are scheduled for shutdown on 2026-10-16.
+The run log and digest footer warn before that date. Configure the fallback key
+to keep summaries and CV tailoring available if the primary model is rejected.
 
 A provider is a **scheme** + model + key (+ optional base), so switching
 providers is config only — no code change. Override any of these optional
@@ -424,17 +424,17 @@ the daily retry state.
 
 By default the digest lists every fit in one stack. Copy `sections.example.py`
 to `sections.py` and it groups them under headings you define — Israel roles,
-worldwide-remote roles, EU relocation, whatever you want:
+eligible remote roles, EU relocation, whatever you want:
 
 ```python
-from job_search.digest.sections import Section, all_of, fact, is_remote, on_job
+from job_search.digest.sections import Section, all_of, signal, is_remote, on_job
 from job_search.location.classify import is_israel_job
 
 SECTIONS = [
     Section("Israel", "🇮🇱", applies_to=("fits", "review"),
             match=on_job(is_israel_job)),
-    Section("Remote — Worldwide", "🌍",
-            match=all_of(is_remote, fact("remote_geo_scope", "worldwide"))),
+    Section("Remote — eligible", "🌍",
+            match=all_of(is_remote, signal("location", "remote"))),
     Section("Everything else", "📋"),      # no match = catch-all
 ]
 ```
@@ -474,7 +474,7 @@ common case short.
 | `not_(predicate)` | Inverts a predicate. |
 | `is_remote` | Matches a remote job. |
 | `in_region(*regions)` | Matches when the job's region is one of `regions` (e.g. `Region.EU`). |
-| `fact(name, *values)` | With values, matches when the LLM-extracted fact equals one of them (case-insensitive). With none, matches when the fact is known at all — present and not the "unknown" the extractor writes when a posting doesn't state it. |
+| `signal(name, *choices)` | Matches a Jev category choice, such as `signal("location", "remote")`. With no choices, matches any answer except `unknown`. |
 | `location_contains(*tokens)` | Matches when the job's location contains any token, case-insensitive. |
 | `title_matches(pattern)` | Matches the job title against a case-insensitive regex, compiled once at section-definition time so a broken pattern surfaces at load, not mid-render. |
 | `on_job(fn)` | Adapts a job-taking function into an entry-taking predicate — the bridge to anything already written in this repo, e.g. `on_job(is_israel_job)`. |
@@ -495,13 +495,14 @@ Telegram Bot API · [python-jobspy](https://github.com/cullenwatson/JobSpy)
 | `job_search/pipeline/` | Orchestrates fetch → dedupe → filter → tailor → notify |
 | `job_search/bot/` | The Telegram control bot (`/run`, `/status`, `/tailor`) |
 | `job_search/latex/` | Base-CV render, `pdflatex` compile, one-page guard |
-| `job_search/llm/` | scheme-based LLM providers, criteria evaluation, résumé tailoring |
+| `job_search/llm/` | scheme-based LLM providers, summaries, résumé tailoring |
+| `job_search/jev.py` | DefAPI Jev request, response, and categorical findings |
 | `job_search/components.py` | the concrete object graph: profile, prompts, CV rendering, output delivery |
 | `job_search/runtime.py` | builds the `Runtime` from settings, applies the escape hatch, preflights the host |
 | `scripts/setup-rpi.sh` | One-shot Raspberry Pi provisioning |
 | `scripts/run_pipeline.sh` | The single `flock`'d entry point every run goes through |
 | `tests/` | Offline characterization suite (`pytest`) |
-| `criteria.md` | Human-readable rules and built-in evaluation fingerprint input; executable defaults live in `job_search/policy.py` |
+| `criteria.md` | Human-readable Jev criteria; question and label changes require approval before deployment |
 | `cv_tailoring_prompt.md` | Compatibility artifact; deterministic bullet selection no longer consumes its instruction block |
 | `job_search_config.example.py` | no-op template for the `job_search_config.py` escape hatch |
 | `sections.example.py` | Example digest sections — copy to `sections.py` to group the dashboard |

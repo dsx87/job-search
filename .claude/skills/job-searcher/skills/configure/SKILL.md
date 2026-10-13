@@ -24,7 +24,7 @@ version-only TOML can be validated but cannot fetch.
 | 1 | selected `job_search.toml` | versioned provider, search, candidate, policy, CV, and delivery data |
 | 2 | protected environment | credentials, host tuning, and temporary overrides |
 | 3 | `.deployment.env` | pinned private-config checkout and non-secret host overrides |
-| 4 | `criteria.md` | reevaluation fingerprint compatibility input only |
+| 4 | `criteria.md` | Jev criteria text and reevaluation fingerprint |
 | 5 | `sections.py` | digest presentation only |
 | 6 | `job_search_config.py` | rare reviewed Python behavior missing from the catalog |
 
@@ -86,13 +86,22 @@ need their CV inputs: `python3 -m job_search.latex.render_base` requires both
 `base_tex_file` and `rendered_base_file`; tailored rendering needs configured
 base and prompt inputs.
 
-Use `[policy]` for ordered, known built-in checks. The compatible
-`nonremote_work_authorization` identifier checks explicit authorization for
-all arrangements, including remote; residency never implies authorization.
-`criteria.md` changes only the reevaluation fingerprint, never evaluator
-context or policy. `cv_tailoring_prompt_file` is parsed only for compatibility
-validation; active bullet instructions come from
-`prompt_dir/cv_bullet_selection.txt` and require `prompt_revision`.
+Use `[policy]` for validated, declarative inputs supplied to Jev. Candidate
+residency and work authorization are independent. `criteria.md` is sent to Jev
+and changes the reevaluation fingerprint. Before applying any change to
+`criteria.md`, draft the matching Jev questions, flags, labels, and short
+descriptions in `job_search/jev.py` and present the exact proposed changes for
+user approval. Do not edit either file until approval; runs use only the last
+approved version. When approved questions or routing change, bump the Jev
+fingerprint version in `job_search/state/seen_jobs.py` and
+`job_search/evaluation_config.py` so earlier rejections can reopen. Keep
+categorical explanations short and do not claim they are
+posting quotations. `JEV_API_KEY` is environment-only and required for daily
+runs. The general LLM handles summaries and CV tailoring.
+
+`cv_tailoring_prompt_file` is parsed only for compatibility validation; active
+bullet instructions come from `prompt_dir/cv_bullet_selection.txt` and require
+`prompt_revision`.
 
 Sections affect presentation only. Load/definition errors yield ungrouped
 output; a blank-entry predicate smoke warning retains otherwise valid sections.
