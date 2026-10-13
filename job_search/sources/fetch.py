@@ -102,10 +102,14 @@ def regions_for_display(regions):
 
 def _fetch_source_with_diagnostics(
     source_name, source_cls, verbose, seen_jobs_file=None, search=None, candidate=None,
+    budget_seconds=None,
 ):
     source = source_cls()
     if seen_jobs_file is not None:
         source.seen_jobs_file = seen_jobs_file
+    # Lets a slow multi-query source stop early and keep its partial results;
+    # once the stage abandons a source, everything it fetched is discarded.
+    source.budget_seconds = budget_seconds
     # Sources remain constructor-compatible; query-capable sources read these
     # optional immutable settings in fetch().
     source.search = search
@@ -207,7 +211,8 @@ def fetch_jobs_with_health(
         with limiter:
             results.put(
                 _fetch_source_with_diagnostics(
-                    name, source_cls, verbose, seen_jobs_file, search, candidate
+                    name, source_cls, verbose, seen_jobs_file, search, candidate,
+                    budget_seconds,
                 )
             )
 
