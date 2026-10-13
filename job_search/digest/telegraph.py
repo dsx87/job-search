@@ -24,6 +24,7 @@ import secrets
 import sys
 
 from ..models import REGION_LABELS, Region, coerce_job
+from ..jev import relevant_findings
 # Reused verbatim so the two renderers cannot disagree about what a fact chip
 # says, which URLs are safe to link, or how a run-health issue is worded.
 from .render import _FACT_LABELS, _is_http, _stat
@@ -115,6 +116,12 @@ def _meta_line(job) -> str:
 
 
 def _fact_labels(evaluation, job) -> str:
+    findings = (evaluation or {}).get("findings")
+    if findings is not None:
+        findings = relevant_findings(findings)
+        icons = {"green": "🟢", "red": "🔴", "unclear": "🟡"}
+        return " · ".join("{} {}: {}".format(icons[item["color"]], item["label"],
+                                          item["description"]) for item in findings)
     facts = (evaluation or {}).get("facts") or {}
     labels = []
     for field_name, mapping in _FACT_LABELS.items():

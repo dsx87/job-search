@@ -19,9 +19,9 @@ def test_pipeline_config_defaults():
     assert config.TAILOR_WORKERS == 8
     # Generic, role-based LLM defaults.
     assert config.LLM_PRIMARY_SCHEME == "gemini"
-    assert config.LLM_PRIMARY_MODEL == "gemini-2.5-flash"
+    assert config.LLM_PRIMARY_MODEL == "gemini-3.8-flash"
     assert config.LLM_FALLBACK_SCHEME == "openai"
-    assert config.LLM_FALLBACK_MODEL == "gpt-5.4-mini"
+    assert config.LLM_FALLBACK_MODEL == "gpt-6-luna"
     assert config.RETRYABLE_STATUS == {429, 500, 502, 503, 504}
     assert config.LLM_CIRCUIT_BREAK_STATUS == {429, 503}
     assert config.LLM_RETRY_BACKOFF == (2, 8, 20)
@@ -114,10 +114,10 @@ def test_pipeline_config_from_env_reads_keys(monkeypatch):
     assert pc.eval_workers == 5
     # defaults preserved for unset values
     assert pc.llm_primary_scheme == "gemini"
-    assert pc.llm_primary_model == "gemini-2.5-flash"
+    assert pc.llm_primary_model == "gemini-3.8-flash"
     assert pc.llm_primary_api_base == ""  # blank → scheme default resolved in the factory
     assert pc.llm_fallback_scheme == "openai"
-    assert pc.llm_fallback_model == "gpt-5.4-mini"
+    assert pc.llm_fallback_model == "gpt-6-luna"
     assert pc.llm_fallback_api_base == ""
 
 

@@ -623,6 +623,15 @@ def test_record_evaluation_and_lifecycle_record_round_trip_across_both_identitie
         assert record.last_seen == today
 
 
+def test_review_verdict_round_trips_and_old_uncertain_remains_readable():
+    job = Job(title="Role", company="Acme", url="https://x/review")
+    seen = set()
+    today = datetime.date(2026, 9, 24)
+    record_evaluation(seen, job, "sig-new", "review", today)
+    record_evaluation(seen, job, "sig-old", "uncertain", today)
+    assert lifecycle_record(seen, **job).verdicts == frozenset({"review", "uncertain"})
+
+
 def test_record_evaluation_is_a_noop_for_identityless_job():
     seen = set()
     sig = evaluation_signature("x", "")

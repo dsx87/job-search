@@ -1,5 +1,6 @@
 """TDD for user-defined digest sections: the predicate vocabulary."""
 import datetime
+import pytest
 
 from job_search.digest.model import FitEntry, ReviewEntry
 from job_search.digest.sections import (
@@ -8,11 +9,13 @@ from job_search.digest.sections import (
     any_of,
     days_since_posted,
     fact,
+    group_entries,
     in_region,
     is_remote,
     location_contains,
     not_,
     on_job,
+    signal,
     title_matches,
 )
 from job_search.models import Job, Region
@@ -61,6 +64,29 @@ def test_fact_with_no_values_means_the_fact_is_known():
     assert predicate(_fit(facts={"seniority": "senior"})) is True
     assert predicate(_fit(facts={"seniority": "unknown"})) is False
     assert predicate(_fit(facts={})) is False
+
+
+def test_signal_matches_jev_choices_on_fit_and_review_entries():
+    fit = FitEntry(job=Job(is_remote=True), evaluation={"signals": {"location": "remote"}}, summary="")
+    review = ReviewEntry(job=Job(), evaluation={"signals": {"location": "unknown"}})
+    assert signal("location", "remote")(fit)
+    assert signal("location")(fit)
+    assert not signal("location", "remote")(review)
+    assert not signal("location")(review)
+
+
+def test_signal_rejects_unknown_names_and_choices_at_definition_time():
+    with pytest.raises(ValueError, match="Unknown Jev signal"):
+        signal("locaton", "remote")
+    with pytest.raises(ValueError, match="Unknown location choice"):
+        signal("location", "worldwide")
+
+
+def test_legacy_fact_predicate_warns_on_jev_entries():
+    entry = FitEntry(job=Job(), evaluation={"signals": {"location": "remote"}}, summary="")
+    groups, warnings = group_entries([entry], [Section("Legacy", match=fact("remote_geo_scope", "worldwide"))], "fits")
+    assert groups[0][0].name == "Other"
+    assert "use signal() for Jev decisions" in warnings[0]
 
 
 def test_location_contains_is_case_insensitive():

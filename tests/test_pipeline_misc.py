@@ -222,7 +222,7 @@ def _stub_daily(monkeypatch, calls):
 
 
 def _daily_cfg(**overrides):
-    base = dict(llm_primary_api_key="g", telegram_bot_token="t", telegram_chat_id="c",
+    base = dict(llm_primary_api_key="g", jev_api_key="jev", telegram_bot_token="t", telegram_chat_id="c",
                 settings_file='explicit-test-fixture.toml',
                 setting_origins={'search_terms': {'kind': 'file'}},
                 base_tex_file='avery_example_base.tex')

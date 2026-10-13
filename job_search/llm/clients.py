@@ -305,7 +305,7 @@ class OpenAIProvider:
 
     Covers OpenAI plus any OpenAI-compatible endpoint (Groq, DeepSeek, xAI,
     OpenRouter, Together, Mistral, local, …) via ``api_base``. ``temperature`` is
-    omitted by default (``send_temperature=False``) because ``gpt-5.4-mini`` and
+    omitted by default (``send_temperature=False``) because ``gpt-6-luna`` and
     other reasoning models reject a non-default temperature.
 
     JSON: a ``response_schema`` is enforced through structured outputs

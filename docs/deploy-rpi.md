@@ -1,6 +1,6 @@
 # Running the daily flow on a Raspberry Pi
 
-This runs the full pipeline — **fetch → dedupe → LLM filter → tailor résumé →
+This runs the full pipeline — **fetch → dedupe → Jev decision → tailor résumé →
 validate → compile and verify a one-page PDF → Telegram** — on a self-hosted Pi
 instead of (or alongside) the GitHub Actions cron.
 
@@ -26,7 +26,7 @@ library TOML parser; Python 3.9/3.10 needs the small `tomli` package, which
 
 | Feature | Original Pi B (ARMv6, ~512 MB) | Notes |
 |---|---|---|
-| 16 stdlib sources + LLM filter + tailor + PDF + Telegram | ✅ Works | `tomli` is installed on Python 3.9/3.10; LLM/Telegram are HTTPS |
+| 16 stdlib sources + Jev decision + tailor + PDF + Telegram | ✅ Works | `tomli` is installed on Python 3.9/3.10; LLM/Telegram are HTTPS |
 | `linkedin-guest` (LinkedIn via the public guest API) | ✅ Works, stdlib | Select it in the pinned private TOML when needed |
 | `jobspy` (Indeed + Google) | ⚙️ Opt-in via a bundled lib | `tls-client` has no ARMv6 wheel, so the repo ships a cross-built `vendor/tls-client-armv6.so`; `scripts/enable-jobspy.sh` wires it up |
 | `linkedin-global` / `linkedin-israel` (jobspy LinkedIn) | optional | Select sources in the pinned private TOML |
@@ -114,14 +114,15 @@ not start, stop, enable, disable, or restart the timer or bot.
    | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
    | `TELEGRAM_CHAT_ID` | ✅ | delivery |
    | `LLM_FALLBACK_API_KEY` | optional | fallback provider key (e.g. a prepaid OpenAI key) |
-   | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `gemini`) + model (default `gemini-2.5-flash`) |
+   | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `gemini`) + model (default `gemini-3.8-flash`) |
    | `LLM_PRIMARY_API_BASE` | optional | primary API base override; an absolute non-default HTTP(S) URL is required with `LLM_PRIMARY_AUTH_MODE=none` |
    | `LLM_PRIMARY_AUTH_MODE` | optional | `bearer` (default) or explicit `none` for a trusted local OpenAI-compatible server |
-   | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-5.4-mini`) |
+   | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-6-luna`) |
    | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`); an absolute non-default HTTP(S) URL is required with fallback `none` auth |
    | `LLM_FALLBACK_AUTH_MODE` | optional | fallback `bearer` / explicit `none` mode |
    | `JOB_SEARCH_CONFIG_FILE` | optional | absolute path to a trusted escape-hatch module; an optional repo-root `job_search_config.py` is used when unset. **Setting it to an empty value is an error**, not "disabled" — it doesn't silently fall back |
    | `CV_PHONE` | optional | phone injected into the CV at compile time |
+   | `JEV_API_KEY` | required | DefAPI Jev decisions; keep in mode-600 `.env` |
    | `EVAL_WORKERS` / `TAILOR_WORKERS` | tuning | keep low on a single core (2 / 1) |
    | `SCRAPE_BUDGET_SECONDS` | tuning | fetch-stage wall-clock ceiling (default 600) |
    | `SOURCES_ENABLE` / `SOURCES_DISABLE` | sources | non-secret host overrides; normally select sources in the pinned TOML |
@@ -137,11 +138,9 @@ not start, stop, enable, disable, or restart the timer or bot.
    whitespace-only to use the defaults; API-base overrides may include a trailing
    slash (the client normalizes it).
 
-   > ⚠️ The default primary `gemini-2.5-flash` is scheduled for shutdown on
-   > **2026-10-16** (kept deliberately until then — it is steadier here than the
-   > 3.x lineage). `LLM_FALLBACK_API_KEY` is *not* optional in practice: with it
-   > blank, a retired primary turns every job into an evaluation failure and the
-   > Pi delivers nothing. The run log warns from 120 days out.
+   > Older `gemini-2.5-flash` overrides are scheduled for shutdown on
+   > **2026-10-16**. Set `LLM_FALLBACK_API_KEY` so summaries and CV tailoring
+   > remain available if the primary model is rejected.
 
    For local inference on this same host, use the `openai` scheme with the
    server's loopback URL and `LLM_PRIMARY_AUTH_MODE=none`. No-auth mode is

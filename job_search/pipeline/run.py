@@ -241,19 +241,13 @@ def _build_runtime(cfg, command):
     return build_runtime(cfg, command=command, llm=llm, telegram=telegram)
 
 
-def _evaluation_options(settings):
-    if not getattr(settings, "settings_file", ""):
-        return {}
-    return {"search": settings.search, "candidate": settings.candidate,
-            "policy": settings.policy}
-
-
-def _evaluate_candidate(llm, criteria, job, prompts=None, settings=None):
-    """Evaluate a candidate only when its cleaned description is sufficient."""
+def _evaluate_candidate(api_key, criteria, job, settings):
+    """Evaluate only postings with enough real job text."""
     if not ensure_job_description(job):
         return None
-    from ..llm.eval import evaluate_job
-    return evaluate_job(llm, criteria, job, prompts=prompts, **_evaluation_options(settings))
+    from ..jev import evaluate_job
+    return evaluate_job(api_key, criteria, job, candidate=settings.candidate,
+                        policy=settings.policy, search=settings.search)
 
 
 def _prepare_with_renderer(renderer, llm, job, evaluation=None):
@@ -557,7 +551,7 @@ def _deliver_digest(
         # Mark every prepared fit notified even when the digest itself failed:
         # the fallback run summary below names each pending fit, so the user has
         # heard about them, and the retry can take the known-fit route instead
-        # of re-paying fact extraction, bullet selection and pdflatex for a job
+        # of re-paying Jev, bullet selection and pdflatex for a job
         # already known to be a fit (finding N9).
         for job, _payload, _retry, _evaluation in prepared:
             mark_delivery_notified(seen, **job)
@@ -610,7 +604,7 @@ def _deliver_digest(
         seen.update(job_identity_keys(job))
         signature = signature_for(job)
         if signature is not None:
-            record_evaluation(seen, job, signature, "uncertain", today)
+            record_evaluation(seen, job, signature, "review", today)
     if uncertain:
         _save_seen_for(cfg, seen)
     stats.cv_sent += min(max(outcome.cv_sent, 0), fit_artifact_count)
@@ -642,17 +636,17 @@ def run_daily(cfg, test: bool = False) -> int:
                 flush=True,
             )
             if shutdown_note:
-                # Without a fallback, a retired primary is a total outage: every
-                # job fails evaluation and the run delivers nothing.
+                # Without a fallback, a retired primary prevents summaries and
+                # CV tailoring for fits.
                 print(
                     "  ⚠️ With no fallback, a retired primary model means the run "
-                    "delivers nothing at all — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
+                    "cannot prepare fit CVs — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
                     flush=True,
                 )
         criteria = load_criteria(getattr(cfg, "criteria_file", CRITERIA_FILE))
-        prompt_revision = getattr(rt.prompts, "revision", "")
+        prompt_revision = "jev-1.13-approved-v1"
         if getattr(cfg, "settings_file", ""):
-            from ..policy import evaluation_configuration_revision
+            from ..evaluation_config import evaluation_configuration_revision
             prompt_revision += "\n" + evaluation_configuration_revision(
                 cfg.search, cfg.candidate, cfg.policy
             )
@@ -721,8 +715,14 @@ def run_daily(cfg, test: bool = False) -> int:
                 print("Test job excluded by the configured candidate filter.")
                 print("Done.", flush=True)
                 return 0
-            from ..llm.eval import evaluate_job
-            evaluation = evaluate_job(llm, criteria, d, prompts=rt.prompts, **_evaluation_options(cfg))
+            evaluation = _evaluate_candidate(cfg.jev_api_key, criteria, d, cfg)
+            if evaluation.get("verdict") == "review":
+                try:
+                    notifier.send_message(_format_uncertain_notification([(d, evaluation)]))
+                except Exception as exc:
+                    print(f"Review notification error: {exc}", file=sys.stderr)
+                print("Done.", flush=True)
+                return 0
             if not evaluation.get("fit"):
                 print("    Skip — {}".format(evaluation.get("reason", "")))
                 print("Done.", flush=True)
@@ -847,7 +847,7 @@ def run_daily(cfg, test: bool = False) -> int:
         print(f"Found {candidate_count} new or retryable job(s).", flush=True)
 
         # ── Stage 2: Evaluate all new jobs concurrently ──────────────────────
-        # LLM calls are independent and the client is stateless, so we fan out
+        # Jev calls are independent, so we fan out
         # across a thread pool. seen-set mutation stays on this (main) thread as
         # results arrive — no locks needed.
         if evaluation_jobs:
@@ -855,7 +855,7 @@ def run_daily(cfg, test: bool = False) -> int:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.eval_workers) as pool:
                 future_to_job = {
                     pool.submit(
-                        _evaluate_candidate, llm, criteria, job, rt.prompts, cfg
+                        _evaluate_candidate, cfg.jev_api_key, criteria, job, cfg
                     ): (job, retry_state)
                     for job, retry_state in evaluation_jobs
                 }
@@ -879,7 +879,7 @@ def run_daily(cfg, test: bool = False) -> int:
                     if evaluation.get("fit"):
                         stats.fits += 1
                         fits.append((job, evaluation, retry_state))
-                    elif evaluation.get("verdict") == "uncertain":
+                    elif evaluation.get("verdict") == "review":
                         # Policy could not confidently decide: surface for review
                         # rather than discard. Marked seen so it notifies once;
                         # the structured lifecycle reopens it if content/criteria
@@ -894,7 +894,7 @@ def run_daily(cfg, test: bool = False) -> int:
                             seen.update(job_identity_keys(job))
                             signature = _signature_for(job)
                             if signature is not None:
-                                record_evaluation(seen, job, signature, "uncertain", today)
+                                record_evaluation(seen, job, signature, "review", today)
                     else:
                         # Not a fit: mark seen so it won't be reprocessed.
                         stats.non_fit += 1

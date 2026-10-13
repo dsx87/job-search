@@ -6,12 +6,12 @@ where a section says so, the Needs-review) list under your own headings.
 
 The list is ordered, and order is priority: each job appears exactly ONCE,
 under the first section it matches. A remote Example City role lands in
-"Local" below, not in "Remote — Worldwide", because Local comes first.
+"Local" below, not in "Remote — eligible", because Local comes first.
 Reorder the list to re-prioritize.
 
 The helpers keep common rules short; `match=lambda entry: ...` is equally
 supported, where `entry.job` is the Job record and `entry.evaluation` is the
-LLM result. Sections change presentation only: search and policy still come
+Jev result. Sections change presentation only: search and policy still come
 from the selected TOML file.
 
 Keep a real sections file in the private configuration checkout and point the
@@ -20,7 +20,7 @@ selected TOML's settings.sections_file at it (or use the SECTIONS_FILE override)
 from job_search.digest.sections import (
     Section,
     all_of,
-    fact,
+    signal,
     in_region,
     is_remote,
     not_,
@@ -36,11 +36,11 @@ SECTIONS = [
         applies_to=("fits", "review"),
         match=on_job(lambda job: "example city" in job.location.lower()),
     ),
-    # Remote with no geographic restriction — the most applicable bucket.
+    # Remote from a candidate-eligible location.
     Section(
-        "Remote — Worldwide",
+        "Remote — eligible",
         "🌍",
-        match=all_of(is_remote, fact("remote_geo_scope", "worldwide")),
+        match=all_of(is_remote, signal("location", "remote")),
     ),
     # On-site or hybrid in the EU: relevant when relocation is configured.
     Section(

@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 
 from ..models import coerce_job
+from ..jev import SIGNAL_QUESTIONS
 
 # The digest lists a section may be applied to. Deferred is deliberately absent:
 # those entries were never evaluated, so they carry no facts to match on.
@@ -42,7 +43,7 @@ def _job(entry):
 
 
 def _facts(entry):
-    """The LLM facts dict, or {} when the entry was decided without one."""
+    """Legacy facts in custom digest entries, if supplied."""
     evaluation = getattr(entry, "evaluation", None) or {}
     facts = evaluation.get("facts") if hasattr(evaluation, "get") else None
     return facts if isinstance(facts, dict) else {}
@@ -85,7 +86,7 @@ def in_region(*regions):
 
 
 def fact(name, *values):
-    """Test an LLM-extracted fact.
+    """Test a legacy facts field in a custom digest entry.
 
     With values, true when the fact equals any of them (case-insensitively).
     With none, true when the fact is known at all — i.e. present and not the
@@ -94,10 +95,34 @@ def fact(name, *values):
     wanted = set(str(value).strip().lower() for value in values)
 
     def predicate(entry):
+        evaluation = getattr(entry, "evaluation", None) or {}
+        if isinstance(evaluation, dict) and "signals" in evaluation and "facts" not in evaluation:
+            raise ValueError("fact() needs retired facts; use signal() for Jev decisions")
         value = str(_facts(entry).get(name, "")).strip().lower()
         if wanted:
             return value in wanted
         return bool(value) and value != "unknown"
+
+    return predicate
+
+
+def signal(name, *choices):
+    """Match a Jev categorical answer on a fit or review entry.
+
+    With no choices, match any known answer except ``unknown``.
+    """
+    if name not in SIGNAL_QUESTIONS:
+        raise ValueError("Unknown Jev signal: {}".format(name))
+    wanted = {str(choice).strip().lower() for choice in choices}
+    invalid = wanted.difference(SIGNAL_QUESTIONS[name])
+    if invalid:
+        raise ValueError("Unknown {} choice(s): {}".format(name, ", ".join(sorted(invalid))))
+
+    def predicate(entry):
+        evaluation = getattr(entry, "evaluation", None) or {}
+        signals = evaluation.get("signals") or {}
+        choice = str(signals.get(name, "")).strip().lower()
+        return choice in wanted if wanted else bool(choice) and choice != "unknown"
 
     return predicate
 

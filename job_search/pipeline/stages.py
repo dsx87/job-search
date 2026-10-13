@@ -80,6 +80,11 @@ def ensure_job_description(job, fetcher=None, min_length=MIN_JOB_TEXT_LEN):
     job.description = current
     if legacy is not None:
         legacy["description"] = current
+    # A long careers landing page is still not an individual posting.
+    generic = re.match(r"(?:browse|explore|search|view) (?:all |open |our )?(?:jobs|positions|openings)\b", current, re.I)
+    title = clean_job_description(job.title).lower()
+    if generic and title and title not in current.lower():
+        return False
     return len(current) >= min_length
 
 
@@ -108,6 +113,11 @@ def fetch_job_text_from_url(url: str) -> str:
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
+            final_url = resp.geturl() if hasattr(resp, "geturl") else url
+            final_path = urllib.parse.urlparse(final_url).path.rstrip("/").lower()
+            original_path = urllib.parse.urlparse(url).path.rstrip("/").lower()
+            if final_path != original_path and final_path in ("/jobs", "/careers", "/openings", "/positions"):
+                return ""
             charset = resp.headers.get_content_charset() or "utf-8"
             # Capped read: this follows arbitrary posting URLs, so an oversized
             # or chunk-streaming response would otherwise be an OOM-kill mid-run
@@ -130,7 +140,7 @@ def _format_deferred_notification(jobs, limit=10):
     noun = "posting" if count == 1 else "postings"
     lines = [
         f"⚠️ <b>{count} new job {noun} deferred</b>",
-        "Not enough job-description text for reliable AI evaluation. "
+        "No usable individual job posting was found for evaluation. "
         "They will retry next run.",
         "",
     ]
@@ -166,7 +176,7 @@ def _format_uncertain_notification(items, limit=10):
     noun = "posting" if count == 1 else "postings"
     lines = [
         f"🔍 <b>{count} job {noun} flagged for review</b>",
-        "The policy could not confidently decide these. Review and use /tailor if a fit.",
+        "Jev could not make a consistent decision. Review and use /tailor if a fit.",
         "",
     ]
     for job, evaluation in items[:limit]:

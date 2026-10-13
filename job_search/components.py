@@ -194,10 +194,6 @@ class DefaultPromptSet:
 
     revision = "default-prompts-v1"
 
-    def fact_extraction(self, job: object) -> str:
-        from .llm.facts import build_fact_extraction_prompt
-        return build_fact_extraction_prompt(job)
-
     def job_summary(self, job: object) -> str:
         from .llm.summarize import build_job_summary_prompt
         return build_job_summary_prompt(job)
@@ -226,9 +222,6 @@ class FilePromptSet:
     """
 
     _ALLOWED_PLACEHOLDERS = {
-        "fact_extraction": {
-            "title", "company", "location", "is_remote", "description",
-        },
         "job_summary": {
             "title", "company", "location", "is_remote", "description",
         },
@@ -243,7 +236,6 @@ class FilePromptSet:
         self,
         *,
         revision: str,
-        fact_extraction_file: str = "",
         job_summary_file: str = "",
         cv_bullet_selection_file: str = "",
         compiler_repair_file: str = "",
@@ -256,7 +248,6 @@ class FilePromptSet:
         self.fallback = fallback or DefaultPromptSet()
         self._templates = {}
         for name, path in (
-            ("fact_extraction", fact_extraction_file),
             ("job_summary", job_summary_file),
             ("cv_bullet_selection", cv_bullet_selection_file),
             ("compiler_repair", compiler_repair_file),
@@ -304,12 +295,6 @@ class FilePromptSet:
             "is_remote": value.get("is_remote", ""),
             "description": section_aware_excerpt(value.get("description", ""), limit),
         }
-
-    def fact_extraction(self, job: object) -> str:
-        return self._render(
-            "fact_extraction", self._job_values(job, 5000),
-            lambda: self.fallback.fact_extraction(job),
-        )
 
     def job_summary(self, job: object) -> str:
         return self._render(
@@ -586,7 +571,6 @@ def _default_prompts(settings: object) -> object:
 
     return FilePromptSet(
         revision=revision,
-        fact_extraction_file=_conventional_file("fact_extraction.txt"),
         job_summary_file=_conventional_file("job_summary.txt"),
         cv_bullet_selection_file=_conventional_file("cv_bullet_selection.txt"),
         compiler_repair_file=_conventional_file("compiler_repair.txt"),

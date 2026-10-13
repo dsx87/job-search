@@ -19,9 +19,9 @@ version = 1
 # primary provider wire protocol.
 # settings.llm_primary_scheme | purpose: Primary LLM wire protocol. | type: string | default: "gemini" | allowed: anthropic, gemini, openai | env: LLM_PRIMARY_SCHEME | dependencies: must match primary model, credential, base, and auth | effect: selects primary request protocol
 llm_primary_scheme = "openai"
-# settings.llm_primary_model — type: string; default: "gemini-2.5-flash";
+# settings.llm_primary_model — type: string; default: "gemini-3.8-flash";
 # env: LLM_PRIMARY_MODEL (legacy GEMINI_MODEL). The primary model identifier.
-# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "gemini-2.5-flash" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
+# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "gemini-3.8-flash" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
 llm_primary_model = "fictional-platform-model"
 # settings.llm_primary_api_key — type: string; default: empty;
 # env only: LLM_PRIMARY_API_KEY (legacy GEMINI_API_KEY); sensitive. Never put a
@@ -44,9 +44,9 @@ llm_primary_auth_mode = "bearer"
 # primary cannot serve a request.
 # settings.llm_fallback_scheme | purpose: Fallback LLM wire protocol. | type: string | default: "openai" | allowed: anthropic, gemini, openai | env: LLM_FALLBACK_SCHEME | dependencies: must match fallback model, credential, base, and auth | effect: selects failover request protocol
 llm_fallback_scheme = "openai"
-# settings.llm_fallback_model — type: string; default: "gpt-5.4-mini";
+# settings.llm_fallback_model — type: string; default: "gpt-6-luna";
 # env: LLM_FALLBACK_MODEL. Fallback model identifier.
-# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "gpt-5.4-mini" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
+# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "gpt-6-luna" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
 llm_fallback_model = "fictional-fallback-model"
 # settings.llm_fallback_api_key — type: string; default: empty;
 # env only: LLM_FALLBACK_API_KEY (legacy OPENAI_API_KEY); sensitive.
@@ -72,8 +72,8 @@ llm_fallback_auth_mode = "bearer"
 # settings.telegram_chat_id | purpose: Telegram destination chat. | type: string | default: "" | allowed: any string | env: TELEGRAM_CHAT_ID | dependencies: requires bot token for telegram output; host secret only | effect: selects delivery and control chat
 # telegram_chat_id = "environment-only"
 # settings.eval_workers — type: positive integer; default: 12; env: EVAL_WORKERS.
-# Concurrent LLM evaluation calls; lower it for a small host or provider limit.
-# settings.eval_workers | purpose: Concurrent evaluation workers. | type: positive_int | default: 12 | allowed: integer at least 1 | env: EVAL_WORKERS | dependencies: shares host and provider capacity with tailor workers | effect: caps concurrent LLM calls
+# Concurrent Jev decision calls; lower it for a small host or provider limit.
+# settings.eval_workers | purpose: Concurrent evaluation workers. | type: positive_int | default: 12 | allowed: integer at least 1 | env: EVAL_WORKERS | dependencies: shares host and provider capacity with tailor workers | effect: caps concurrent Jev calls
 eval_workers = 4
 # settings.tailor_workers — type: positive integer; default: 8; env: TAILOR_WORKERS.
 # Concurrent CV-tailoring calls; this does not raise the LaTeX concurrency cap.
@@ -102,9 +102,8 @@ scrape_budget_seconds = 600
 seen_jobs_file = "state/seen_jobs.json"
 # settings.criteria_file — type: path string; default: "criteria.md";
 # env: CRITERIA_FILE. Required compatibility input, resolved from this TOML file.
-# Its prose changes only the reopen fingerprint; it is neither LLM context nor
-# executable policy.
-# settings.criteria_file | purpose: Evaluation criteria input file. | type: string | default: "criteria.md" | allowed: any string | env: CRITERIA_FILE | dependencies: criteria edits change reopen fingerprint | effect: validates compatibility input and changes reevaluation fingerprint
+# Its text is sent to Jev and changes the reopen fingerprint.
+# settings.criteria_file | purpose: Evaluation criteria input file. | type: string | default: "criteria.md" | allowed: any string | env: CRITERIA_FILE | dependencies: criteria edits require approved Jev question changes | effect: supplies criteria and changes reevaluation fingerprint
 criteria_file = "criteria.md"
 # settings.cv_tailoring_prompt_file — type: path string;
 # default: "cv_tailoring_prompt.md"; env: CV_TAILORING_PROMPT_FILE. Legacy input.
@@ -119,7 +118,7 @@ sections_file = "sections.py"
 # settings.prompt_dir — type: path string; default: empty; env: PROMPT_DIR.
 # Input directory for conventional prompt overrides; requires prompt_revision.
 # cv_bullet_selection.txt is the active CV-tailoring replacement; other files
-# are fact_extraction.txt, job_summary.txt, and compiler_repair.txt.
+# are job_summary.txt and compiler_repair.txt.
 # settings.prompt_dir | purpose: Prompt override directory. | type: string | default: "" | allowed: any string | env: PROMPT_DIR | constraints: prompt_revision must be nonempty when this path is set | dependencies: requires prompt_revision when nonempty | effect: selects active per-prompt overrides
 prompt_dir = ""
 # settings.prompt_revision — type: string; default: empty; env: PROMPT_REVISION.
@@ -156,6 +155,9 @@ state_sync = false
 # `true` sends one digest/archive per run; false restores legacy per-job delivery.
 # settings.digest_delivery | purpose: Deliver a digest archive. | type: bool | default: true | allowed: true or false | env: DIGEST_DELIVERY | dependencies: Telegraph archive behavior applies only when enabled | effect: selects archive or per-job delivery
 digest_delivery = true
+# settings.jev_api_key — type: string; default: empty; env only: JEV_API_KEY.
+# Required for daily job decisions; keep it in the host environment, never TOML.
+# settings.jev_api_key | purpose: DefAPI Jev decision credential. | type: string | default: "" | allowed: any string | env: JEV_API_KEY | dependencies: required for daily evaluation | effect: authenticates Jev decisions | sensitive
 # settings.telegraph_access_token — type: string; default: empty;
 # env only: TELEGRAPH_ACCESS_TOKEN; sensitive. With digest_delivery=true,
 # publishes a Telegraph page and encrypted CV archive; failures fall back to ZIP.
@@ -176,7 +178,7 @@ sources_disable = []
 # search.role_include_terms | purpose: Role-title terms to include. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: works with role exclude and LLM role-match checks | effect: keeps matching titles
 role_include_terms = ["platform engineer", "backend engineer"]
 # search.role_exclude_terms — type: array of strings; default: []. Matching title
-# terms reject a result before LLM evaluation.
+# terms reject a result before Jev evaluation.
 # search.role_exclude_terms | purpose: Role-title terms to exclude. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: runs before role include and LLM evaluation | effect: drops matching titles
 role_exclude_terms = ["intern", "principal"]
 # search.skill_include_groups — type: array of string arrays; default: []. Every
@@ -285,7 +287,7 @@ work_authorization_countries = ["DE", "NL"]
 # local_office_attendance, remote_location_residency,
 # nonremote_nonpermanent_employment, remote_fact_residency,
 # nonremote_work_authorization, nonremote_sponsorship, nonremote_arrangement.
-# This selects and orders built-in checks; it cannot execute criteria.md prose.
+# This selects and orders built-in checks; Jev receives these values alongside criteria.md.
 # `nonremote_work_authorization` is a compatibility name: it checks explicit
 # authorization requirements across remote and non-remote arrangements.
 # policy.check_order | purpose: Ordered policy check identifiers. | type: check_order | default: ["language","role_match","excluded_industry","excluded_platform_focus","minimum_seniority","local_office_attendance","remote_location_residency","nonremote_nonpermanent_employment","remote_fact_residency","nonremote_work_authorization","nonremote_sponsorship","nonremote_arrangement"] | allowed: array of unique supported check IDs | env: none | constraints: identifiers are known and unique | dependencies: only unique supported built-in check IDs allowed | effect: runs selected handlers in order
@@ -303,12 +305,12 @@ local_language_exempt = true
 # policy.excluded_industries | purpose: Industries rejected by policy. | type: string_tuple | default: [] | allowed: array of nonempty strings | env: none | dependencies: model evidence must be grounded before rejection | effect: rejects grounded excluded industries
 excluded_industries = ["crypto", "web3"]
 # policy.excluded_platform_focuses — type: string array; default: []. Examples:
-# cross_platform, other, ios_macos. Use values reported by fact extraction.
-# policy.excluded_platform_focuses | purpose: Platform focuses rejected by policy. | type: string_tuple | default: [] | allowed: cross_platform, ios_macos, other, unknown | env: none | dependencies: only fact-extraction platform-focus values allowed | effect: rejects grounded platform focus
+# cross_platform, other, ios_macos. Values are validated legacy policy inputs sent to Jev.
+# policy.excluded_platform_focuses | purpose: Platform focuses rejected by policy. | type: string_tuple | default: [] | allowed: cross_platform, ios_macos, other, unknown | env: none | dependencies: only known platform-focus values allowed | effect: rejects grounded platform focus
 excluded_platform_focuses = ["cross_platform"]
 # policy.rejected_seniority — type: string array; default: []. Allowed fact
 # values: senior, mid, junior, lead, unknown. Listed grounded levels are non-fits.
-# policy.rejected_seniority | purpose: Seniority levels rejected by policy. | type: string_tuple | default: [] | allowed: junior, lead, mid, senior, unknown | env: none | dependencies: only fact-extraction seniority values allowed | effect: rejects grounded seniority
+# policy.rejected_seniority | purpose: Seniority levels rejected by policy. | type: string_tuple | default: [] | allowed: junior, lead, mid, senior, unknown | env: none | dependencies: only known seniority values allowed | effect: rejects grounded seniority
 rejected_seniority = ["junior", "mid"]
 # policy.max_local_office_days — type: integer 0..7; default: 5. Local roles
 # requiring more office days are excluded when grounded in the posting.

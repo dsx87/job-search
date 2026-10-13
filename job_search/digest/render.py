@@ -13,6 +13,7 @@ link to the original posting.
 import html
 
 from ..models import REGION_LABELS, Region, coerce_job
+from ..jev import relevant_findings
 from .sections import group_entries
 
 _STYLE = """
@@ -243,6 +244,14 @@ def _meta_block(label, inner) -> str:
 
 
 def _fact_chips(evaluation, job) -> str:
+    findings = (evaluation or {}).get("findings")
+    if findings is not None:
+        findings = relevant_findings(findings)
+        icons = {"green": "🟢", "red": "🔴", "unclear": "🟡"}
+        chips = ["<span class=\"chip\">{}</span>".format(_esc(
+            "{} {}: {}".format(icons[item["color"]], item["label"], item["description"])))
+                 for item in findings]
+        return '<div class="chips">{}</div>'.format("".join(chips)) if chips else '<span class="muted">—</span>'
     facts = (evaluation or {}).get("facts") or {}
     chips = []
     for field_name, mapping in _FACT_LABELS.items():

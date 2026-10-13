@@ -224,7 +224,7 @@ def test_configuration_docs_keep_data_only_and_runtime_boundaries_explicit():
         assert command in docs
     assert "pure data validation" in docs
     assert "`job_search_config.py` is a rare, reviewed local-host escape hatch" in docs
-    assert "criteria_file" in docs and "neither evaluator context nor executable policy" in docs
+    assert "criteria_file" in docs and "supplies the actual criteria text to Jev" in docs
     assert "cv_bullet_selection.txt" in docs
     assert "smallest result for a multi-location role" in docs
     assert "and EMEA do not imply EU" in docs
