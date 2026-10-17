@@ -18,15 +18,15 @@ def test_pipeline_config_defaults():
     assert config.EVAL_WORKERS == 12
     assert config.TAILOR_WORKERS == 8
     # Generic, role-based LLM defaults.
-    assert config.LLM_PRIMARY_SCHEME == "gemini"
-    assert config.LLM_PRIMARY_MODEL == "gemini-3.8-flash"
-    assert config.LLM_FALLBACK_SCHEME == "openai"
-    assert config.LLM_FALLBACK_MODEL == "gpt-6-luna"
-    assert config.RETRYABLE_STATUS == {429, 500, 502, 503, 504}
-    assert config.LLM_CIRCUIT_BREAK_STATUS == {429, 503}
+    assert config.LLM_PRIMARY_SCHEME == "anthropic"
+    assert config.LLM_PRIMARY_MODEL == "claude-opus-5-5"
+    assert config.LLM_FALLBACK_SCHEME == "anthropic"
+    assert config.LLM_FALLBACK_MODEL == "claude-sonnet-5-5"
+    assert config.RETRYABLE_STATUS == {429, 500, 502, 503, 504, 529}
+    assert config.LLM_CIRCUIT_BREAK_STATUS == {429, 503, 529}
     assert config.LLM_RETRY_BACKOFF == (2, 8, 20)
     assert config.LLM_BREAKER_THRESHOLD == 2
-    assert config.ANTHROPIC_MAX_TOKENS == 4096
+    assert config.ANTHROPIC_MAX_TOKENS == 16000
     assert config.MIN_JOB_TEXT_LEN == 200
 
 
@@ -113,11 +113,11 @@ def test_pipeline_config_from_env_reads_keys(monkeypatch):
     assert pc.telegram_chat_id == "chat"
     assert pc.eval_workers == 5
     # defaults preserved for unset values
-    assert pc.llm_primary_scheme == "gemini"
-    assert pc.llm_primary_model == "gemini-3.8-flash"
+    assert pc.llm_primary_scheme == "anthropic"
+    assert pc.llm_primary_model == "claude-opus-5-5"
     assert pc.llm_primary_api_base == ""  # blank → scheme default resolved in the factory
-    assert pc.llm_fallback_scheme == "openai"
-    assert pc.llm_fallback_model == "gpt-6-luna"
+    assert pc.llm_fallback_scheme == "anthropic"
+    assert pc.llm_fallback_model == "claude-sonnet-5-5"
     assert pc.llm_fallback_api_base == ""
 
 

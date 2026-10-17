@@ -110,14 +110,14 @@ not start, stop, enable, disable, or restart the timer or bot.
    ```
    | Variable | Required | Purpose |
    |---|---|---|
-   | `LLM_PRIMARY_API_KEY` | ✅ | primary provider key (also read as `GEMINI_API_KEY` for back-compat) |
+   | `LLM_PRIMARY_API_KEY` | ✅ | primary provider key — an Anthropic key by default (also read as `GEMINI_API_KEY` for back-compat) |
    | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
    | `TELEGRAM_CHAT_ID` | ✅ | delivery |
-   | `LLM_FALLBACK_API_KEY` | optional | fallback provider key (e.g. a prepaid OpenAI key) |
-   | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `gemini`) + model (default `gemini-3.8-flash`) |
+   | `LLM_FALLBACK_API_KEY` | optional | fallback provider key (the same Anthropic key for the default Sonnet fallback) |
+   | `LLM_PRIMARY_SCHEME` / `LLM_PRIMARY_MODEL` | optional | primary scheme (default `anthropic`) + model (default `claude-opus-5-5`) |
    | `LLM_PRIMARY_API_BASE` | optional | primary API base override; an absolute non-default HTTP(S) URL is required with `LLM_PRIMARY_AUTH_MODE=none` |
    | `LLM_PRIMARY_AUTH_MODE` | optional | `bearer` (default) or explicit `none` for a trusted local OpenAI-compatible server |
-   | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `openai`) + model (default `gpt-6-luna`) |
+   | `LLM_FALLBACK_SCHEME` / `LLM_FALLBACK_MODEL` | optional | fallback scheme (default `anthropic`) + model (default `claude-sonnet-5-5`) |
    | `LLM_FALLBACK_API_BASE` | optional | fallback API base override (e.g. `https://api.groq.com/openai/v1`); an absolute non-default HTTP(S) URL is required with fallback `none` auth |
    | `LLM_FALLBACK_AUTH_MODE` | optional | fallback `bearer` / explicit `none` mode |
    | `JOB_SEARCH_CONFIG_FILE` | optional | absolute path to a trusted escape-hatch module; an optional repo-root `job_search_config.py` is used when unset. **Setting it to an empty value is an error**, not "disabled" — it doesn't silently fall back |
@@ -138,7 +138,7 @@ not start, stop, enable, disable, or restart the timer or bot.
    whitespace-only to use the defaults; API-base overrides may include a trailing
    slash (the client normalizes it).
 
-   > Older `gemini-2.5-flash` overrides are scheduled for shutdown on
+   > Older `gemini-2.5-flash` overrides were shut down on
    > **2026-10-16**. Set `LLM_FALLBACK_API_KEY` so summaries and CV tailoring
    > remain available if the primary model is rejected.
 

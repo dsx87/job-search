@@ -185,12 +185,13 @@ CV_FILENAME_PREFIX = ""
 # API key (+ optional base). Switching providers is a config edit — no code
 # change. See job_search.llm.clients for the schemes and the factory.
 #
-# Keep the defaults aligned with the current Flash and efficient OpenAI models.
-# Per-runner model overrides remain available through environment variables.
-LLM_PRIMARY_SCHEME = "gemini"
-LLM_PRIMARY_MODEL = "gemini-3.8-flash"
-LLM_FALLBACK_SCHEME = "openai"          # OpenAI-compatible: also Groq, DeepSeek, xAI, … via api_base
-LLM_FALLBACK_MODEL = "gpt-6-luna"
+# Both defaults are Claude models: Opus for quality, Sonnet as the fallback (a
+# separate rate-limit pool on the same key). Per-runner model overrides remain
+# available through environment variables.
+LLM_PRIMARY_SCHEME = "anthropic"
+LLM_PRIMARY_MODEL = "claude-opus-5-5"
+LLM_FALLBACK_SCHEME = "anthropic"       # or openai: OpenAI-compatible, also Groq, DeepSeek, xAI, … via api_base
+LLM_FALLBACK_MODEL = "claude-sonnet-5-5"
 
 # Announced provider shutdown dates (ISO) for known models. A
 # retired model does not degrade — it starts answering 404, which is neither
@@ -205,7 +206,7 @@ LLM_MODEL_SHUTDOWN_DATES = {
 LLM_MODEL_SHUTDOWN_WARN_DAYS = 120
 
 # Transient HTTP statuses a provider retries internally before giving up.
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+RETRYABLE_STATUS = {429, 500, 502, 503, 504, 529}
 
 # Statuses that mean "this model does not exist here" — a retired or misspelled
 # model. Nothing about the next request will change that, so re-attempting per
@@ -224,10 +225,10 @@ LLM_MODEL_REJECT_STATUS = {404}
 LLM_REQUEST_REJECT_STATUS = {400}
 
 # Statuses that count toward the primary circuit-breaker (429 rate limit,
-# 503 overloaded). A post-retry error with one of these codes increments the
+# 503 overloaded; 529 is Anthropic's overloaded). A post-retry error with one of these codes increments the
 # consecutive-failure counter; the primary is disabled for the run only once the
 # counter reaches LLM_BREAKER_THRESHOLD, so a single transient blip recovers.
-LLM_CIRCUIT_BREAK_STATUS = {429, 503}
+LLM_CIRCUIT_BREAK_STATUS = {429, 503, 529}
 
 # Shared retry backoff (seconds) between a provider's transient-error attempts.
 # Deliberately short — the primary is in the hot path and the old [30,60,120]
@@ -246,13 +247,15 @@ if LLM_BREAKER_THRESHOLD < 1:
     LLM_BREAKER_THRESHOLD = 2
 
 # The Anthropic Messages API requires max_tokens; other schemes ignore it.
+# Current Claude models always think and thinking counts against this cap, and
+# the LaTeX repair prompt returns a whole .tex file, so leave generous headroom.
 # Env-overridable via ANTHROPIC_MAX_TOKENS.
 try:
-    ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "4096"))
+    ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "16000"))
 except ValueError:
-    ANTHROPIC_MAX_TOKENS = 4096
+    ANTHROPIC_MAX_TOKENS = 16000
 if ANTHROPIC_MAX_TOKENS < 1:
-    ANTHROPIC_MAX_TOKENS = 4096
+    ANTHROPIC_MAX_TOKENS = 16000
 
 # Default concurrency for the staged pipeline. Per-run overrides come from the
 # EVAL_WORKERS / TAILOR_WORKERS env vars, but they are read in
