@@ -163,6 +163,7 @@ def test_pipeline_config_from_env_honors_legacy_gemini_openai_vars(monkeypatch):
     monkeypatch.delenv("LLM_PRIMARY_MODEL", raising=False)
     monkeypatch.delenv("LLM_PRIMARY_API_BASE", raising=False)
     monkeypatch.delenv("LLM_FALLBACK_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "legacy-g-key")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-legacy")
     monkeypatch.setenv("GEMINI_API_BASE", "https://legacy.example/models")
@@ -174,6 +175,20 @@ def test_pipeline_config_from_env_honors_legacy_gemini_openai_vars(monkeypatch):
     assert pc.llm_primary_model == "gemini-legacy"
     assert pc.llm_primary_api_base == "https://legacy.example/models"
     assert pc.llm_fallback_api_key == "legacy-o-key"
+
+
+def test_anthropic_api_key_feeds_both_providers(monkeypatch):
+    monkeypatch.delenv("LLM_PRIMARY_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_FALLBACK_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anth-key")
+    # A stale legacy key must not shadow the Anthropic one.
+    monkeypatch.setenv("GEMINI_API_KEY", "legacy-g-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-o-key")
+
+    pc = PipelineConfig.from_env()
+
+    assert pc.llm_primary_api_key == "anth-key"
+    assert pc.llm_fallback_api_key == "anth-key"
 
 
 def test_pipeline_config_new_llm_vars_win_over_legacy(monkeypatch):

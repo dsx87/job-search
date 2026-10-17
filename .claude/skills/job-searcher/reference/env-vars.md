@@ -31,6 +31,7 @@ These values are environment-only and must not enter TOML:
 
 | Variable | Purpose |
 |---|---|
+| `ANTHROPIC_API_KEY` | Anthropic key; feeds both providers when their own keys are unset |
 | `LLM_PRIMARY_API_KEY` | primary provider key; legacy `GEMINI_API_KEY` remains an alias |
 | `LLM_FALLBACK_API_KEY` | fallback provider key; legacy `OPENAI_API_KEY` remains an alias |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram delivery credential and recipient |

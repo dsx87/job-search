@@ -24,9 +24,10 @@ llm_primary_scheme = "openai"
 # settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "claude-opus-5-5" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
 llm_primary_model = "fictional-platform-model"
 # settings.llm_primary_api_key — type: string; default: empty;
-# env only: LLM_PRIMARY_API_KEY (legacy GEMINI_API_KEY); sensitive. Never put a
+# env only: LLM_PRIMARY_API_KEY (then ANTHROPIC_API_KEY, legacy GEMINI_API_KEY);
+# sensitive. Never put a
 # credential in TOML; set it in the host environment or an Actions secret.
-# settings.llm_primary_api_key | purpose: Primary LLM credential. | type: string | default: "" | allowed: any string | env: LLM_PRIMARY_API_KEY / GEMINI_API_KEY | dependencies: required by authenticated primary; host secret only | effect: authenticates primary requests
+# settings.llm_primary_api_key | purpose: Primary LLM credential. | type: string | default: "" | allowed: any string | env: LLM_PRIMARY_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY | dependencies: required by authenticated primary; host secret only | effect: authenticates primary requests
 # llm_primary_api_key = "environment-only"
 # settings.llm_primary_api_base — type: string; default: scheme endpoint;
 # env: LLM_PRIMARY_API_BASE (legacy GEMINI_API_BASE). Empty uses the scheme
@@ -49,8 +50,9 @@ llm_fallback_scheme = "openai"
 # settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "claude-sonnet-5-5" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
 llm_fallback_model = "fictional-fallback-model"
 # settings.llm_fallback_api_key — type: string; default: empty;
-# env only: LLM_FALLBACK_API_KEY (legacy OPENAI_API_KEY); sensitive.
-# settings.llm_fallback_api_key | purpose: Fallback LLM credential. | type: string | default: "" | allowed: any string | env: LLM_FALLBACK_API_KEY / OPENAI_API_KEY | dependencies: required by authenticated fallback; host secret only | effect: authenticates fallback requests
+# env only: LLM_FALLBACK_API_KEY (then ANTHROPIC_API_KEY, legacy OPENAI_API_KEY);
+# sensitive.
+# settings.llm_fallback_api_key | purpose: Fallback LLM credential. | type: string | default: "" | allowed: any string | env: LLM_FALLBACK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY | dependencies: required by authenticated fallback; host secret only | effect: authenticates fallback requests
 # llm_fallback_api_key = "environment-only"
 # settings.llm_fallback_api_base — type: string; default: scheme endpoint;
 # env: LLM_FALLBACK_API_BASE. Empty uses the scheme endpoint.
