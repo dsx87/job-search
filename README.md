@@ -238,26 +238,25 @@ Then add the delivery/provider secrets required by your selected TOML:
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | ✅ | primary LLM key (summaries and tailoring) |
+| `ANTHROPIC_API_KEY` | ✅ | Claude key for summaries and tailoring (primary and fallback) |
 | `JEV_API_KEY` | ✅ | DefAPI Jev job decisions |
 | `TELEGRAM_BOT_TOKEN` | ✅ | delivery |
 | `TELEGRAM_CHAT_ID` | ✅ | delivery |
-| `OPENAI_API_KEY` | optional | fallback provider key |
 | `CV_PHONE` | optional | phone injected into the CV at build time |
 | `TELEGRAPH_ACCESS_TOKEN` | optional | publish the digest as a telegra.ph page instead of a ZIP; mint once with `python scripts/telegraph_account.py`. Setting it uploads one AES-256 protected CV archive to [x0.at](https://x0.at); its password is sent in the Telegram message. Without ZIP-encryption support, the run safely sends the Telegram ZIP instead |
 
-The workflow maps the `GEMINI_API_KEY` secret to `LLM_PRIMARY_API_KEY` and
-`OPENAI_API_KEY` to `LLM_FALLBACK_API_KEY`, and passes `JEV_API_KEY` to the daily run. The default primary is the `gemini`
-scheme at `gemini-3.8-flash`; the default fallback is the `openai` scheme at
-`gpt-6-luna` (a **separate prepaid OpenAI API key** — ChatGPT Plus does not
-include API access).
+The workflow maps the `ANTHROPIC_API_KEY` secret to both `LLM_PRIMARY_API_KEY`
+and `LLM_FALLBACK_API_KEY`, and passes `JEV_API_KEY` to the daily run. The
+default primary is the `anthropic` scheme at `claude-opus-5-5`; the default
+fallback is the `anthropic` scheme at `claude-sonnet-5-5` (same key, separate
+rate-limit pool). Jev job decisions are unaffected.
 
 The private TOML is data-only and is validated before any personal pipeline
 work. A GitHub-hosted runner cannot connect to an LLM server bound only to your
 laptop's loopback interface.
 
-Older `gemini-2.5-flash` overrides are scheduled for shutdown on 2026-10-16.
-The run log and digest footer warn before that date. Configure the fallback key
+Older `gemini-2.5-flash` overrides were shut down on 2026-10-16. The run log
+and digest footer warn about recorded shutdown dates. Configure the fallback key
 to keep summaries and CV tailoring available if the primary model is rejected.
 
 A provider is a **scheme** + model + key (+ optional base), so switching
@@ -273,7 +272,8 @@ the application defaults. Worked examples
 |---|---|---|---|
 | Groq | `openai` | `https://api.groq.com/openai/v1` | e.g. `llama-3.3-70b` |
 | xAI Grok | `openai` | `https://api.x.ai/v1` | `grok-4.3` |
-| Anthropic | `anthropic` | *(default)* | `claude-haiku-4-5` |
+| Google Gemini | `gemini` | *(default)* | `gemini-3.8-flash` |
+| OpenAI | `openai` | *(default)* | `gpt-6-luna` |
 
 To make one primary, swap the `LLM_PRIMARY_*` block (and its key) for the
 `LLM_FALLBACK_*` values.

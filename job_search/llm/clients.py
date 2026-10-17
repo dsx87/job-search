@@ -7,7 +7,7 @@ later — is a config edit, never a code change (see :func:`build_provider`).
 ``LLMClient`` holds a primary provider and an optional fallback. Each provider
 retries transient errors internally (:func:`_post_json_with_retry`); the client's
 breaker disables the primary for the rest of the run only after
-``LLM_BREAKER_THRESHOLD`` consecutive post-retry 429/503s — so a single transient
+``LLM_BREAKER_THRESHOLD`` consecutive post-retry 429/503/529s — so a single transient
 blip is retried and recovers instead of dumping the whole run onto the fallback.
 
 Every provider implements
@@ -394,19 +394,30 @@ class AnthropicProvider:
     """Scheme ``anthropic``: the Messages API ``/messages``.
 
     Headers ``x-api-key`` + ``anthropic-version: 2023-06-01``; body carries the
-    required ``max_tokens`` (``ANTHROPIC_MAX_TOKENS``). This adapter uses
-    prompt-based JSON guidance: JSON instructions and any requested
-    schema are sent as system text, not API-enforced schema validation.
-    Offline-tested only until first live use.
+    required ``max_tokens`` (``ANTHROPIC_MAX_TOKENS``). Current Claude models
+    reject non-default sampling parameters, so ``temperature`` is never sent,
+    and they always think, so no ``thinking`` field is sent either.
+
+    JSON: a ``response_schema`` is enforced through structured outputs
+    (``output_config.format``), using the same strict copy as the OpenAI scheme
+    (every object closed with ``additionalProperties: false``). Bare
+    ``json_mode`` has no API equivalent and stays a system instruction.
+
+    A ``refusal`` or ``max_tokens`` stop raises instead of returning partial
+    text, so ``LLMClient`` falls back for that request rather than parsing a
+    truncated answer.
     """
 
     scheme = "anthropic"
+    # Opus emitting a whole .tex file after thinking can run past the 90s the
+    # other schemes use.
+    timeout = 300
 
     def __init__(
         self,
         api_key: str,
         *,
-        model: str = "claude-haiku-4-5",
+        model: str = "claude-opus-5-5",
         api_base: str = "",
         max_tokens: int = ANTHROPIC_MAX_TOKENS,
     ):
@@ -421,30 +432,37 @@ class AnthropicProvider:
             "model": self.model,
             "max_tokens": self.max_tokens,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
         }
-        if response_schema is not None or json_mode:
-            payload["system"] = (
-                "Return exactly one JSON object, without Markdown or commentary."
-            )
-            if response_schema is not None:
-                payload["system"] += "\nThe object must conform to this JSON Schema:\n" + json.dumps(
-                    response_schema, ensure_ascii=False
-                )
+        if response_schema is not None:
+            payload["output_config"] = {
+                "format": {"type": "json_schema", "schema": _strict_json_schema(response_schema)}
+            }
+        elif json_mode:
+            payload["system"] = _JSON_SYSTEM_MESSAGE
         url = f"{self.api_base}/messages"
         headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
         }
-        result = _post_json_with_retry(url, payload, headers, label=f"anthropic ({self.model})")
+        result = _post_json_with_retry(
+            url, payload, headers, timeout=self.timeout, label=f"anthropic ({self.model})"
+        )
 
         self.last_usage = _anthropic_usage(result)
+        stop_reason = result.get("stop_reason")
+        if stop_reason in ("refusal", "max_tokens"):
+            details = result.get("stop_details") or {}
+            category = details.get("category") if isinstance(details, dict) else None
+            raise RuntimeError(
+                f"Anthropic stopped with stop_reason={stop_reason}"
+                + (f" (category={category})" if category else "")
+            )
         for block in result.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
                 return block["text"]
         raise RuntimeError(
-            f"Anthropic returned no text content (stop_reason={result.get('stop_reason')})"
+            f"Anthropic returned no text content (stop_reason={stop_reason})"
         )
 
 
@@ -476,7 +494,7 @@ def build_provider(scheme: str, *, api_key: str, model: str, api_base: str = "",
 class LLMClient:
     """A primary provider with a circuit-breaker fallback to a second provider.
 
-    The primary retries transient errors internally. A post-retry 429/503
+    The primary retries transient errors internally. A post-retry 429/503/529
     increments a consecutive-failure counter; the primary is disabled for the
     rest of the run only when the counter reaches the breaker threshold. A
     success resets the counter, so a single transient blip recovers. Other errors
@@ -712,6 +730,7 @@ class LLMClient:
         label = {
             429: "429 RESOURCE_EXHAUSTED (rate limit — your quota)",
             503: "503 UNAVAILABLE (backend overloaded — provider side)",
+            529: "529 OVERLOADED (backend overloaded — provider side)",
         }.get(code, str(code))
         with self._lock:
             self._consecutive_failures += 1

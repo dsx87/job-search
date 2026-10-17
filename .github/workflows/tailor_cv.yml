@@ -94,8 +94,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
           JOB_SEARCH_SETTINGS_FILE: ${{ github.workspace }}/.private-config/job-search-config/job_search.toml
           # Generic scheme-based LLM providers (see the daily workflow).
-          LLM_PRIMARY_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          LLM_FALLBACK_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_PRIMARY_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_FALLBACK_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LLM_PRIMARY_SCHEME: ${{ vars.LLM_PRIMARY_SCHEME }}
           LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
           LLM_PRIMARY_API_BASE: ${{ vars.LLM_PRIMARY_API_BASE }}

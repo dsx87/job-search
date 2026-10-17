@@ -14,19 +14,20 @@
 # settings.version | purpose: Settings file format version. | type: version | default: 1 | allowed: 1 | env: none | dependencies: must be 1 for this parser | effect: selects schema parser
 version = 1
 
-# settings.llm_primary_scheme — type: string; default: "gemini";
+# settings.llm_primary_scheme — type: string; default: "anthropic";
 # env: LLM_PRIMARY_SCHEME; allowed: gemini, openai, anthropic. Selects the
 # primary provider wire protocol.
-# settings.llm_primary_scheme | purpose: Primary LLM wire protocol. | type: string | default: "gemini" | allowed: anthropic, gemini, openai | env: LLM_PRIMARY_SCHEME | dependencies: must match primary model, credential, base, and auth | effect: selects primary request protocol
+# settings.llm_primary_scheme | purpose: Primary LLM wire protocol. | type: string | default: "anthropic" | allowed: anthropic, gemini, openai | env: LLM_PRIMARY_SCHEME | dependencies: must match primary model, credential, base, and auth | effect: selects primary request protocol
 llm_primary_scheme = "openai"
-# settings.llm_primary_model — type: string; default: "gemini-3.8-flash";
+# settings.llm_primary_model — type: string; default: "claude-opus-5-5";
 # env: LLM_PRIMARY_MODEL (legacy GEMINI_MODEL). The primary model identifier.
-# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "gemini-3.8-flash" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
+# settings.llm_primary_model | purpose: Primary LLM model. | type: string | default: "claude-opus-5-5" | allowed: any string | env: LLM_PRIMARY_MODEL / GEMINI_MODEL | dependencies: must exist through selected primary scheme | effect: identifies primary model
 llm_primary_model = "fictional-platform-model"
 # settings.llm_primary_api_key — type: string; default: empty;
-# env only: LLM_PRIMARY_API_KEY (legacy GEMINI_API_KEY); sensitive. Never put a
+# env only: LLM_PRIMARY_API_KEY (then ANTHROPIC_API_KEY, legacy GEMINI_API_KEY);
+# sensitive. Never put a
 # credential in TOML; set it in the host environment or an Actions secret.
-# settings.llm_primary_api_key | purpose: Primary LLM credential. | type: string | default: "" | allowed: any string | env: LLM_PRIMARY_API_KEY / GEMINI_API_KEY | dependencies: required by authenticated primary; host secret only | effect: authenticates primary requests
+# settings.llm_primary_api_key | purpose: Primary LLM credential. | type: string | default: "" | allowed: any string | env: LLM_PRIMARY_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY | dependencies: required by authenticated primary; host secret only | effect: authenticates primary requests
 # llm_primary_api_key = "environment-only"
 # settings.llm_primary_api_base — type: string; default: scheme endpoint;
 # env: LLM_PRIMARY_API_BASE (legacy GEMINI_API_BASE). Empty uses the scheme
@@ -39,18 +40,19 @@ llm_primary_api_base = "https://llm.example.test/v1"
 # settings.llm_primary_auth_mode | purpose: Primary LLM authentication mode. | type: string | default: "bearer" | allowed: bearer, none | env: LLM_PRIMARY_AUTH_MODE | dependencies: none requires explicit trusted local compatible base | effect: controls primary Authorization header
 llm_primary_auth_mode = "bearer"
 
-# settings.llm_fallback_scheme — type: string; default: "openai";
+# settings.llm_fallback_scheme — type: string; default: "anthropic";
 # env: LLM_FALLBACK_SCHEME; allowed: gemini, openai, anthropic. Used when the
 # primary cannot serve a request.
-# settings.llm_fallback_scheme | purpose: Fallback LLM wire protocol. | type: string | default: "openai" | allowed: anthropic, gemini, openai | env: LLM_FALLBACK_SCHEME | dependencies: must match fallback model, credential, base, and auth | effect: selects failover request protocol
+# settings.llm_fallback_scheme | purpose: Fallback LLM wire protocol. | type: string | default: "anthropic" | allowed: anthropic, gemini, openai | env: LLM_FALLBACK_SCHEME | dependencies: must match fallback model, credential, base, and auth | effect: selects failover request protocol
 llm_fallback_scheme = "openai"
-# settings.llm_fallback_model — type: string; default: "gpt-6-luna";
+# settings.llm_fallback_model — type: string; default: "claude-sonnet-5-5";
 # env: LLM_FALLBACK_MODEL. Fallback model identifier.
-# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "gpt-6-luna" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
+# settings.llm_fallback_model | purpose: Fallback LLM model. | type: string | default: "claude-sonnet-5-5" | allowed: any string | env: LLM_FALLBACK_MODEL | dependencies: must exist through selected fallback scheme | effect: identifies failover model
 llm_fallback_model = "fictional-fallback-model"
 # settings.llm_fallback_api_key — type: string; default: empty;
-# env only: LLM_FALLBACK_API_KEY (legacy OPENAI_API_KEY); sensitive.
-# settings.llm_fallback_api_key | purpose: Fallback LLM credential. | type: string | default: "" | allowed: any string | env: LLM_FALLBACK_API_KEY / OPENAI_API_KEY | dependencies: required by authenticated fallback; host secret only | effect: authenticates fallback requests
+# env only: LLM_FALLBACK_API_KEY (then ANTHROPIC_API_KEY, legacy OPENAI_API_KEY);
+# sensitive.
+# settings.llm_fallback_api_key | purpose: Fallback LLM credential. | type: string | default: "" | allowed: any string | env: LLM_FALLBACK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY | dependencies: required by authenticated fallback; host secret only | effect: authenticates fallback requests
 # llm_fallback_api_key = "environment-only"
 # settings.llm_fallback_api_base — type: string; default: scheme endpoint;
 # env: LLM_FALLBACK_API_BASE. Empty uses the scheme endpoint.
@@ -88,10 +90,10 @@ tailor_workers = 2
 # the run moves to fallback.
 # settings.llm_breaker_threshold | purpose: Primary LLM circuit-break threshold. | type: positive_int | default: 2 | allowed: integer at least 1 | env: LLM_BREAKER_THRESHOLD | dependencies: working fallback makes breaker failover useful | effect: sets failures before primary failover
 # llm_breaker_threshold = 2
-# settings.anthropic_max_tokens — type: positive integer; default: 4096;
+# settings.anthropic_max_tokens — type: positive integer; default: 16000;
 # env only: ANTHROPIC_MAX_TOKENS. Sent only by the Anthropic protocol.
-# settings.anthropic_max_tokens | purpose: Anthropic response token limit. | type: positive_int | default: 4096 | allowed: integer at least 1 | env: ANTHROPIC_MAX_TOKENS | dependencies: used only by Anthropic scheme; environment-only host control | effect: sets Anthropic token cap
-# anthropic_max_tokens = 4096
+# settings.anthropic_max_tokens | purpose: Anthropic response token limit. | type: positive_int | default: 16000 | allowed: integer at least 1 | env: ANTHROPIC_MAX_TOKENS | dependencies: used only by Anthropic scheme; environment-only host control | effect: sets Anthropic token cap
+# anthropic_max_tokens = 16000
 # settings.scrape_budget_seconds — type: positive integer; default: 600;
 # env: SCRAPE_BUDGET_SECONDS. Whole fetch-stage wall-clock ceiling.
 # settings.scrape_budget_seconds | purpose: Fetch-stage wall-clock limit. | type: positive_int | default: 600 | allowed: integer at least 1 | env: SCRAPE_BUDGET_SECONDS | dependencies: covers complete fetch stage | effect: stops slow fetch at deadline

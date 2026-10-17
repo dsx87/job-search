@@ -632,7 +632,7 @@ def run_daily(cfg, test: bool = False) -> int:
             cfg, "llm_fallback_auth_mode", "bearer"
         ) != "none":
             print(
-                "Note: no LLM fallback configured (LLM_FALLBACK_API_KEY / OPENAI_API_KEY unset).",
+                "Note: no LLM fallback configured (LLM_FALLBACK_API_KEY / ANTHROPIC_API_KEY unset).",
                 flush=True,
             )
             if shutdown_note:
@@ -640,7 +640,7 @@ def run_daily(cfg, test: bool = False) -> int:
                 # CV tailoring for fits.
                 print(
                     "  ⚠️ With no fallback, a retired primary model means the run "
-                    "cannot prepare fit CVs — set LLM_FALLBACK_API_KEY / OPENAI_API_KEY.",
+                    "cannot prepare fit CVs — set LLM_FALLBACK_API_KEY / ANTHROPIC_API_KEY.",
                     flush=True,
                 )
         criteria = load_criteria(getattr(cfg, "criteria_file", CRITERIA_FILE))

@@ -50,8 +50,8 @@ which module owns the answer so you can read it before replying.
 (`gemini` | `openai` | `anthropic`) + model + key (+ optional base). A primary
 serves the run; an optional fallback covers outages.
 
-- 429/500/502/503/504 → retried internally with backoff `(2, 8, 20)`.
-- 429/503 post-retry → increments the consecutive-failure counter; the primary is
+- 429/500/502/503/504/529 → retried internally with backoff `(2, 8, 20)`.
+- 429/503/529 post-retry → increments the consecutive-failure counter; the primary is
   disabled for the run only at `LLM_BREAKER_THRESHOLD` (default 2), so one blip
   does not dump the run onto the fallback.
 - 404 → the model does not exist here (retired or misspelled). Not retryable;

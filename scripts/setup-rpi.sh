@@ -128,11 +128,9 @@ else
   umask 077
   cat > "$ENV_FILE" <<EOF
 # --- Required ---
-LLM_PRIMARY_API_KEY=REPLACE_ME        # primary provider key (Gemini by default)
+ANTHROPIC_API_KEY=REPLACE_ME          # Claude key for the primary and fallback
 TELEGRAM_BOT_TOKEN=REPLACE_ME
 TELEGRAM_CHAT_ID=REPLACE_ME
-# --- Optional fallback provider (served when the primary trips its breaker) ---
-LLM_FALLBACK_API_KEY=                  # e.g. a prepaid OpenAI key for gpt-6-luna
 CV_PHONE=
 TELEGRAPH_ACCESS_TOKEN=
 # Keep non-secret provider, source, output, and host controls in

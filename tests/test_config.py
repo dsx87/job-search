@@ -18,15 +18,15 @@ def test_pipeline_config_defaults():
     assert config.EVAL_WORKERS == 12
     assert config.TAILOR_WORKERS == 8
     # Generic, role-based LLM defaults.
-    assert config.LLM_PRIMARY_SCHEME == "gemini"
-    assert config.LLM_PRIMARY_MODEL == "gemini-3.8-flash"
-    assert config.LLM_FALLBACK_SCHEME == "openai"
-    assert config.LLM_FALLBACK_MODEL == "gpt-6-luna"
-    assert config.RETRYABLE_STATUS == {429, 500, 502, 503, 504}
-    assert config.LLM_CIRCUIT_BREAK_STATUS == {429, 503}
+    assert config.LLM_PRIMARY_SCHEME == "anthropic"
+    assert config.LLM_PRIMARY_MODEL == "claude-opus-5-5"
+    assert config.LLM_FALLBACK_SCHEME == "anthropic"
+    assert config.LLM_FALLBACK_MODEL == "claude-sonnet-5-5"
+    assert config.RETRYABLE_STATUS == {429, 500, 502, 503, 504, 529}
+    assert config.LLM_CIRCUIT_BREAK_STATUS == {429, 503, 529}
     assert config.LLM_RETRY_BACKOFF == (2, 8, 20)
     assert config.LLM_BREAKER_THRESHOLD == 2
-    assert config.ANTHROPIC_MAX_TOKENS == 4096
+    assert config.ANTHROPIC_MAX_TOKENS == 16000
     assert config.MIN_JOB_TEXT_LEN == 200
 
 
@@ -113,11 +113,11 @@ def test_pipeline_config_from_env_reads_keys(monkeypatch):
     assert pc.telegram_chat_id == "chat"
     assert pc.eval_workers == 5
     # defaults preserved for unset values
-    assert pc.llm_primary_scheme == "gemini"
-    assert pc.llm_primary_model == "gemini-3.8-flash"
+    assert pc.llm_primary_scheme == "anthropic"
+    assert pc.llm_primary_model == "claude-opus-5-5"
     assert pc.llm_primary_api_base == ""  # blank → scheme default resolved in the factory
-    assert pc.llm_fallback_scheme == "openai"
-    assert pc.llm_fallback_model == "gpt-6-luna"
+    assert pc.llm_fallback_scheme == "anthropic"
+    assert pc.llm_fallback_model == "claude-sonnet-5-5"
     assert pc.llm_fallback_api_base == ""
 
 
@@ -163,6 +163,7 @@ def test_pipeline_config_from_env_honors_legacy_gemini_openai_vars(monkeypatch):
     monkeypatch.delenv("LLM_PRIMARY_MODEL", raising=False)
     monkeypatch.delenv("LLM_PRIMARY_API_BASE", raising=False)
     monkeypatch.delenv("LLM_FALLBACK_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "legacy-g-key")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-legacy")
     monkeypatch.setenv("GEMINI_API_BASE", "https://legacy.example/models")
@@ -174,6 +175,20 @@ def test_pipeline_config_from_env_honors_legacy_gemini_openai_vars(monkeypatch):
     assert pc.llm_primary_model == "gemini-legacy"
     assert pc.llm_primary_api_base == "https://legacy.example/models"
     assert pc.llm_fallback_api_key == "legacy-o-key"
+
+
+def test_anthropic_api_key_feeds_both_providers(monkeypatch):
+    monkeypatch.delenv("LLM_PRIMARY_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_FALLBACK_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anth-key")
+    # A stale legacy key must not shadow the Anthropic one.
+    monkeypatch.setenv("GEMINI_API_KEY", "legacy-g-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-o-key")
+
+    pc = PipelineConfig.from_env()
+
+    assert pc.llm_primary_api_key == "anth-key"
+    assert pc.llm_fallback_api_key == "anth-key"
 
 
 def test_pipeline_config_new_llm_vars_win_over_legacy(monkeypatch):

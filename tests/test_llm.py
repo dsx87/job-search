@@ -362,46 +362,91 @@ def test_anthropic_request_contract(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
     client = AnthropicProvider(
-        "anth-key", model="claude-haiku-4-5", api_base="https://anth.example/v1/", max_tokens=1234
+        "anth-key", model="claude-sonnet-5-5", api_base="https://anth.example/v1/", max_tokens=1234
     )
 
-    assert client.generate("prompt") == "hi"
+    assert client.generate("prompt", temperature=0.0) == "hi"
 
     request = captured["request"]
     payload = json.loads(request.data)
     assert request.full_url == "https://anth.example/v1/messages"
     assert request.get_header("X-api-key") == "anth-key"
     assert request.get_header("Anthropic-version") == "2023-06-01"
-    assert payload["model"] == "claude-haiku-4-5"
+    assert payload["model"] == "claude-sonnet-5-5"
     assert payload["max_tokens"] == 1234
     assert payload["messages"] == [{"role": "user", "content": "prompt"}]
-    assert payload["temperature"] == 0.0
+    # Current Claude models 400 on non-default sampling and on disabled thinking.
+    assert "temperature" not in payload
+    assert "thinking" not in payload
+    assert "system" not in payload
 
 
-def test_anthropic_json_mode_is_prompt_driven_only(monkeypatch):
+def test_anthropic_defaults_to_opus_with_long_timeout(monkeypatch):
     captured = {}
 
     def urlopen(request, timeout):
         captured["payload"] = json.loads(request.data)
-        return _Response({"content": [{"type": "text", "text": "ok"}]})
+        captured["timeout"] = timeout
+        return _Response({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"})
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    # The adapter provides the schema as system instructions, not a native
-    # structured-output parameter.
-    AnthropicProvider("k", model="claude-haiku-4-5").generate(
-        "p", json_mode=True, response_schema={"type": "object"}
-    )
+    AnthropicProvider("k").generate("p")
 
-    assert "response_format" not in captured["payload"]
-    assert "responseSchema" not in captured["payload"]
-    assert "Return exactly one JSON object" in captured["payload"]["system"]
-    assert json.loads(captured["payload"]["system"].split("JSON Schema:\n")[1]) == {"type": "object"}
+    assert captured["payload"]["model"] == "claude-opus-5-5"
+    assert captured["payload"]["max_tokens"] == 16000
+    assert captured["timeout"] == 300
+
+
+def test_anthropic_schema_uses_structured_outputs(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return _Response({"content": [{"type": "text", "text": "{}"}], "stop_reason": "end_turn"})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    schema = {
+        "type": "object",
+        "properties": {
+            "jobs": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"company": {"type": "string"}}},
+            },
+        },
+    }
+    AnthropicProvider("k").generate("p", json_mode=True, response_schema=schema)
+
+    payload = captured["payload"]
+    assert "system" not in payload
+    sent = payload["output_config"]["format"]
+    assert sent["type"] == "json_schema"
+    assert sent["schema"]["additionalProperties"] is False
+    assert sent["schema"]["required"] == ["jobs"]
+    item = sent["schema"]["properties"]["jobs"]["items"]
+    assert item["additionalProperties"] is False
+    assert item["required"] == ["company"]
+    # The caller's schema is not mutated (Gemini receives it as written).
+    assert "additionalProperties" not in schema
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+def test_anthropic_incomplete_stop_raises_for_fallback(monkeypatch, stop_reason):
+    def urlopen(_request, timeout):
+        return _Response({
+            "content": [{"type": "text", "text": '{"jobs": ['}],
+            "stop_reason": stop_reason,
+            "stop_details": {"type": "refusal", "category": "cyber"} if stop_reason == "refusal" else None,
+        })
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    with pytest.raises(RuntimeError, match=stop_reason):
+        AnthropicProvider("k").generate("p")
 
 
 def test_anthropic_response_skips_non_text_blocks(monkeypatch):
     def urlopen(_request, timeout):
         return _Response({"content": [
-            {"type": "thinking", "text": "hmm"},
+            {"type": "thinking", "thinking": "", "signature": "sig"},
             {"type": "text", "text": "answer"},
         ]})
 
@@ -1124,4 +1169,5 @@ def test_anthropic_json_mode_without_schema(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
     assert AnthropicProvider("k").generate("p", json_mode=True) == '{}'
-    assert captured["system"] == "Return exactly one JSON object, without Markdown or commentary."
+    assert captured["system"] == "Respond with a single valid JSON object and nothing else."
+    assert "output_config" not in captured
