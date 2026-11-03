@@ -133,3 +133,35 @@ def test_a_bad_body_is_not_retried(monkeypatch):
     with pytest.raises(x0.FileHostError):
         x0.X0Client().upload("cv.pdf", b"x")
     assert len(fake.requests) == 1
+
+
+def test_the_request_asks_for_a_plain_text_reply(monkeypatch):
+    # Asserted on the final urllib Request so the override of http_request's
+    # browser-like default Accept (which makes x0.at answer with HTML) is covered.
+    fake = _install(monkeypatch, [_body("https://x0.at/cv_abc.pdf")])
+
+    x0.X0Client().upload("cv.pdf", b"x")
+
+    assert fake.requests[0].get_header("Accept") == "text/plain"
+
+
+def test_the_plain_text_accept_is_sent_on_every_retry_attempt(monkeypatch):
+    fake = _install(monkeypatch, [
+        urllib.error.HTTPError("https://x0.at/", 503, "unavailable", {}, None),
+        urllib.error.URLError("connection reset"),
+        _body("https://x0.at/cv_abc.pdf"),
+    ])
+
+    assert x0.X0Client().upload("cv.pdf", b"x") == "https://x0.at/cv_abc.pdf"
+    assert len(fake.requests) == 3
+    assert [r.get_header("Accept") for r in fake.requests] == ["text/plain"] * 3
+
+
+def test_the_html_wrapped_reply_is_refused(monkeypatch):
+    # What x0.at sends when Accept is browser-like: the link is inside markup.
+    html = '<pre>Access your file here: <a href="https://x0.at/x.zip">https://x0.at/x.zip</a></pre>'
+    fake = _install(monkeypatch, [_body(html), _body("https://x0.at/x.zip")])
+
+    with pytest.raises(x0.FileHostError):
+        x0.X0Client().upload("cv.zip", b"x")
+    assert len(fake.requests) == 1

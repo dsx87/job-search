@@ -6,8 +6,9 @@ link is the credential, and the page carrying it is public to anyone who has
 its URL.
 
 Why x0.at, verified live 2026-08-12: the response body **is** the URL in plain
-text, ``keep_name=1`` keeps the real filename in it, ``id_length=24`` makes the
-id unguessable, and the bytes are served directly with no interstitial and no
+text — provided the request sends ``Accept: text/plain`` (verified 2026-11-03;
+a browser-like Accept gets an HTML page wrapping the link), ``keep_name=1``
+keeps the real filename in it, ``id_length=24`` makes the id unguessable, and the bytes are served directly with no interstitial and no
 cookie gate. Retention is size-derived —
 ``MIN_AGE + (MAX_AGE-MIN_AGE)*(1-(SIZE/MAX_SIZE))^2`` over 3/100 days with a
 1024 MiB cap — so a small CV archive sits near the 100-day maximum.
@@ -70,6 +71,7 @@ class X0Client:
             try:
                 _status, text = http_request(
                     API_BASE, method="POST", data=body, content_type=content_type,
+                    headers={"Accept": "text/plain"},
                     timeout=UPLOAD_TIMEOUT_SECONDS,
                 )
             # HTTPError must be caught before URLError — it is a subclass.
