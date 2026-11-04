@@ -95,6 +95,16 @@ def _http_error(code):
     return urllib.error.HTTPError("https://example.invalid", code, "err", {}, io.BytesIO(b'{"error":"scripted"}'))
 
 
+class ScriptError(BaseException):
+    """A broken test script. BaseException, so the engine's `except Exception` cannot swallow it."""
+
+
+def _pop(queue, what):
+    if not queue:
+        raise ScriptError(f"script ran out of items for {what}")
+    return queue.pop(0)
+
+
 def _scripted_error(item):
     """A fresh exception per raise: the engine caches the body and edits msg on HTTPError."""
     if isinstance(item, int):
@@ -105,7 +115,7 @@ def _scripted_error(item):
         return TimeoutError("timed out")
     if item == "value_error":
         return ValueError("boom")
-    raise AssertionError(f"unknown scripted item {item!r}")
+    raise ScriptError(f"unknown scripted item {item!r}")
 
 
 def _provider(scheme, model, base="", auth_mode="bearer", send_temperature=False):
@@ -328,9 +338,11 @@ class _Network:
         self.sleeps = []
 
     def urlopen(self, req, timeout=None):
-        route = next(r for suffix, r in self.routes.items() if req.full_url.endswith(suffix))
+        route = next((r for suffix, r in self.routes.items() if req.full_url.endswith(suffix)), None)
+        if route is None:
+            raise ScriptError(f"no scripted route for {req.full_url}")
         route["calls"] += 1
-        item = route["queue"].pop(0)
+        item = _pop(route["queue"], req.full_url)
         if item == 200:
             return _Response(_success_body(route["scheme"], route["text"]))
         raise _scripted_error(item)
@@ -401,7 +413,7 @@ class _FakeProvider:
 
     def generate(self, prompt, temperature=0.0, json_mode=False, response_schema=None):
         self.calls += 1
-        item = self.items.pop(0)
+        item = _pop(self.items, self.model)
         if isinstance(item, str) and item.startswith("text:"):
             return item[len("text:"):]
         raise _scripted_error(item)

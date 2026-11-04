@@ -15,9 +15,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _engine_commit() -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=_REPO_ROOT, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=_REPO_ROOT, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    return git("rev-parse", "HEAD") + ("-dirty" if dirty else "")
 
 
 def main(argv=None) -> int:
