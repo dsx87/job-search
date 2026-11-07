@@ -683,3 +683,21 @@ def test_output_files_are_private_and_the_key_is_never_written_or_printed(ws, mo
         assert KEY not in path.read_text(encoding="utf-8"), path.name
     out = capsys.readouterr()
     assert KEY not in out.out and KEY not in out.err
+
+
+def test_a_key_with_a_trailing_carriage_return_is_stripped_and_inner_control_characters_are_refused(monkeypatch, capsys):
+    """Review fix: a CRLF .env leaves "\r" on the key; http.client would raise with the key in
+    the message. A trailing CR/LF is stripped; a control character inside stops before any call."""
+    from scripts.judge_corpus import __main__ as cli
+
+    monkeypatch.setenv("JEV_API_KEY", "test-key\x01-jev")
+    calls = []
+    rc = cli.main(
+        ["--toml", "job_search.example.toml", "--criteria-md", "criteria.md", "--jev-url", "https://jev.invalid",
+         "--jev-model", cli.JEV_MODEL, "--out", "/nonexistent/should-not-be-created"],
+        opener=lambda *a, **k: calls.append(a),
+    )
+    out = capsys.readouterr()
+    assert rc == 2 and not calls
+    assert "test-key" not in out.err and "test-key" not in out.out
+

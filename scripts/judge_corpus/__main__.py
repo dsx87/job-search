@@ -28,9 +28,14 @@ def main(argv=None, opener=urllib.request.urlopen) -> int:
         print(f"--jev-model {args.jev_model} differs from the engine's JEV_MODEL {JEV_MODEL}",
               file=sys.stderr)
         return 2
-    api_key = os.environ.get("JEV_API_KEY")
+    api_key = (os.environ.get("JEV_API_KEY") or "").strip()
     if not api_key:
         print("JEV_API_KEY is required.", file=sys.stderr)
+        return 2
+    # A key with whitespace or control characters inside (a CRLF .env) would make http.client
+    # raise with the key in the message; refuse it before any call, without echoing it.
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in api_key):
+        print("JEV_API_KEY holds whitespace or control characters.", file=sys.stderr)
         return 2
     cfg = load_config(args.toml)
     criteria = load_criteria(str(args.criteria_md))
