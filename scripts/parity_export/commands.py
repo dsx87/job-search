@@ -140,7 +140,6 @@ def fetch_postings(toml, sources, out: Path) -> int:
             raise SystemExit(f"unknown sources: {', '.join(unknown)}")
         if not names:
             raise SystemExit("--sources names no source")
-    # As _fetch_for_pipeline: no relocation_regions, so the daily default applies.
     report = fetch_jobs_with_health(
         source_names=names,
         search=cfg.search,
