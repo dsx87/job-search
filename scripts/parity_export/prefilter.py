@@ -30,9 +30,11 @@ NOTES = [
     "instead and ignores the setting; Swift honours the setting.",
     "prefilter: per-rule rejections come from running each rule on its own over every posting, "
     "so one posting can appear under several rules; the engine itself logs no rule names.",
-    "prefilter: location.json countries._CITY_COUNTRIES is key-sorted. The engine tries cities longest first "
-    "and breaks ties between equal-length cities in set order (PYTHONHASHSEED); the postings "
-    "here avoid such ties.",
+    "prefilter: location.json countries._CITY_COUNTRIES is an array of [city, country] pairs in the "
+    "dict's insertion order: the literal entries in source order, then the cities the four "
+    "update() calls add (IL, CA, AU, US) group by group. The engine tries cities longest first with "
+    "a stable sort, so equal-length cities keep this order. Only the order inside each update "
+    "group is set order (PYTHONHASHSEED); there the export uses code-point order.",
     "prefilter: _RELOCATION_BLOCKERS are blanked in set order and _REMOTE_NEGATIONS longest "
     "first with set-order ties; the postings here avoid overlapping phrases where that order "
     "would change the result.",
@@ -281,7 +283,7 @@ def _location_tables():
             "ISO_COUNTRY_CODES": _sorted(countries.ISO_COUNTRY_CODES),
             "EU_COUNTRY_CODES": _sorted(countries.EU_COUNTRY_CODES),
             "_COUNTRY_ALIASES": dict(countries._COUNTRY_ALIASES),
-            "_CITY_COUNTRIES": dict(countries._CITY_COUNTRIES),
+            "_CITY_COUNTRIES": _city_countries_in_insertion_order(),
             "_CITY_SUBDIVISION_COUNTRIES": sorted(
                 [{"city": city, "subdivision": subdivision, "country": country}
                  for (city, subdivision), country in countries._CITY_SUBDIVISION_COUNTRIES.items()],
@@ -330,6 +332,43 @@ def _keyword_tables():
         },
     }
 
+
+
+def _city_countries_in_insertion_order():
+    """`_CITY_COUNTRIES` as [city, country] pairs in the dict's insertion order.
+
+    The literal part is read from the engine source (its order is the source order); the cities
+    the update() calls add follow, group by group, each group in code-point order because the
+    engine builds it from a set. The result is checked against the live dict.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(countries))
+    literal = next(
+        ast.literal_eval(node.value) for node in tree.body
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_CITY_COUNTRIES" for t in node.targets)
+    )
+    order = list(literal)
+    groups = [
+        countries.IL_LOCATIONS,
+        countries.CA_LOCATIONS - {"canada"},
+        countries.AU_LOCATIONS - {"australia"},
+        countries.US_LOCATIONS - {"united states", "usa", "us", "u.s.", "u.s.a."},
+    ]
+    seen = set(order)
+    for group in groups:
+        for city in sorted(group):
+            if city not in seen:
+                seen.add(city)
+                order.append(city)
+    live = countries._CITY_COUNTRIES
+    if set(order) != set(live) or len(order) != len(live):
+        raise RuntimeError("_CITY_COUNTRIES export does not cover the live dict")
+    if list(live)[:len(literal)] != list(literal):
+        raise RuntimeError("_CITY_COUNTRIES literal part is not first in the live dict")
+    return [[city, live[city]] for city in order]
 
 def export():
     names = [posting["name"] for posting in POSTINGS]
