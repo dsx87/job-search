@@ -3,6 +3,7 @@
 All three run the engine's own code on files given as arguments; none has a
 default path, so no private file is read unless it is named on the command line.
 """
+import contextlib
 import json
 import os
 import subprocess
@@ -128,7 +129,10 @@ def legacy_check(bundle_dir: Path, postings_path, out: Path) -> int:
     return 0
 
 
-def fetch_postings(toml, sources, out: Path) -> int:
+def fetch_postings(toml, sources, out: Path, prefilter: bool = True) -> int:
+    """With ``prefilter=False`` the configured filters are skipped and only the engine's
+    ``sort_jobs(dedup(...))`` runs, for checks (such as the legacy comparison) that do not depend on
+    the prefilter and need more postings than the user's filters let through."""
     cfg = load_config(toml)
     require_search_configured(cfg)
     if sources is None:
@@ -140,15 +144,14 @@ def fetch_postings(toml, sources, out: Path) -> int:
             raise SystemExit(f"unknown sources: {', '.join(unknown)}")
         if not names:
             raise SystemExit("--sources names no source")
-    report = fetch_jobs_with_health(
-        source_names=names,
-        search=cfg.search,
-        candidate=cfg.candidate,
-        budget_seconds=cfg.scrape_budget_seconds,
-        # Decision 10: honour the TOML's relocation_regions, as the Swift port does (the daily
-        # path passes None, which falls back to the default eu/ca/us).
-        relocation_regions=cfg.search.relocation_regions,
-    )
+    patch = contextlib.nullcontext()
+    if not prefilter:
+        from job_search.filters.rules import dedup, sort_jobs
+
+        patch = mock.patch(
+            "job_search.sources.fetch.run_pipeline", lambda jobs, **_kwargs: sort_jobs(dedup(list(jobs))))
+    with patch:
+        report = _fetch(names, cfg)
     summary = format_source_health(report)
     if summary:
         print(summary, file=sys.stderr)
@@ -159,3 +162,15 @@ def fetch_postings(toml, sources, out: Path) -> int:
     _write_json(out, postings)
     print(f"wrote {len(postings)} postings to {out}")
     return 0
+
+
+def _fetch(names, cfg):
+    return fetch_jobs_with_health(
+        source_names=names,
+        search=cfg.search,
+        candidate=cfg.candidate,
+        budget_seconds=cfg.scrape_budget_seconds,
+        # Decision 10: honour the TOML's relocation_regions, as the Swift port does (the daily
+        # path passes None, which falls back to the default eu/ca/us).
+        relocation_regions=cfg.search.relocation_regions,
+    )

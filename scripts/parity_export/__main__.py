@@ -70,6 +70,10 @@ def main(argv=None) -> int:
         "--sources", help="comma list; omitted = the engine's generic default selection"
     )
     fetch.add_argument("--out", required=True, type=Path)
+    fetch.add_argument(
+        "--no-prefilter", action="store_true",
+        help="skip the configured filters (dedupe and sort only)",
+    )
 
     args = parser.parse_args(argv)
     if args.name in AREAS:
@@ -79,7 +83,7 @@ def main(argv=None) -> int:
         return commands.import_bundle(args.toml, args.criteria, args.seen, args.job_state, args.out)
     if args.name == "legacy-check":
         return commands.legacy_check(args.bundle, args.postings, args.out)
-    return commands.fetch_postings(args.toml, args.sources, args.out)
+    return commands.fetch_postings(args.toml, args.sources, args.out, prefilter=not args.no_prefilter)
 
 
 if __name__ == "__main__":
