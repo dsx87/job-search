@@ -4,7 +4,7 @@
 
 The output is {"format": "jobhunter-history", "version": 1, "seen": [...]}: every job identity
 the engine recorded (normalized URLs and "title|company|location" keys), sorted, without the
-"eval:" and "delivery:" markers. The app skips every job in it. Only counts are printed.
+"eval:", "delivery:" and "deferred:" markers. The app skips every job in it. Only counts are printed.
 """
 
 import argparse
@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-MARKER_PREFIXES = ("eval:", "delivery:")
+MARKER_PREFIXES = ("eval:", "delivery:", "deferred:")
 
 
 def convert(entries) -> list:
