@@ -24,6 +24,7 @@ from ..config import (
     require_search_configured,
 )
 from ..runtime import ConfigurationError, build_runtime
+from ..latex.tailor_render import strip_optional_sections
 from ..digest import DeferredEntry, DigestContext, FitEntry, ReviewEntry
 from ..digest.section_config import load_sections
 from ..identity import job_identity_keys, normalize_url
@@ -661,7 +662,8 @@ def run_daily(cfg, test: bool = False) -> int:
             load_tailoring_instructions(
                 getattr(cfg, "cv_tailoring_prompt_file", CV_TAILORING_PROMPT_FILE)
             )
-            load_base_tex(getattr(cfg, "base_tex_file", BASE_TEX_FILE))
+            # Parsing the optional-section markers fails a malformed base here.
+            strip_optional_sections(load_base_tex(getattr(cfg, "base_tex_file", BASE_TEX_FILE)))
 
         if cfg.state_sync:
             # Pull only after configuration and required local files have

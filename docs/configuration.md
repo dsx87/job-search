@@ -156,6 +156,27 @@ prompts, set `prompt_dir` with `prompt_revision` and provide
 `cv_bullet_selection.txt`. The same directory may override `job_summary.txt`
 and `compiler_repair.txt`.
 
+### Optional CV sections
+
+A base CV may wrap a block in marker lines, with exactly one `itemize` inside:
+
+```latex
+%% OPTIONAL-SECTION-BEGIN: Side Project
+\section*{Side Project}
+\begin{itemize}
+  \item Built a fictional scheduling tool in Python.
+\end{itemize}
+%% OPTIONAL-SECTION-END
+```
+
+The block is dropped unless the model keeps at least one of its bullets; then
+only the kept bullets render. The base render (`job_search.latex.render_base`)
+always omits it. If the tailored CV with the block fails the content guard or
+the page limit, tailoring uses the same selection without it. If that also fails
+the guard, it falls back to the full base without optional sections. Malformed
+markers raise a configuration error. A custom `cv_bullet_selection.txt` cannot
+offer optional sections, so they stay omitted.
+
 ## Digest sections and the Python escape hatch
 
 `sections.example.py` is a fictional presentation example. Section order is

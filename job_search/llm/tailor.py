@@ -7,7 +7,7 @@ always a compilable subset of the base and cannot fabricate claims — replacing
 the previous full-LaTeX generation, its fabrication guard, and its repair retry
 (audit Finding 19).
 """
-from ..latex.tailor_render import render_tailored
+from ..latex.tailor_render import OPTIONAL_SELECTION_KEY, render_tailored
 from ..models import coerce_job
 from .cv_edits import select_cv_bullets
 
@@ -34,18 +34,45 @@ def tailor_resume(
     a caller that forgets to thread it should fail loudly here rather than
     silently render with the wrong identity (see bug #1).
     """
+    return tailor_resume_candidates(
+        client, tailoring_instructions, base_tex, job, profile, prompts=prompts
+    )[0]
+
+
+def tailor_resume_candidates(
+    client, tailoring_instructions: str, base_tex: str, job: dict, profile,
+    prompts=None,
+) -> list:
+    """Like ``tailor_resume`` but return every guard-passing render, best first.
+
+    With one model call this yields the selection with its chosen optional
+    sections, then the same selection without them (the page-limit fallback);
+    only if neither passes the content guard, the full base without optional
+    sections.
+    """
     job = coerce_job(job)
     employer_order = profile.employer_order
     selection = select_cv_bullets(
         client, base_tex, job, profile, prompts=prompts
-    )
-    tex = render_tailored(base_tex, selection, employer_order)
+    ) or {}
     validate = profile.validate_tex
-    if not validate(tex):
-        return tex
+    without_optional = {
+        key: value for key, value in selection.items() if key != OPTIONAL_SELECTION_KEY
+    }
+    rendered = []
+    candidates = []
+    for chosen in (selection, without_optional):
+        tex = render_tailored(base_tex, chosen, employer_order)
+        if tex in rendered:
+            continue
+        rendered.append(tex)
+        if not validate(tex):
+            candidates.append(tex)
+    if candidates:
+        return candidates
 
     tex = render_tailored(base_tex, {}, employer_order)
     remaining = validate(tex)
     if remaining:
         raise CVValidationError(remaining)
-    return tex
+    return [tex]

@@ -101,7 +101,8 @@ runs. The general LLM handles summaries and CV tailoring.
 
 `cv_tailoring_prompt_file` is parsed only for compatibility validation; active
 bullet instructions come from `prompt_dir/cv_bullet_selection.txt` and require
-`prompt_revision`.
+`prompt_revision`. A custom bullet prompt cannot offer optional CV sections, so
+they stay omitted.
 
 Sections affect presentation only. Load/definition errors yield ungrouped
 output; a blank-entry predicate smoke warning retains otherwise valid sections.

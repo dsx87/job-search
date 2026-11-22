@@ -29,8 +29,9 @@ which module owns the answer so you can read it before replying.
    context or executable policy. Evaluation lives in `job_search/llm/`.
    Outcomes: fit, review, deferred, rejected.
 4. **Tailor** — for each fit and each review, the model selects bullets from the
-   base LaTeX résumé; a factual-content guard validates, `pdflatex` compiles,
-   and a page guard verifies exactly one page (`job_search/latex/`).
+   base LaTeX résumé (optional marked sections only when selected); a
+   factual-content guard validates, `pdflatex` compiles, and a page guard
+   verifies exactly one page (`job_search/latex/`).
 5. **Notify** — `job_search/digest/` + `job_search/notify/`.
 
 ## Design constraints worth knowing before answering

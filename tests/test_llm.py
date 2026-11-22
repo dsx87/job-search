@@ -1171,3 +1171,60 @@ def test_anthropic_json_mode_without_schema(monkeypatch):
     assert AnthropicProvider("k").generate("p", json_mode=True) == '{}'
     assert captured["system"] == "Respond with a single valid JSON object and nothing else."
     assert "output_config" not in captured
+
+
+_OPTIONAL_CV_BASE_BLOCK = (
+    "%% OPTIONAL-SECTION-BEGIN: Side Project\n"
+    "\\begin{itemize}\n"
+    "  \\item Built Recipe Finder search with ranked ingredient matching.\n"
+    "  \\item Published Recipe Finder as an open-source command line tool.\n"
+    "\\end{itemize}\n"
+    "%% OPTIONAL-SECTION-END\n"
+)
+
+
+def _cv_base_with_optional():
+    return _cv_base().replace(
+        "\\cvsection{Skills}", _OPTIONAL_CV_BASE_BLOCK + "\n\\cvsection{Skills}"
+    )
+
+
+def test_select_cv_bullets_requests_optional_picks_and_renders_only_the_chosen_bullet():
+    client = _RecordingClient([
+        '{"jobs":[{"company":"Example Labs","keep_bullets":[0]}],'
+        '"optional_sections":[{"name":"side project","keep_bullets":[1]}]}'
+    ])
+    base = _cv_base_with_optional()
+
+    out = tailor_resume(
+        client, "instr", base,
+        {"title": "iOS", "company": "Acme", "description": "d"}, _avery_profile(),
+    )
+
+    assert client.kwargs[0]["response_schema"] != CV_EDIT_SCHEMA
+    assert "optional_sections" in client.kwargs[0]["response_schema"]["properties"]
+    assert "Published Recipe Finder" in out
+    assert "Built Recipe Finder" not in out
+    assert "OPTIONAL-SECTION" not in out
+
+
+def test_optional_base_with_garbage_reply_renders_without_the_optional_section():
+    client = _RecordingClient(["garbage"])
+
+    out = tailor_resume(
+        client, "instr", _cv_base_with_optional(),
+        {"title": "iOS", "company": "Acme", "description": "d"}, _avery_profile(),
+    )
+
+    assert out == _cv_base()
+
+
+def test_malformed_optional_marker_in_the_base_fails_loudly_before_any_model_call():
+    client = _RecordingClient([])
+    base = _cv_base().replace("\\cvsection{Skills}", "%% OPTIONAL-SECTION-BEGIN: Oops\n\\cvsection{Skills}")
+
+    with pytest.raises(ConfigurationError):
+        select_cv_bullets(
+            client, base, {"title": "iOS", "company": "Acme", "description": "d"}, _avery_profile()
+        )
+    assert client.prompts == []

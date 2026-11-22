@@ -536,3 +536,189 @@ def test_tailor_resume_canonicalizes_its_job_argument(monkeypatch):
     )
 
     assert isinstance(received[0], Job)
+
+
+# --- optional CV sections -------------------------------------------------
+
+OPTIONAL_BLOCK = (
+    "%% OPTIONAL-SECTION-BEGIN: Side Project\n"
+    "\\cvsection{Side Project}\n"
+    "\\begin{itemize}\n"
+    "  \\item Built Recipe Finder search with ranked ingredient matching.\n"
+    "  \\item Published Recipe Finder as an open-source command line tool.\n"
+    "\\end{itemize}\n"
+    "%% OPTIONAL-SECTION-END\n"
+)
+PICK_OPTIONAL = (
+    '{"jobs": [{"company": "Example Labs", "keep_bullets": [0]}], '
+    '"optional_sections": [{"name": "Side Project", "keep_bullets": [1, 0]}]}'
+)
+
+
+def _optional_profile(tmp_path, **overrides):
+    path = tmp_path / "base_with_optional.tex"
+    path.write_text(
+        _base_tex().replace("\\cvsection{Skills}", OPTIONAL_BLOCK + "\n\\cvsection{Skills}"),
+        encoding="utf-8",
+    )
+    return _avery_profile(base_tex_path=str(path), **overrides)
+
+
+class _FixedReplyLLM:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def generate(self, prompt, **kwargs):
+        return self.reply
+
+    def usage_summary(self):
+        return "usage"
+
+
+class _ScriptedCompiler:
+    executable = "fake"
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def compile(self, llm, tex_source, max_attempts=3, *, max_pages=1):
+        self.calls.append((tex_source, max_pages))
+        make = self.outcomes.pop(0)
+        return make(tex_source)
+
+
+def _overflow(pages=2):
+    return lambda src: CompileResult(False, None, "too long", pages, False, src)
+
+
+def _failure(pages=None):
+    return lambda src: CompileResult(False, None, "latex error", pages, True, src)
+
+
+def _success(content=b"PDF", pages=1):
+    return lambda src: CompileResult(True, content, "", pages, False, src)
+
+
+_JOB = Job(title="Engineer", company="Example Labs", description="Python role. " * 10)
+
+
+def test_overflow_with_the_optional_section_retries_without_it_and_delivers_that(tmp_path):
+    compiler = _ScriptedCompiler(_overflow(2), _success(b"WITHOUT"))
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    artifact = renderer.render_tailored(_FixedReplyLLM(PICK_OPTIONAL), _JOB)
+
+    assert artifact.content == b"WITHOUT"
+    assert len(compiler.calls) == 2
+    with_optional, without = (source for source, _limit in compiler.calls)
+    assert "Published Recipe Finder" in with_optional
+    assert "Recipe Finder" not in without
+    assert "OPTIONAL-SECTION" not in with_optional + without
+    assert [limit for _source, limit in compiler.calls] == [1, 1]
+
+
+def test_optional_section_that_fits_is_delivered_after_a_single_compile(tmp_path):
+    compiler = _ScriptedCompiler(_success(b"WITH"))
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    artifact = renderer.render_tailored(_FixedReplyLLM(PICK_OPTIONAL), _JOB)
+
+    assert artifact.content == b"WITH"
+    assert len(compiler.calls) == 1
+    assert "Published Recipe Finder" in compiler.calls[0][0]
+
+
+@pytest.mark.parametrize("pages", [None, 1])
+def test_non_overflow_failure_does_not_trigger_the_retry(tmp_path, pages):
+    from job_search.pipeline.stages import CVPreparationError
+
+    compiler = _ScriptedCompiler(_failure(pages), _success())
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    with pytest.raises(CVPreparationError, match="latex error"):
+        renderer.render_tailored(_FixedReplyLLM(PICK_OPTIONAL), _JOB)
+
+    assert len(compiler.calls) == 1
+
+
+def test_overflow_is_judged_against_the_jobs_resolved_page_limit(tmp_path):
+    profile = _optional_profile(tmp_path, max_pages=2)
+    at_limit = _ScriptedCompiler(_failure(2), _success())
+    above_limit = _ScriptedCompiler(_overflow(3), _success(b"WITHOUT"))
+
+    from job_search.pipeline.stages import CVPreparationError
+
+    with pytest.raises(CVPreparationError):
+        DefaultCVRenderer(PipelineConfig(), profile, compiler=at_limit).render_tailored(
+            _FixedReplyLLM(PICK_OPTIONAL), _JOB
+        )
+    artifact = DefaultCVRenderer(PipelineConfig(), profile, compiler=above_limit).render_tailored(
+        _FixedReplyLLM(PICK_OPTIONAL), _JOB
+    )
+
+    assert len(at_limit.calls) == 1
+    assert artifact.content == b"WITHOUT"
+    assert [limit for _source, limit in above_limit.calls] == [2, 2]
+
+
+def test_overflow_of_the_fallback_candidate_too_fails_after_two_compiles(tmp_path):
+    from job_search.pipeline.stages import CVPreparationError
+
+    compiler = _ScriptedCompiler(_overflow(2), _overflow(2))
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    with pytest.raises(CVPreparationError):
+        renderer.render_tailored(_FixedReplyLLM(PICK_OPTIONAL), _JOB)
+
+    assert len(compiler.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '{"jobs": [{"company": "Example Labs", "keep_bullets": [0]}]}',
+        '{"jobs": [{"company": "Example Labs", "keep_bullets": [0]}], '
+        '"optional_sections": [{"name": "Side Project", "keep_bullets": []}]}',
+        "garbage",
+    ],
+)
+def test_no_optional_selection_means_exactly_one_compile_even_on_overflow(tmp_path, reply):
+    from job_search.pipeline.stages import CVPreparationError
+
+    compiler = _ScriptedCompiler(_overflow(2), _success())
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    with pytest.raises(CVPreparationError):
+        renderer.render_tailored(_FixedReplyLLM(reply), _JOB)
+
+    assert len(compiler.calls) == 1
+    assert "Recipe Finder" not in compiler.calls[0][0]
+
+
+def test_base_without_markers_compiles_once_per_tailoring():
+    compiler = _ScriptedCompiler(_success())
+    renderer = DefaultCVRenderer(PipelineConfig(), _avery_profile(), compiler=compiler)
+
+    renderer.render_tailored(_FixedReplyLLM(PICK_OPTIONAL), _JOB)
+
+    assert len(compiler.calls) == 1
+
+
+def test_render_base_compiles_the_base_with_optional_sections_stripped(tmp_path):
+    compiler = FailFastBaseCompiler(_base_tex())
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    artifact = renderer.render_base(SelectionLLM())
+
+    assert artifact.content == b"BASE-PDF"
+    assert compiler.base_calls == [_base_tex()]
+
+
+def test_render_base_strips_optional_sections_on_the_plain_compile_path_too(tmp_path):
+    compiler = SuccessfulCompiler()
+    renderer = DefaultCVRenderer(PipelineConfig(), _optional_profile(tmp_path), compiler=compiler)
+
+    renderer.render_base(SelectionLLM())
+
+    assert compiler.sources == [_base_tex()]

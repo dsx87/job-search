@@ -97,3 +97,32 @@ def test_render_tailored_dedups_repeated_indices():
     assert len(job["bullets"]) == 2
     assert job["bullets"][0] != job["bullets"][1]
     assert _validate(out) == []
+
+
+OPTIONAL_BLOCK = (
+    "%% OPTIONAL-SECTION-BEGIN: Side Project\n"
+    "\\cvsection{Side Project}\n"
+    "\\begin{itemize}\n"
+    "  \\item Built Recipe Finder search with ranked ingredient matching.\n"
+    "\\end{itemize}\n"
+    "%% OPTIONAL-SECTION-END\n"
+)
+
+
+def _base_with_optional_block():
+    return _base().replace("\\cvsection{Skills}", OPTIONAL_BLOCK + "\n\\cvsection{Skills}")
+
+
+def test_optional_block_does_not_change_employer_extraction():
+    assert extract_job_bullets(_base_with_optional_block(), EMPLOYERS) == extract_job_bullets(
+        _base(), EMPLOYERS
+    )
+
+
+def test_optional_block_is_invisible_to_a_plain_company_selection():
+    selection = {"Example Labs": [1, 0], "Sample Systems": [1]}
+
+    out = render_tailored(_base_with_optional_block(), selection, EMPLOYERS)
+
+    assert out == render_tailored(_base(), selection, EMPLOYERS)
+    assert "OPTIONAL-SECTION" not in out and "Recipe Finder" not in out
