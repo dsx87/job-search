@@ -83,7 +83,9 @@ dependency — the identical fetch → filter → tailor → notify chain runs o
    categorical checks for language, location and work, employment, seniority,
    technology stack, industry, and other clear rejection reasons.
 4. **Tailor** — for every match and every job flagged for review, the model
-   rewrites the configured base LaTeX CV to emphasize the relevant experience. A
+   selects bullets from the configured base LaTeX CV to emphasize the relevant
+   experience; it writes no new text. Base blocks marked as optional are included
+   only when selected ([details](docs/configuration.md#optional-cv-sections)). A
    factual-content guard validates it, pdflatex compiles it, and the page guard
    verifies exactly one page.
    Jev’s labels carry fixed short descriptions. They are categorical judgments,

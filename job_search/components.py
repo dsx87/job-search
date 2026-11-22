@@ -373,21 +373,37 @@ class DefaultCVRenderer:
 
     def render_tailored(self, llm: object, job: object, evaluation: object = None) -> CVArtifact:
         from .config import load_base_tex, load_tailoring_instructions
-        from .llm.tailor import tailor_resume
+        from .latex.tailor_render import strip_optional_sections
+        from .llm.tailor import tailor_resume_candidates
         from .pipeline.stages import CVPreparationError, _company_slug
         base = load_base_tex(self.profile.base_tex_path)
+        # Outside the try below so a malformed base stays a ConfigurationError.
+        strip_optional_sections(base)
         instructions = load_tailoring_instructions(
             getattr(self.settings, "cv_tailoring_prompt_file", "cv_tailoring_prompt.md")
         )
         page_limit = self.profile.page_limit_for(job)
         try:
-            tex_source = tailor_resume(
+            candidates = tailor_resume_candidates(
                 llm, instructions, base, job,
                 prompts=self.prompts, profile=self.profile,
             )
-            result = self.compiler.compile(
-                llm, tex_source, max_pages=page_limit.max_pages
-            )
+            for number, tex_source in enumerate(candidates, 1):
+                result = self.compiler.compile(
+                    llm, tex_source, max_pages=page_limit.max_pages
+                )
+                overflow = (
+                    not result.ok
+                    and isinstance(result.page_count, int)
+                    and result.page_count > page_limit.max_pages
+                )
+                if not overflow or number == len(candidates):
+                    break
+                print(
+                    "    CV exceeds {} pages with optional sections — "
+                    "retrying without them.".format(page_limit.max_pages),
+                    flush=True,
+                )
         except Exception as exc:
             raise CVPreparationError("CV rendering failed: {}".format(exc)) from exc
         if (
@@ -419,9 +435,10 @@ class DefaultCVRenderer:
 
     def render_base(self, llm=None) -> CVArtifact:
         from .config import load_base_tex
+        from .latex.tailor_render import strip_optional_sections
         from .pipeline.stages import CVPreparationError
 
-        source = load_base_tex(self.profile.base_tex_path)
+        source = strip_optional_sections(load_base_tex(self.profile.base_tex_path))
         page_limit = CVPageLimit(self.profile.max_pages, "fallback")
         compile_base = getattr(self.compiler, "compile_base", None)
         result = (
