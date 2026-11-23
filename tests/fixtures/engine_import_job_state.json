@@ -1,0 +1,17 @@
+{
+ "jobs": {
+  "https://jobs.example.test/listing/101": {
+   "title": "Platform Engineer", "company": "Example Labs", "location": "Berlin, Germany",
+   "url": "https://jobs.example.test/listing/101", "source": "arbeitnow",
+   "date_posted": "2026-01-05", "description": "Fictional posting.", "is_remote": false,
+   "region": "EU", "matched_skills": ["python"], "seen": true
+  },
+  "https://careers.sample.test/jobs/backend-7": {
+   "title": "Backend Engineer", "company": "Sample Systems", "location": "Remote",
+   "url": "https://careers.sample.test/jobs/backend-7", "source": "remotive",
+   "date_posted": null, "description": "", "is_remote": true,
+   "region": "UNKNOWN", "matched_skills": [], "seen": false
+  }
+ },
+ "show_seen": false
+}

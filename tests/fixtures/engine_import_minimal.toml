@@ -1,0 +1,7 @@
+# Fictional minimal settings for the engine-import converter tests.
+[settings]
+version = 1
+sections_file = "sections.py"
+
+[search]
+search_terms = ["data engineer"]
