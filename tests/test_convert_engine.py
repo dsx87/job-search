@@ -103,3 +103,26 @@ def test_output_is_deterministic(tmp_path):
     assert convert_engine.main(args + ["--out", str(first)]) == 0
     assert convert_engine.main(args + ["--out", str(second)]) == 0
     assert first.read_bytes() == second.read_bytes()
+
+
+@pytest.mark.parametrize("base", [
+    "https://llm.example.test/v1?key=" + FAKE_SECRET,
+    "https://user:" + FAKE_SECRET + "@llm.example.test/v1",
+    "https://llm.example.test/v1#" + FAKE_SECRET,
+])
+def test_an_endpoint_that_may_carry_a_key_is_refused_before_writing(tmp_path, capsys, base):
+    config = tmp_path / "job_search.toml"
+    config.write_text(f'[settings]\nversion = 1\nllm_fallback_api_base = "{base}"\n', encoding="utf-8")
+    out = tmp_path / "out.json"
+    assert convert_engine.main(["--config", str(config), "--out", str(out)]) == 1
+    assert not out.exists()
+    assert FAKE_SECRET not in capsys.readouterr().err
+
+
+def test_an_input_named_as_out_is_left_unchanged(tmp_path):
+    state = tmp_path / "job_state.json"
+    state.write_bytes((FIXTURES / "engine_import_job_state.json").read_bytes())
+    before = state.read_bytes()
+    args = ["--config", str(ROOT / "job_search.example.toml"), "--state", str(state), "--out", str(state)]
+    assert convert_engine.main(args) == 1
+    assert state.read_bytes() == before

@@ -15,6 +15,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -150,10 +151,32 @@ def convert_jobs(state) -> list:
     return sorted(jobs, key=lambda job: (str(job["url"] or ""), str(job["title"] or ""), str(job["company"] or "")))
 
 
+def _check_endpoints(mapped: dict) -> None:
+    """An endpoint with a query, fragment or user name may carry a key, and the app refuses it:
+    stop before anything is written. The error names the setting, never its value."""
+    for key in ("llm_primary_api_base", "llm_fallback_api_base"):
+        value = mapped["settings"][key]
+        if not value:
+            continue
+        try:
+            parts = urlsplit(str(value).strip())
+            hidden = parts.query or parts.fragment or parts.username is not None or parts.password is not None
+        except ValueError:
+            hidden = True
+        if hidden:
+            raise ConvertError(f"settings.{key} must be an address with no query, fragment or user name")
+
+
 def convert(config, criteria=None, tex=None, seen=None, state=None) -> dict:
+    return _convert(config, criteria, tex, seen, state)[0]
+
+
+def _convert(config, criteria, tex, seen, state):
+    """The import object, and the files it was read from."""
     config = Path(config).resolve()
     values, present, unknown = effective_settings(config)
     mapped = {section: {key: _plain(values[key]) for key in keys} for section, keys in MAPPED.items()}
+    _check_endpoints(mapped)
     mapped_paths = {f"{section}.{key}" for section, keys in MAPPED.items() for key in keys}
 
     all_sources = select_sources(values["sources_enable"], values["sources_disable"], generic=True)
@@ -162,8 +185,10 @@ def convert(config, criteria=None, tex=None, seen=None, state=None) -> dict:
     unsupported |= {path for path in present if path not in mapped_paths and path not in CONSUMED}
     unsupported |= {f"source.{name}" for name in all_sources if name in UNSUPPORTED_SOURCES}
 
-    criteria_text = _read_text(criteria, True) if criteria else _read_text(_beside(config, values["criteria_file"]), False)
-    tex_text = _read_text(tex, True) if tex else _read_text(_beside(config, values["base_tex_file"]), True)
+    criteria_path = criteria or _beside(config, values["criteria_file"])
+    tex_path = tex or _beside(config, values["base_tex_file"])
+    criteria_text = _read_text(criteria_path, bool(criteria))
+    tex_text = _read_text(tex_path, True)
     history = None
     if seen:
         entries = _read_json(seen, "seen jobs")
@@ -172,6 +197,7 @@ def convert(config, criteria=None, tex=None, seen=None, state=None) -> dict:
         history = {"format": "jobhunter-history", "version": 1, "seen": convert_history(entries)}
     jobs = convert_jobs(_read_json(state, "job state")) if state else []
 
+    inputs = [path for path in (config, criteria_path, tex_path, seen, state) if path is not None]
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -183,7 +209,7 @@ def convert(config, criteria=None, tex=None, seen=None, state=None) -> dict:
         "history": history,
         "jobs": jobs,
         "unsupported": sorted(unsupported),
-    }
+    }, inputs
 
 
 def main(argv=None) -> int:
@@ -196,7 +222,10 @@ def main(argv=None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="the import file to write")
     args = parser.parse_args(argv)
     try:
-        result = convert(args.config, args.criteria, args.tex, args.seen, args.state)
+        result, inputs = _convert(args.config, args.criteria, args.tex, args.seen, args.state)
+        out = args.out.resolve()
+        if any(Path(path).resolve() == out for path in inputs):
+            raise ConvertError(f"--out {args.out} is one of the input files")
     except ConvertError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
